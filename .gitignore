@@ -1,0 +1,30 @@
+# OS
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# Editors / IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.settings/
+.buildpath
+.sublime-project
+.sublime-workspace
+
+# Logs
+*.log
+npm-debug.log*
+
+# Dependencies (none expected in plugin, but just in case)
+node_modules/
+vendor/
+
+# Test artifacts
+coverage/
+.phpunit.result.cache
+.phpunit.cache/

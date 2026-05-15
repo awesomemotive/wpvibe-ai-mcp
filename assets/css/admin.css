@@ -1,0 +1,236 @@
+/* Vibe AI Admin Page — Light Theme */
+
+.wpvibe-admin-wrap {
+	margin: -20px -20px 0 0;
+	min-height: 100vh;
+	background: #ffffff;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.wpvibe-admin-page {
+	max-width: 560px;
+	width: 100%;
+	padding: 60px 40px;
+	text-align: center;
+}
+
+/* Logo */
+.wpvibe-logo {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 12px;
+	margin-bottom: 32px;
+}
+
+.wpvibe-logo-svg {
+	width: 48px;
+	height: 48px;
+}
+
+.wpvibe-logo-text {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+}
+
+.wpvibe-logo-text span {
+	font-size: 22px;
+	font-weight: 700;
+	color: #0a0a0a;
+	line-height: 1.2;
+	letter-spacing: -0.01em;
+}
+
+.wpvibe-logo-text small {
+	font-size: 12px;
+	color: rgba(0, 0, 0, 0.45);
+	line-height: 1.2;
+}
+
+/* Status badge */
+.wpvibe-status {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 16px;
+	border-radius: 100px;
+	font-size: 13px;
+	font-weight: 500;
+	margin-bottom: 28px;
+}
+
+.wpvibe-status--connected {
+	background: rgba(22, 163, 74, 0.08);
+	color: #16a34a;
+	border: 1px solid rgba(22, 163, 74, 0.2);
+}
+
+.wpvibe-status--disconnected {
+	background: rgba(220, 38, 38, 0.06);
+	color: #dc2626;
+	border: 1px solid rgba(220, 38, 38, 0.15);
+}
+
+.wpvibe-status-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+}
+
+.wpvibe-status--connected .wpvibe-status-dot {
+	background: #16a34a;
+	box-shadow: 0 0 8px rgba(22, 163, 74, 0.4);
+}
+
+.wpvibe-status--disconnected .wpvibe-status-dot {
+	background: #dc2626;
+	box-shadow: 0 0 8px rgba(220, 38, 38, 0.3);
+}
+
+/* Headline */
+.wpvibe-headline {
+	font-size: 36px;
+	font-weight: 700;
+	color: #0a0a0a;
+	margin: 0 0 12px;
+	letter-spacing: -0.02em;
+	line-height: 1.2;
+}
+
+.wpvibe-subheadline {
+	font-size: 15px;
+	color: rgba(0, 0, 0, 0.55);
+	line-height: 1.6;
+	margin: 0 0 36px;
+	max-width: 480px;
+	margin-left: auto;
+	margin-right: auto;
+}
+
+/* CTA Button */
+.wpvibe-cta {
+	margin-bottom: 48px;
+}
+
+.wpvibe-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 14px 36px;
+	border-radius: 100px;
+	font-size: 15px;
+	font-weight: 600;
+	text-decoration: none;
+	transition: all 0.2s ease;
+	cursor: pointer;
+	border: none;
+}
+
+.wpvibe-btn--primary {
+	background: #0a0a0a;
+	color: #ffffff;
+}
+
+.wpvibe-btn--primary:hover,
+.wpvibe-btn--primary:focus {
+	background: #1a1a1a;
+	color: #ffffff;
+	transform: translateY(-1px);
+	box-shadow: 0 4px 24px rgba(0, 0, 0, 0.15);
+}
+
+/* Steps */
+.wpvibe-steps {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+	background: rgba(0, 0, 0, 0.06);
+	border-radius: 16px;
+	overflow: hidden;
+	text-align: left;
+	margin-bottom: 48px;
+}
+
+.wpvibe-step {
+	display: flex;
+	align-items: center;
+	gap: 16px;
+	padding: 20px 24px;
+	background: rgba(0, 0, 0, 0.02);
+}
+
+.wpvibe-step-num {
+	width: 32px;
+	height: 32px;
+	border-radius: 50%;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 13px;
+	font-weight: 700;
+	flex-shrink: 0;
+	background: rgba(0, 0, 0, 0.05);
+	color: rgba(0, 0, 0, 0.5);
+	border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.wpvibe-step--done .wpvibe-step-num {
+	background: rgba(22, 163, 74, 0.1);
+	color: #16a34a;
+	border-color: rgba(22, 163, 74, 0.25);
+}
+
+.wpvibe-step-content {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.wpvibe-step-content strong {
+	font-size: 14px;
+	font-weight: 600;
+	color: #0a0a0a;
+}
+
+.wpvibe-step-content span {
+	font-size: 13px;
+	color: rgba(0, 0, 0, 0.45);
+}
+
+/* Footer */
+.wpvibe-footer {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 12px;
+}
+
+.wpvibe-footer a {
+	font-size: 13px;
+	color: rgba(0, 0, 0, 0.4);
+	text-decoration: none;
+	transition: color 0.2s;
+}
+
+.wpvibe-footer a:hover {
+	color: #2563eb;
+}
+
+.wpvibe-footer-sep {
+	color: rgba(0, 0, 0, 0.2);
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+	.wpvibe-admin-page {
+		padding: 40px 20px;
+	}
+
+	.wpvibe-headline {
+		font-size: 28px;
+	}
+}

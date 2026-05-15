@@ -1,0 +1,60 @@
+#wpvibe-preview-banner {
+	position: fixed;
+	bottom: 0;
+	left: 0;
+	right: 0;
+	z-index: 999999;
+	background: linear-gradient(135deg, #1e293b, #334155);
+	color: #f8fafc;
+	font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+	font-size: 13px;
+	padding: 10px 20px;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.15);
+	gap: 12px;
+}
+#wpvibe-preview-banner .wpvibe-badge {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	font-weight: 600;
+}
+#wpvibe-preview-banner .wpvibe-dot {
+	width: 8px;
+	height: 8px;
+	background: #22c55e;
+	border-radius: 50%;
+	animation: wpvibe-pulse 2s infinite;
+}
+#wpvibe-preview-banner .wpvibe-info {
+	color: #94a3b8;
+}
+#wpvibe-preview-banner .wpvibe-btn {
+	display: inline-block;
+	padding: 6px 14px;
+	border-radius: 6px;
+	font-size: 12px;
+	font-weight: 500;
+	text-decoration: none;
+	cursor: pointer;
+	border: none;
+	transition: all 0.15s ease;
+}
+#wpvibe-preview-banner .wpvibe-btn-live {
+	background: transparent;
+	color: #94a3b8;
+	border: 1px solid #475569;
+}
+#wpvibe-preview-banner .wpvibe-btn-live:hover {
+	background: #475569;
+	color: #f8fafc;
+}
+@keyframes wpvibe-pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.4; }
+}
+body.wpvibe-preview-active {
+	padding-bottom: 50px !important;
+}
