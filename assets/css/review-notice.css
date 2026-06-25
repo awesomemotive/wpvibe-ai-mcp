@@ -1,0 +1,71 @@
+/* WPVibe review request notice (sits inside WP's standard .notice container). */
+.wpvibe-review-notice {
+	padding: 18px 20px 20px 16px;
+	border-left-color: #2563eb !important;
+}
+
+.wpvibe-review-notice__body {
+	display: flex;
+	gap: 16px;
+	align-items: flex-start;
+}
+
+.wpvibe-review-notice__icon {
+	flex-shrink: 0;
+	background: rgba(251, 191, 36, 0.12);
+	border-radius: 50%;
+	width: 40px;
+	height: 40px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	margin-top: 2px;
+}
+
+.wpvibe-review-notice__copy {
+	flex: 1;
+	min-width: 0;
+}
+
+.wpvibe-review-notice__title {
+	font-size: 14px;
+	font-weight: 600;
+	color: #0a0a0a;
+	margin: 0 0 6px;
+	line-height: 1.4;
+}
+
+.wpvibe-review-notice__text {
+	font-size: 13px;
+	color: rgba(0, 0, 0, 0.65);
+	line-height: 1.55;
+	margin: 0 0 14px;
+}
+
+.wpvibe-review-notice__actions {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	flex-wrap: wrap;
+	margin: 0;
+	padding: 0;
+}
+
+.wpvibe-review-notice__actions .button {
+	margin-right: 0;
+}
+
+.wpvibe-review-notice__actions .button-link {
+	color: rgba(0, 0, 0, 0.45);
+	font-size: 12px;
+	text-decoration: underline;
+	text-underline-offset: 2px;
+	background: none;
+	border: none;
+	padding: 4px 6px;
+	cursor: pointer;
+}
+
+.wpvibe-review-notice__actions .button-link:hover {
+	color: #2563eb;
+}

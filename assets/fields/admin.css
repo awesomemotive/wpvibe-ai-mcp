@@ -1,0 +1,129 @@
+/* WPVibe Fields admin styles. Most layout is inline in the PHP renderers
+   (component-scoped + easier to read alongside the markup). This file
+   handles the few cross-cutting styles. */
+
+.wpvibe-field-row {
+	margin: 12px 0;
+}
+
+.wpvibe-field-row > label {
+	display: block;
+	font-weight: 600;
+	margin-bottom: 4px;
+}
+
+.wpvibe-field-row p.description {
+	margin: 4px 0 0;
+}
+
+.wpvibe-field-color {
+	max-width: 160px;
+}
+
+/* Flash animation when a field is focused via the hover-to-edit hash
+   anchor. Triggered by edit-focus.js on the post edit screen and the
+   WPVibe settings page. */
+.wpvibe-field-row-flash {
+	animation: wpvibe-field-row-flash 1.5s ease-out;
+}
+@keyframes wpvibe-field-row-flash {
+	0%   { background-color: rgba(34, 113, 177, 0.18); }
+	100% { background-color: transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+	.wpvibe-field-row-flash { animation: none; }
+}
+
+/* Post-edit sidebar (the "Built with WPVibe AI" meta box that appears on
+   themes declaring "WPVibe: yes" in their style.css header). */
+
+.wpvibe-sidebar {
+	font-size: 13px;
+	line-height: 1.5;
+}
+.wpvibe-sidebar-badge {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-weight: 600;
+	color: #2271b1;
+	margin-bottom: 12px;
+}
+.wpvibe-sidebar-badge .wpvibe-sidebar-icon {
+	display: inline-flex;
+}
+.wpvibe-sidebar-fields-title {
+	font-weight: 600;
+	margin: 8px 0 6px;
+	color: #1d2327;
+}
+.wpvibe-sidebar-fields ul {
+	margin: 0 0 12px;
+	padding: 0;
+	list-style: none;
+}
+.wpvibe-sidebar-fields li {
+	margin: 0;
+	padding: 4px 0;
+	border-top: 1px solid #f0f0f1;
+}
+.wpvibe-sidebar-fields li:first-child {
+	border-top: none;
+}
+.wpvibe-sidebar-fields a {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	text-decoration: none;
+	color: #2271b1;
+}
+.wpvibe-sidebar-fields a:hover,
+.wpvibe-sidebar-fields a:focus {
+	color: #135e96;
+	text-decoration: underline;
+}
+.wpvibe-sidebar-fields a::before {
+	content: "";
+	display: inline-block;
+	width: 12px;
+	height: 12px;
+	background: currentColor;
+	-webkit-mask: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21.731 2.269a2.625 2.625 0 0 0-3.712 0L4.5 15.787 2.25 21.75l5.963-2.25 13.518-13.519a2.625 2.625 0 0 0 0-3.712z"/></svg>') center/contain no-repeat;
+	        mask: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21.731 2.269a2.625 2.625 0 0 0-3.712 0L4.5 15.787 2.25 21.75l5.963-2.25 13.518-13.519a2.625 2.625 0 0 0 0-3.712z"/></svg>') center/contain no-repeat;
+	flex: 0 0 12px;
+}
+.wpvibe-sidebar-empty {
+	color: #50575e;
+	margin-bottom: 12px;
+}
+.wpvibe-sidebar-empty p {
+	margin: 6px 0;
+}
+.wpvibe-sidebar-mcp {
+	margin-top: 12px;
+	padding-top: 12px;
+	border-top: 1px solid #f0f0f1;
+}
+.wpvibe-sidebar-mcp .button {
+	width: 100%;
+	text-align: center;
+}
+.wpvibe-sidebar-mcp-help {
+	margin: 6px 0 0;
+	font-size: 12px;
+	color: #50575e;
+}
+.wpvibe-sidebar-mcp-connected {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	color: #1d2327;
+}
+.wpvibe-sidebar-dot {
+	width: 8px;
+	height: 8px;
+	background: #00a32a;
+	border-radius: 50%;
+	display: inline-block;
+	flex: 0 0 8px;
+}

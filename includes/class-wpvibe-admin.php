@@ -1,8 +1,8 @@
 <?php
 /**
- * Admin page for Vibe AI.
+ * Admin page for the WPVibe plugin (listed as "Vibe AI" on WordPress.org).
  *
- * @package VibeAI
+ * @package WPVibe
  */
 
 defined( 'ABSPATH' ) || exit;
@@ -63,6 +63,15 @@ class WPVibe_Admin {
 			$this->get_menu_icon(),
 			59
 		);
+
+		add_submenu_page(
+			'vibe-ai',
+			__( 'Approval Log', 'vibe-ai' ),
+			__( 'Approval Log', 'vibe-ai' ),
+			'manage_options',
+			'vibe-ai-activity',
+			array( $this, 'render_activity_page' )
+		);
 	}
 
 	/**
@@ -79,16 +88,45 @@ class WPVibe_Admin {
 	 * Enqueue admin CSS/JS only on our page.
 	 */
 	public function enqueue_assets( $hook ) {
-		if ( 'toplevel_page_vibe-ai' !== $hook ) {
+		$ours = array( 'toplevel_page_vibe-ai', 'vibe-ai_page_vibe-ai-activity' );
+		if ( ! in_array( $hook, $ours, true ) ) {
 			return;
 		}
+
+		$css_path = WPVIBE_PLUGIN_DIR . 'assets/css/admin.css';
+		$js_path  = WPVIBE_PLUGIN_DIR . 'assets/js/admin.js';
+		$css_ver  = file_exists( $css_path ) ? (string) filemtime( $css_path ) : WPVIBE_VERSION;
+		$js_ver   = file_exists( $js_path ) ? (string) filemtime( $js_path ) : WPVIBE_VERSION;
 
 		wp_enqueue_style(
 			'vibe-ai-admin',
 			WPVIBE_PLUGIN_URL . 'assets/css/admin.css',
 			array(),
-			WPVIBE_VERSION
+			$css_ver
 		);
+
+		wp_enqueue_script(
+			'vibe-ai-admin',
+			WPVIBE_PLUGIN_URL . 'assets/js/admin.js',
+			array(),
+			$js_ver,
+			true
+		);
+	}
+
+	/**
+	 * Append our standard UTM params to a wpvibe.ai / mcp.wpvibe.ai URL.
+	 * Pattern matches readme.txt's wprepo convention; here source is the
+	 * in-product admin page so we can split analytics by surface.
+	 */
+	private function utm( $url, $content, $medium = 'link' ) {
+		$sep = ( false === strpos( $url, '?' ) ) ? '?' : '&';
+		return $url . $sep . http_build_query( array(
+			'utm_source'   => 'wpadmin',
+			'utm_medium'   => $medium,
+			'utm_campaign' => 'plugin_admin',
+			'utm_content'  => $content,
+		) );
 	}
 
 	/**
@@ -104,8 +142,15 @@ class WPVibe_Admin {
 	 * Render the admin page.
 	 */
 	public function render_page() {
-		$connected = $this->is_connected();
-		$site_url  = site_url();
+		$connected     = $this->is_connected();
+		$site_url      = site_url();
+		$mcp_url       = 'https://mcp.wpvibe.ai/mcp';
+		$connect_cta   = $this->utm( 'https://mcp.wpvibe.ai/?connect=' . rawurlencode( $site_url ), 'cta_connect', 'cta' );
+		$app_cta       = $this->utm( 'https://wpvibe.ai/app/', 'cta_open_app', 'cta' );
+		$footer_home   = $this->utm( 'https://wpvibe.ai/', 'footer_home' );
+		$footer_docs   = $this->utm( 'https://wpvibe.ai/docs/', 'footer_docs' );
+		$footer_supp   = $this->utm( 'https://wpvibe.ai/support/', 'footer_support' );
+		$ai_prompt     = sprintf( __( 'Connect my site at %s', 'vibe-ai' ), $site_url );
 		?>
 		<div class="wpvibe-admin-wrap">
 			<div class="wpvibe-admin-page">
@@ -162,12 +207,12 @@ class WPVibe_Admin {
 				<!-- CTA -->
 				<div class="wpvibe-cta">
 					<?php if ( $connected ) : ?>
-						<a href="https://wpvibe.ai/app/" class="wpvibe-btn wpvibe-btn--primary" target="_blank" rel="noopener">
+						<a href="<?php echo esc_url( $app_cta ); ?>" class="wpvibe-btn wpvibe-btn--primary" target="_blank" rel="noopener">
 							<?php esc_html_e( 'Open WPVibe', 'vibe-ai' ); ?>
 						</a>
 					<?php else : ?>
-						<a href="https://mcp.wpvibe.ai/?connect=<?php echo esc_attr( rawurlencode( $site_url ) ); ?>" class="wpvibe-btn wpvibe-btn--primary" target="_blank" rel="noopener">
-							<?php esc_html_e( 'Connect to WPVibe', 'vibe-ai' ); ?>
+						<a href="<?php echo esc_url( $connect_cta ); ?>" class="wpvibe-btn wpvibe-btn--primary" target="_blank" rel="noopener">
+							<?php esc_html_e( 'Get Setup Instructions', 'vibe-ai' ); ?>
 						</a>
 					<?php endif; ?>
 				</div>
@@ -177,42 +222,212 @@ class WPVibe_Admin {
 					<div class="wpvibe-step wpvibe-step--done">
 						<div class="wpvibe-step-num">&#10003;</div>
 						<div class="wpvibe-step-content">
-							<strong><?php esc_html_e( 'Install Vibe AI Plugin', 'vibe-ai' ); ?></strong>
+							<strong><?php esc_html_e( 'Install the WPVibe plugin', 'vibe-ai' ); ?></strong>
 							<span><?php esc_html_e( 'You\'re here, plugin is active.', 'vibe-ai' ); ?></span>
 						</div>
 					</div>
 					<div class="wpvibe-step">
 						<div class="wpvibe-step-num">2</div>
 						<div class="wpvibe-step-content">
-							<strong><?php esc_html_e( 'Connect the MCP to Your AI', 'vibe-ai' ); ?></strong>
-							<span><?php esc_html_e( 'Click the button above to get the MCP server URL and setup instructions for Claude, ChatGPT, and Cursor.', 'vibe-ai' ); ?></span>
+							<strong><?php esc_html_e( 'Add the MCP server URL to your AI client', 'vibe-ai' ); ?></strong>
+							<span><?php esc_html_e( 'Paste this URL into Claude, ChatGPT, Cursor, or any MCP-compatible AI client:', 'vibe-ai' ); ?></span>
+							<div class="wpvibe-copy-row">
+								<code class="wpvibe-copy-text"><?php echo esc_html( $mcp_url ); ?></code>
+								<button type="button" class="wpvibe-copy-btn" data-wpvibe-copy="<?php echo esc_attr( $mcp_url ); ?>">
+									<?php esc_html_e( 'Copy', 'vibe-ai' ); ?>
+								</button>
+							</div>
+							<a href="<?php echo esc_url( $connect_cta ); ?>" target="_blank" rel="noopener" class="wpvibe-inline-link">
+								<?php esc_html_e( 'See per-client setup instructions &rarr;', 'vibe-ai' ); ?>
+							</a>
 						</div>
 					</div>
 					<div class="wpvibe-step <?php echo $connected ? 'wpvibe-step--done' : ''; ?>">
 						<div class="wpvibe-step-num"><?php echo $connected ? '&#10003;' : '3'; ?></div>
 						<div class="wpvibe-step-content">
-							<strong><?php esc_html_e( 'Connect This Site via Your AI', 'vibe-ai' ); ?></strong>
-							<span>
-								<?php if ( $connected ) : ?>
-									<?php esc_html_e( 'Site is connected and ready.', 'vibe-ai' ); ?>
-								<?php else : ?>
-									<?php esc_html_e( 'In your AI chat, ask it to connect this WordPress site to WPVibe.', 'vibe-ai' ); ?>
-								<?php endif; ?>
-							</span>
+							<strong><?php esc_html_e( 'Tell your AI to connect this site', 'vibe-ai' ); ?></strong>
+							<?php if ( $connected ) : ?>
+								<span><?php esc_html_e( 'Site is connected and ready.', 'vibe-ai' ); ?></span>
+							<?php else : ?>
+								<span><?php esc_html_e( 'In your AI chat, paste this prompt:', 'vibe-ai' ); ?></span>
+								<div class="wpvibe-copy-row">
+									<code class="wpvibe-copy-text"><?php echo esc_html( $ai_prompt ); ?></code>
+									<button type="button" class="wpvibe-copy-btn" data-wpvibe-copy="<?php echo esc_attr( $ai_prompt ); ?>">
+										<?php esc_html_e( 'Copy', 'vibe-ai' ); ?>
+									</button>
+								</div>
+								<span class="wpvibe-step-hint"><?php esc_html_e( 'Your AI will return a one-click authorization link. Approve it and you\'re connected.', 'vibe-ai' ); ?></span>
+							<?php endif; ?>
 						</div>
 					</div>
 				</div>
 
 				<!-- Footer links -->
 				<div class="wpvibe-footer">
-					<a href="https://wpvibe.ai" target="_blank" rel="noopener"><?php esc_html_e( 'wpvibe.ai', 'vibe-ai' ); ?></a>
+					<a href="<?php echo esc_url( $footer_home ); ?>" target="_blank" rel="noopener"><?php esc_html_e( 'wpvibe.ai', 'vibe-ai' ); ?></a>
 					<span class="wpvibe-footer-sep">&middot;</span>
-					<a href="https://wpvibe.ai/docs/" target="_blank" rel="noopener"><?php esc_html_e( 'Documentation', 'vibe-ai' ); ?></a>
+					<a href="<?php echo esc_url( $footer_docs ); ?>" target="_blank" rel="noopener"><?php esc_html_e( 'Documentation', 'vibe-ai' ); ?></a>
 					<span class="wpvibe-footer-sep">&middot;</span>
-					<a href="https://wpvibe.ai/support/" target="_blank" rel="noopener"><?php esc_html_e( 'Support', 'vibe-ai' ); ?></a>
+					<a href="<?php echo esc_url( $footer_supp ); ?>" target="_blank" rel="noopener"><?php esc_html_e( 'Support', 'vibe-ai' ); ?></a>
 				</div>
 
 			</div>
+		</div>
+		<?php
+	}
+
+	/**
+	 * Render the Approval Log page.
+	 *
+	 * Lists every destructive operation WPVibe has actually executed on this
+	 * site (post-approval). Append-only by design — there's no delete/edit UI.
+	 * Drill-down shows the dry-run preview the user saw before approving, plus
+	 * the post-execution result summary.
+	 */
+	public function render_activity_page() {
+		// Defense-in-depth: WP core already enforces the menu cap before serving
+		// this page, but a direct check inside the callback prevents future
+		// refactors / hooks from accidentally exposing the data.
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'You do not have permission to view this page.', 'vibe-ai' ), 403 );
+		}
+
+		$entry_id = isset( $_GET['entry'] ) ? (int) $_GET['entry'] : 0; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+
+		if ( $entry_id > 0 ) {
+			$this->render_activity_detail( $entry_id );
+			return;
+		}
+
+		$page    = isset( $_GET['paged'] ) ? max( 1, (int) $_GET['paged'] ) : 1; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		$per     = 50;
+		$offset  = ( $page - 1 ) * $per;
+		$total   = WPVibe_Audit_Log::count();
+		$entries = WPVibe_Audit_Log::get_recent( $per, $offset );
+		$pages   = max( 1, (int) ceil( $total / $per ) );
+		$base    = admin_url( 'admin.php?page=vibe-ai-activity' );
+		?>
+		<div class="wrap">
+			<h1><?php esc_html_e( 'Approval Log', 'vibe-ai' ); ?></h1>
+			<p class="description">
+				<?php esc_html_e( 'Every destructive operation WPVibe has executed on this site after your explicit approval. Append-only — entries cannot be modified or deleted from the dashboard.', 'vibe-ai' ); ?>
+			</p>
+
+			<?php if ( empty( $entries ) ) : ?>
+				<div class="notice notice-info" style="margin-top:1em;">
+					<p><?php esc_html_e( 'No destructive operations have been executed yet.', 'vibe-ai' ); ?></p>
+				</div>
+			<?php else : ?>
+				<table class="wp-list-table widefat fixed striped" style="margin-top:1em;">
+					<thead>
+						<tr>
+							<th style="width:160px;"><?php esc_html_e( 'When', 'vibe-ai' ); ?></th>
+							<th style="width:140px;"><?php esc_html_e( 'User', 'vibe-ai' ); ?></th>
+							<th style="width:200px;"><?php esc_html_e( 'Operation', 'vibe-ai' ); ?></th>
+							<th><?php esc_html_e( 'Command', 'vibe-ai' ); ?></th>
+							<th><?php esc_html_e( 'Result', 'vibe-ai' ); ?></th>
+							<th style="width:60px;"></th>
+						</tr>
+					</thead>
+					<tbody>
+						<?php foreach ( $entries as $row ) :
+							$user_obj   = $row->user_id ? get_user_by( 'id', (int) $row->user_id ) : null;
+							$detail_url = add_query_arg( 'entry', (int) $row->id, $base );
+							?>
+							<tr>
+								<td><?php echo esc_html( mysql2date( 'Y-m-d H:i', $row->created_at ) ); ?></td>
+								<td><?php echo $user_obj ? esc_html( $user_obj->user_login ) : esc_html__( '(unknown)', 'vibe-ai' ); ?></td>
+								<td><code><?php echo esc_html( $row->operation ); ?></code></td>
+								<td><code><?php echo esc_html( $row->command ); ?></code></td>
+								<td><?php echo esc_html( $row->result_summary ?: '' ); ?></td>
+								<td>
+									<a href="<?php echo esc_url( $detail_url ); ?>" class="button button-small">
+										<?php esc_html_e( 'View', 'vibe-ai' ); ?>
+									</a>
+								</td>
+							</tr>
+						<?php endforeach; ?>
+					</tbody>
+				</table>
+
+				<?php if ( $pages > 1 ) : ?>
+					<div class="tablenav" style="margin-top:1em;">
+						<div class="tablenav-pages">
+							<?php
+							echo paginate_links( array(
+								'base'    => add_query_arg( 'paged', '%#%', $base ),
+								'format'  => '',
+								'current' => $page,
+								'total'   => $pages,
+							) ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+							?>
+						</div>
+					</div>
+				<?php endif; ?>
+			<?php endif; ?>
+		</div>
+		<?php
+	}
+
+	private function render_activity_detail( $id ) {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'You do not have permission to view this page.', 'vibe-ai' ), 403 );
+		}
+
+		$entry = WPVibe_Audit_Log::get_by_id( $id );
+		if ( ! $entry ) {
+			?>
+			<div class="wrap">
+				<h1><?php esc_html_e( 'Approval Log', 'vibe-ai' ); ?></h1>
+				<div class="notice notice-error"><p><?php esc_html_e( 'Entry not found.', 'vibe-ai' ); ?></p></div>
+				<p><a href="<?php echo esc_url( admin_url( 'admin.php?page=vibe-ai-activity' ) ); ?>">&larr; <?php esc_html_e( 'Back to Approval Log', 'vibe-ai' ); ?></a></p>
+			</div>
+			<?php
+			return;
+		}
+
+		$user_obj = $entry->user_id ? get_user_by( 'id', (int) $entry->user_id ) : null;
+		$params   = $entry->params_json ? json_decode( $entry->params_json, true ) : null;
+		$dry_run  = $entry->dry_run_json ? json_decode( $entry->dry_run_json, true ) : null;
+		?>
+		<div class="wrap">
+			<h1><?php esc_html_e( 'Approval Log Entry', 'vibe-ai' ); ?></h1>
+			<p><a href="<?php echo esc_url( admin_url( 'admin.php?page=vibe-ai-activity' ) ); ?>">&larr; <?php esc_html_e( 'Back to Approval Log', 'vibe-ai' ); ?></a></p>
+
+			<table class="form-table">
+				<tr>
+					<th><?php esc_html_e( 'When', 'vibe-ai' ); ?></th>
+					<td><?php echo esc_html( $entry->created_at ); ?> UTC</td>
+				</tr>
+				<tr>
+					<th><?php esc_html_e( 'User', 'vibe-ai' ); ?></th>
+					<td><?php echo $user_obj ? esc_html( $user_obj->user_login . ' (' . $user_obj->user_email . ')' ) : esc_html__( '(unknown)', 'vibe-ai' ); ?></td>
+				</tr>
+				<tr>
+					<th><?php esc_html_e( 'Operation', 'vibe-ai' ); ?></th>
+					<td><code><?php echo esc_html( $entry->operation ); ?></code></td>
+				</tr>
+				<tr>
+					<th><?php esc_html_e( 'Command', 'vibe-ai' ); ?></th>
+					<td><code><?php echo esc_html( $entry->command ); ?></code></td>
+				</tr>
+				<tr>
+					<th><?php esc_html_e( 'Result', 'vibe-ai' ); ?></th>
+					<td><?php echo esc_html( $entry->result_summary ?: '' ); ?></td>
+				</tr>
+				<?php if ( $dry_run ) : ?>
+					<tr>
+						<th><?php esc_html_e( 'Dry-run preview (what the user saw)', 'vibe-ai' ); ?></th>
+						<td><pre style="background:#f6f7f7;padding:1em;overflow:auto;"><?php echo esc_html( wp_json_encode( $dry_run, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) ); ?></pre></td>
+					</tr>
+				<?php endif; ?>
+				<?php if ( $params ) : ?>
+					<tr>
+						<th><?php esc_html_e( 'Params', 'vibe-ai' ); ?></th>
+						<td><pre style="background:#f6f7f7;padding:1em;overflow:auto;"><?php echo esc_html( wp_json_encode( $params, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) ); ?></pre></td>
+					</tr>
+				<?php endif; ?>
+			</table>
 		</div>
 		<?php
 	}

@@ -2,6 +2,50 @@
 
 All notable changes to the WPVibe WordPress plugin *(listed on WordPress.org as "Vibe AI")*. The canonical source for WordPress.org's update API is `readme.txt`; this file mirrors the same information in markdown for GitHub readers.
 
+## [1.5.0] - 2026-06-25
+
+### Added
+- Surgical content edits: targeted find-and-replace on a post's content, excerpt, or title, on post meta, and on site options without rewriting the whole value. Two endpoints (content search and content edit) locate the exact text, then replace one match or all. Serialized values are refused so they cannot be corrupted.
+- Bulk cleanup commands: post update, post delete, user delete, and plugin uninstall now accept several targets in one call.
+
+### Changed
+- Approval previews enumerate every affected item when an irreversible action touches more than one target (deleting posts, deleting users, uninstalling plugins). Reversible actions (trashing posts, updating posts) still run without interruption.
+- Clearer database change previews: update queries now show a sample of the rows that will change (previously only deletes did), and long values are trimmed.
+- The approval gate for direct SQL now also covers REPLACE, CREATE, RENAME, and GRANT/REVOKE statements.
+
+### Fixed
+- Frontend edit affordances render only for registered WPVibe fields/settings, preventing stray edit markers on unrelated template attributes.
+- Classic starter theme front-page hero fields resolve against the configured static front page, so hover-to-edit links point to the correct page fields.
+- Classic starter theme declares responsive-embeds support so embedded media scales on mobile.
+
+## [1.4.0] - 2026-06-01
+
+### Added
+- Field API for theme authors: register editable custom fields and global settings from a theme's functions.php via wpvibe_field_register(), wpvibe_setting_register(), and wpvibe_field_group_register(), with admin meta box rendering, save handlers, and sanitization across 12 field types. Templates read native get_option() / get_post_meta() so they keep rendering when the plugin is deactivated.
+- "WPVibe AI" meta box on every post edit screen for themes that declare WPVibe: yes in style.css, surfacing registered fields plus a Connect Claude / ChatGPT CTA when no MCP client is paired.
+- Frontend hover-to-edit affordance: registered fields render with a dashed outline and edit pin during draft preview, click to jump to the wp-admin edit screen.
+- Hybrid classic starter theme: Tailwind v4 (browser CDN at draft time, compiled dist/styles.css at publish) plus Gutenberg color and typography integration from the same theme.css @theme tokens, bundling Alpine.js v3.15.12. No theme.json.
+- Cookie-based draft preview that survives wp-admin navigation, so the field API works in wp-admin without a preview-token query string on every URL.
+- Elementor integration with four REST endpoints: list widgets, schema discovery, save page, and save Pro theme-builder templates. Routes return 404 with elementor_inactive when Elementor is not installed.
+- Per-request REST timing: every WPVibe REST response carries an X-WPVibe-PHP-Time-Ms header.
+- Human-in-the-loop approval for destructive operations: AI-initiated mutating SQL, user deletes, plugin uninstalls, and --force trash bypasses pause and surface an approval URL the user confirms in their browser.
+- WP-CLI-style cleanup commands: option add, option delete, transient delete (--all / --expired), and transient list. Non-blocked option and transient deletes auto-execute; protected core options stay hard-blocked.
+- Approval Log admin tab: an append-only audit of every destructive operation executed after approval, including the dry-run preview and the result.
+- New REST endpoints: /wpvibe/v1/cli/run-approved, /wpvibe/v1/audit-log, /wpvibe/v1/registered-meta.
+
+### Changed
+- Destructive operations are classified by command and SQL keyword rather than a default-deny allowlist. The narrow list (mutating SQL, user delete, plugin uninstall, post delete --force) returns approval_required with a row-count preview when it hits the database; everything else auto-executes behind the existing per-command capability checks.
+
+### Fixed
+- Custom post types auto-receive 'custom-fields' support when fields are registered, fixing silently dropped meta on REST writes for CPTs that lacked it.
+- First write to a new draft-theme subdirectory (such as dist/styles.css) no longer fails the path-safety check, which now walks up to the nearest existing ancestor for realpath validation.
+- publish_draft_theme tolerates a missing live theme directory and creates it from the draft instead of fatal-ing.
+
+## [1.3.0] - 2026-05-20
+
+### Added
+- New unauthenticated /wpvibe/v1/ping endpoint returns plugin and WordPress version so the MCP server can detect plugin presence before generating an OAuth magic link. Cuts the "magic link works but plugin is missing" onboarding failure.
+
 ## [1.2.3] — 2026-05-15
 
 ### Fixed

@@ -2,9 +2,9 @@
 Contributors: seedprod, smub
 Tags: mcp, mcp-server, claude, chatgpt, ai-assistant
 Requires at least: 6.0
-Tested up to: 6.9
+Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.2.3
+Stable tag: 1.5.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -12,7 +12,7 @@ MCP server for WordPress. Connect Claude, ChatGPT, Cursor & other AI assistants 
 
 == Description ==
 
-Your WordPress site just became MCP-ready. [Vibe AI](https://wpvibe.ai/?utm_source=wprepo&utm_medium=link&utm_campaign=liteplugin) is the Model Context Protocol server for WordPress, connecting your self-hosted site to any AI assistant that speaks MCP: Claude, ChatGPT, Cursor, Windsurf, OpenCode, and more. No copy-pasting between tabs. No switching between your AI chat and wp-admin. Tell your AI what you want, and it happens on your live WordPress site.
+Your WordPress site just became MCP-ready. [Vibe AI](https://wpvibe.ai/?utm_source=wprepo&utm_medium=link&utm_campaign=liteplugin) (also known as WPVibe) is the Model Context Protocol server for WordPress, connecting your self-hosted site to any AI assistant that speaks MCP: Claude, ChatGPT, Cursor, Windsurf, OpenCode, and more. No copy-pasting between tabs. No switching between your AI chat and wp-admin. Tell your AI what you want, and it happens on your live WordPress site.
 
 https://www.youtube.com/watch?v=AsasOvrSWgI
 
@@ -111,6 +111,12 @@ No data is collected, tracked, or shared with third parties beyond what is neces
 
 * [Privacy Policy](https://wpvibe.ai/privacy/)
 
+= Third-Party Libraries =
+
+Vibe AI bundles one third-party JavaScript library for use inside scaffolded classic starter themes:
+
+* **Alpine.js** v3.15.12, MIT License — [https://alpinejs.dev/](https://alpinejs.dev/) — included at `starter-themes/classic/assets/js/alpine.min.js`. Used as the interactivity layer (modals, dropdowns, tabs, accordions, sliders) for AI-generated classic themes. Not loaded outside scaffolded themes.
+
 = Built by SeedProd =
 
 Vibe AI is built by the team behind [SeedProd](https://www.seedprod.com/?utm_source=wprepo&utm_medium=link&utm_campaign=liteplugin), the most popular WordPress landing page and theme builder plugin, trusted by over 1 million WordPress websites. We have been building WordPress tools since 2012 and know what WordPress site owners need from AI-powered management tools.
@@ -125,12 +131,19 @@ Unlike hosted AI WordPress services (AI Engine, GetGenie, Bertha, AI Power, WPCo
 
 = Branding Guidelines =
 
-Vibe AI is a product of SeedProd LLC. When writing about our WordPress MCP server plugin, please use the correct name:
+This plugin is a product of SeedProd LLC. It has two names you may encounter:
 
-* Vibe AI (correct)
+* **WPVibe** is the product brand used across our marketing site, documentation, and in-product UI ([wpvibe.ai](https://wpvibe.ai/)).
+* **Vibe AI** is the name used on the WordPress.org plugin directory and inside the WordPress admin. WordPress.org's plugin slug policy prevented us from using "WPVibe" as the listing name, so the plugin ships as "Vibe AI" on WP.org while the broader product is WPVibe.
+
+Both names refer to the same product. When writing about the WordPress plugin specifically, please use the correct spelling of either name:
+
+* WPVibe (correct — product brand)
+* Vibe AI (correct — WordPress.org listing name)
+* WPvibe (incorrect)
+* Wp Vibe (incorrect)
 * VibeAI (incorrect)
 * vibe ai (incorrect)
-* VIbe AI (incorrect)
 * Vibe Ai (incorrect)
 
 = WordPress MCP Server Resources =
@@ -177,6 +190,36 @@ Vibe AI has multiple safety layers: draft theme isolation for file editing, file
 No. Vibe AI lets you manage your WordPress site entirely through conversation with your AI assistant. No coding required for content management. Theme editing is also conversational, your AI writes the code for your WordPress theme.
 
 == Changelog ==
+
+= 1.5.0 =
+* Feature: Surgical content edits. WPVibe can now make targeted find-and-replace changes to a post's content, excerpt, or title, to post meta, and to site options without rewriting the whole value. Two new endpoints (content search and content edit) locate the exact text first and then replace a single match (or all matches), so large posts no longer have to round-trip through the AI in full. Serialized values are refused so they cannot be corrupted.
+* Feature: Bulk cleanup commands. The post update, post delete, user delete, and plugin uninstall commands now accept several targets in one call, so the AI can tidy up a batch of posts, users, or plugins in a single step.
+* Feature: Approval previews now list every affected item. When an irreversible action touches more than one target (permanently deleting posts, deleting users, uninstalling plugins), the confirmation screen enumerates each one so you can review the full list before approving. Reversible actions (moving posts to trash, updating posts) continue to run without interruption.
+* Hardening: Clearer database change previews. Update queries now show a sample of the rows that will change (previously only deletes did), and long values are trimmed in the preview so a wide table stays readable.
+* Hardening: The approval gate for direct SQL now also covers REPLACE, CREATE, RENAME, and GRANT/REVOKE statements, so those route through the same human confirmation as other database writes.
+* Fix: Frontend edit affordances now render only for registered WPVibe fields/settings, preventing accidental edit markers on unrelated template attributes.
+* Fix: Classic starter theme front-page hero fields now resolve against the configured static front page, so the hover-to-edit links point to the correct page fields.
+* Maintenance: Classic starter theme declares responsive-embeds support so embedded media scales correctly on mobile.
+
+= 1.4.0 =
+* Feature: Field API for theme authors — register editable custom fields and global settings from a theme's `functions.php` via `wpvibe_field_register()`, `wpvibe_setting_register()`, and `wpvibe_field_group_register()`. The plugin handles admin meta box rendering, save handlers, and sanitization across 12 field types (text, textarea, number, email, url, date, checkbox, color, image, gallery, wysiwyg, post_select, repeater). Templates read native `get_option()` / `get_post_meta()` so they keep rendering when the plugin is deactivated.
+* Feature: "WPVibe AI" meta box on every post edit screen for themes that declare `WPVibe: yes` in their `style.css` header — surfaces registered fields for the current post type plus a "Connect Claude / ChatGPT" CTA when no MCP client is paired to the site.
+* Feature: Frontend hover-to-edit affordance — registered fields render with a dashed outline + edit pin during draft preview, click to jump to the wp-admin edit screen for that field.
+* Feature: Hybrid classic starter theme — Tailwind v4 (browser CDN at draft time, compiled `dist/styles.css` at publish) + Gutenberg color/typography integration driven by the same `theme.css` `@theme` tokens. Bundles Alpine.js v3.15.12 for interactivity (modals, dropdowns, tabs, accordions, sliders). No `theme.json` — single source of truth.
+* Feature: Cookie-based draft preview that survives wp-admin navigation. Admins with `edit_themes` see the draft theme across the whole admin so the field API works in wp-admin without needing the preview-token query string on every URL.
+* Feature: Elementor integration with four new REST endpoints — `GET /wpvibe/v1/elementor/widgets` (list installed widgets + structural elements), `GET /wpvibe/v1/elementor/schema?slug=` (control schema discovery for a widget or element), `POST /wpvibe/v1/elementor/save-page` (atomic create or update of an Elementor page), `POST /wpvibe/v1/elementor/save-template` (Elementor Pro theme builder templates with display conditions). All routes return 404 with `elementor_inactive` when Elementor isn't installed.
+* Feature: Per-request REST timing — every WPVibe REST response now carries an `X-WPVibe-PHP-Time-Ms` header so MCP clients can break down "why is this slow?" by Worker overhead, network round-trip, and time spent in WordPress PHP.
+* Feature: Human-in-the-loop approval for destructive operations. AI-initiated db query mutations (DELETE/UPDATE/DROP/etc.), user deletes, plugin uninstalls, and `--force` trash bypasses now pause and surface an approval URL the user must open and confirm in their browser before WPVibe executes them.
+* Feature: New WP-CLI-style commands so the AI can clean up after itself — `option add`, `option delete`, `transient delete` (with `--all` / `--expired` modes), and `transient list`. Non-blocked option/transient deletes auto-execute; protected core options (siteurl, active_plugins, auth_*, etc.) remain hard-blocked.
+* Feature: Approval Log admin tab (WP admin → Vibe AI → Approval Log) — append-only audit of every destructive operation WPVibe has executed on this site, including the dry-run preview the user saw before approving and the post-execution result summary.
+* Feature: New `/wpvibe/v1/cli/run-approved`, `/wpvibe/v1/audit-log`, and `/wpvibe/v1/registered-meta` REST endpoints.
+* Hardening: Destructive operations classified by command/SQL keyword rather than a default-deny allowlist. The narrow list (mutating SQL, user delete, plugin uninstall, `post delete --force`) returns `approval_required` with a row-count preview when the operation hits the database; all other commands continue to auto-execute behind the existing per-command capability checks.
+* Fix: Custom post types now auto-receive the `'custom-fields'` post type support when fields are registered via `wpvibe_field_register()` — was silently dropping `meta` on REST writes for CPTs that lacked it.
+* Fix: First write to a new subdirectory of the draft theme (e.g. `dist/styles.css`) no longer fails with "Resolved path is outside the draft theme" — path-safety check walks up to the nearest existing ancestor for the realpath validation.
+* Fix: `publish_draft_theme` now tolerates a missing live theme directory (interrupted prior publish, manual delete) and creates the live from the draft instead of fatal-ing inside `RecursiveDirectoryIterator`.
+
+= 1.3.0 =
+* Feature: New unauthenticated `/wpvibe/v1/ping` endpoint returns plugin and WordPress version so the Vibe AI MCP server can detect plugin presence before generating an OAuth magic link. Cuts the "magic link works but plugin is missing" failure mode that strands users mid-onboarding.
 
 = 1.2.3 =
 * Fix: Draft theme name no longer accumulates "(WPVibe Draft)" on every publish cycle — the suffix is now stripped on both create and publish, and the theme header cache is invalidated after restore. Thanks to J. Hoon Yu for the report.

@@ -30,6 +30,7 @@
 }
 #wpvibe-preview-banner .wpvibe-info {
 	color: #94a3b8;
+	flex: 1;
 }
 #wpvibe-preview-banner .wpvibe-btn {
 	display: inline-block;
@@ -50,6 +51,16 @@
 #wpvibe-preview-banner .wpvibe-btn-live:hover {
 	background: #475569;
 	color: #f8fafc;
+}
+#wpvibe-preview-banner .wpvibe-btn-stop {
+	background: #f8fafc;
+	color: #1e293b;
+	border: 1px solid #f8fafc;
+}
+#wpvibe-preview-banner .wpvibe-btn-stop:hover {
+	background: #e2e8f0;
+	border-color: #e2e8f0;
+	color: #0f172a;
 }
 @keyframes wpvibe-pulse {
 	0%, 100% { opacity: 1; }

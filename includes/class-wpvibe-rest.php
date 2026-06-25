@@ -1,6 +1,6 @@
 <?php
 /**
- * REST API endpoint registration for WPVibe Connect.
+ * REST API endpoint registration for WPVibe.
  */
 
 defined( 'ABSPATH' ) || exit;
@@ -108,6 +108,22 @@ class WPVibe_REST {
 			'callback'            => array( $this, 'get_site_info' ),
 			'permission_callback' => array( $this, 'can_manage_themes' ),
 			'args'                => array(),
+		) );
+
+		// Diagnostic — list REST-exposed meta registered for a post type.
+		// Useful when WP silently drops meta from a /wp/v2/<cpt>/<id> write
+		// because the key isn't registered with show_in_rest=true.
+		register_rest_route( $namespace, '/registered-meta', array(
+			'methods'             => 'GET',
+			'callback'            => array( $this, 'get_registered_meta' ),
+			'permission_callback' => array( $this, 'can_manage_themes' ),
+			'args'                => array(
+				'post_type' => array(
+					'type'              => 'string',
+					'required'          => true,
+					'sanitize_callback' => 'sanitize_key',
+				),
+			),
 		) );
 
 		// --- File read operations (edit_themes capability) ---
@@ -246,6 +262,51 @@ class WPVibe_REST {
 			),
 		) );
 
+		// --- Database content operations (surgical str_replace on posts/meta/options) ---
+
+		register_rest_route( $namespace, '/content/edit', array(
+			'methods'             => 'POST',
+			'callback'            => array( $this, 'edit_content' ),
+			'permission_callback' => array( $this, 'can_edit_content' ),
+			'args'                => array(
+				'target_type' => array(
+					'type'              => 'string',
+					'required'          => true,
+					'enum'              => array( 'post', 'meta', 'option' ),
+					'sanitize_callback' => 'sanitize_key',
+				),
+				'post_id'     => array( 'type' => 'integer', 'required' => false ),
+				'field'       => array( 'type' => 'string', 'required' => false, 'sanitize_callback' => 'sanitize_key' ),
+				'meta_key'    => array( 'type' => 'string', 'required' => false, 'sanitize_callback' => 'sanitize_text_field' ),
+				'option_name' => array( 'type' => 'string', 'required' => false, 'sanitize_callback' => 'sanitize_text_field' ),
+				'old_content' => array( 'type' => 'string', 'required' => true, 'sanitize_callback' => array( 'WPVibe_REST', 'sanitize_file_content' ) ),
+				'new_content' => array( 'type' => 'string', 'required' => true, 'sanitize_callback' => array( 'WPVibe_REST', 'sanitize_file_content' ) ),
+				'replace_all' => array( 'type' => 'boolean', 'required' => false, 'default' => false ),
+				'whole_word'  => array( 'type' => 'boolean', 'required' => false, 'default' => false ),
+			),
+		) );
+
+		register_rest_route( $namespace, '/content/search', array(
+			'methods'             => 'POST',
+			'callback'            => array( $this, 'search_content' ),
+			'permission_callback' => array( $this, 'can_edit_content' ),
+			'args'                => array(
+				'target_type'    => array(
+					'type'              => 'string',
+					'required'          => true,
+					'enum'              => array( 'post', 'meta', 'option' ),
+					'sanitize_callback' => 'sanitize_key',
+				),
+				'post_id'        => array( 'type' => 'integer', 'required' => false ),
+				'field'          => array( 'type' => 'string', 'required' => false, 'sanitize_callback' => 'sanitize_key' ),
+				'meta_key'       => array( 'type' => 'string', 'required' => false, 'sanitize_callback' => 'sanitize_text_field' ),
+				'option_name'    => array( 'type' => 'string', 'required' => false, 'sanitize_callback' => 'sanitize_text_field' ),
+				'pattern'        => array( 'type' => 'string', 'required' => true, 'sanitize_callback' => array( 'WPVibe_REST', 'sanitize_file_content' ) ),
+				'case_sensitive' => array( 'type' => 'boolean', 'required' => false ),
+				'max_results'    => array( 'type' => 'integer', 'required' => false ),
+			),
+		) );
+
 		// --- Draft theme lifecycle ---
 
 		register_rest_route( $namespace, '/draft-theme', array(
@@ -281,6 +342,50 @@ class WPVibe_REST {
 		register_rest_route( $namespace, '/cli/run', array(
 			'methods'             => 'POST',
 			'callback'            => array( $this, 'run_cli' ),
+			'permission_callback' => array( $this, 'can_run_cli' ),
+			'args'                => array(
+				'command' => array(
+					'type'              => 'string',
+					'required'          => true,
+					'sanitize_callback' => array( $this, 'sanitize_cli_command' ),
+				),
+				'confirm_write' => array(
+					'type'    => 'boolean',
+					'default' => false,
+				),
+			),
+		) );
+
+		register_rest_route( $namespace, '/audit-log', array(
+			'methods'             => 'GET',
+			'callback'            => array( $this, 'audit_log_list' ),
+			'permission_callback' => array( $this, 'can_manage_options' ),
+			'args'                => array(
+				'limit'  => array( 'type' => 'integer', 'default' => 50 ),
+				'offset' => array( 'type' => 'integer', 'default' => 0 ),
+			),
+		) );
+
+		// Append-only audit log writer. Called by the Worker after browser
+		// approval executes a destructive REST op (CLI path writes via the
+		// PHP audit-log class directly). Trust comes from App Password auth —
+		// the AI's MCP tool surface doesn't expose this path.
+		register_rest_route( $namespace, '/audit-log/record', array(
+			'methods'             => 'POST',
+			'callback'            => array( $this, 'audit_log_record' ),
+			'permission_callback' => array( $this, 'can_manage_options' ),
+			'args'                => array(
+				'operation'      => array( 'type' => 'string', 'required' => true, 'sanitize_callback' => 'sanitize_text_field' ),
+				'command'        => array( 'type' => 'string', 'required' => true ),
+				'params'         => array( 'type' => 'string', 'required' => false ),
+				'dry_run'        => array( 'type' => 'string', 'required' => false ),
+				'result_summary' => array( 'type' => 'string', 'required' => false ),
+			),
+		) );
+
+		register_rest_route( $namespace, '/cli/run-approved', array(
+			'methods'             => 'POST',
+			'callback'            => array( $this, 'run_cli_approved' ),
 			'permission_callback' => array( $this, 'can_run_cli' ),
 			'args'                => array(
 				'command' => array(
@@ -395,6 +500,9 @@ class WPVibe_REST {
 				),
 			),
 		) );
+
+		// Elementor endpoints (list_widgets, get_schema, save_page, save_template)
+		// live in class-wpvibe-elementor.php — registered via its own rest_api_init hook.
 	}
 
 	// ------------------------------------------------------------------
@@ -407,6 +515,14 @@ class WPVibe_REST {
 	 */
 	public function can_manage_themes() {
 		return current_user_can( 'edit_theme_options' );
+	}
+
+	/**
+	 * Cleanup endpoint + audit log read — manage_options capability.
+	 * Same gate as wp-cli option/transient operations.
+	 */
+	public function can_manage_options() {
+		return current_user_can( 'manage_options' );
 	}
 
 	/**
@@ -488,12 +604,113 @@ class WPVibe_REST {
 		return current_user_can( 'manage_options' );
 	}
 
+	/**
+	 * Content edit/search — capability depends on the target. Options carry
+	 * site-wide config (and can hold secrets), so they need manage_options;
+	 * post + meta edits require edit-access to the specific post.
+	 */
+	public function can_edit_content( $request ) {
+		$type = $request->get_param( 'target_type' );
+		if ( 'option' === $type ) {
+			return current_user_can( 'manage_options' );
+		}
+		$post_id = (int) $request->get_param( 'post_id' );
+		if ( $post_id > 0 ) {
+			return current_user_can( 'edit_post', $post_id );
+		}
+		return current_user_can( 'edit_posts' );
+	}
+
 	// ------------------------------------------------------------------
 	// Site Info
 	// ------------------------------------------------------------------
 
+	/**
+	 * Return the REST-registered meta keys for a post type, with each key's
+	 * REST schema and sanitize/auth callback presence. Diagnoses the
+	 * common "POST /wp/v2/<cpt>/<id> with meta silently drops meta" bug
+	 * by surfacing which keys are actually visible to the REST controller.
+	 */
+	public function get_registered_meta( $request ) {
+		$post_type = $request->get_param( 'post_type' );
+
+		if ( ! post_type_exists( $post_type ) ) {
+			return new WP_Error(
+				'unknown_post_type',
+				/* translators: %s: post type slug */
+				sprintf( __( 'Post type \'%s\' is not registered. Confirm register_post_type() ran and rest_api_init has fired.', 'vibe-ai' ), $post_type ),
+				array( 'status' => 404 )
+			);
+		}
+
+		$pt_object       = get_post_type_object( $post_type );
+		$pt_show_in_rest = $pt_object && ! empty( $pt_object->show_in_rest );
+		$supports_cf     = post_type_supports( $post_type, 'custom-fields' );
+
+		$registered = function_exists( 'get_registered_meta_keys' )
+			? get_registered_meta_keys( 'post', $post_type )
+			: array();
+
+		$result = array();
+		foreach ( $registered as $key => $args ) {
+			$result[ $key ] = array(
+				'type'         => isset( $args['type'] ) ? $args['type'] : 'string',
+				'single'       => ! empty( $args['single'] ),
+				'show_in_rest' => ! empty( $args['show_in_rest'] ),
+				'has_default'  => isset( $args['default'] ),
+				'has_sanitize' => ! empty( $args['sanitize_callback'] ),
+				'has_auth'     => ! empty( $args['auth_callback'] ),
+			);
+		}
+
+		// Both flags must be true for REST writes to /wp/v2/<cpt>/<id> with
+		// meta in the body to actually persist. show_in_rest on the CPT
+		// gates REST routing; custom-fields support gates meta exposure.
+		$rest_meta_writable = $pt_show_in_rest && $supports_cf;
+
+		return rest_ensure_response( array(
+			'post_type'                   => $post_type,
+			'post_type_show_in_rest'      => $pt_show_in_rest,
+			'post_type_supports_meta'     => $supports_cf,
+			'rest_meta_writable'          => $rest_meta_writable,
+			'registered_meta_count'       => count( $result ),
+			'registered_meta'             => $result,
+			'gotcha_note'                 => $rest_meta_writable
+				? null
+				: 'REST meta writes will silently drop unregistered keys. To fix: either call wpvibe_field_register() (auto-adds custom-fields support) or add `add_post_type_support( \'' . $post_type . '\', \'custom-fields\' )` in your theme.',
+		) );
+	}
+
+	/**
+	 * Capability flags the MCP keys off to decide whether a route is available
+	 * before steering the AI to it. Prefer adding a flag here over forcing the
+	 * MCP to compare WPVIBE_VERSION strings — flags are forward-compatible.
+	 */
+	public static function feature_flags() {
+		return array( 'content_edit', 'content_search' );
+	}
+
 	public function get_site_info() {
-		$theme = wp_get_theme();
+		$theme     = wp_get_theme();
+		$theme_dir = $theme->get_stylesheet_directory();
+
+		// Standard WordPress template files we surface in the inventory. Allowlist
+		// keeps the response stable regardless of what else is in the theme dir.
+		$known_templates = array(
+			'index.php', 'header.php', 'footer.php', 'functions.php', 'style.css',
+			'front-page.php', 'home.php', 'single.php', 'page.php',
+			'archive.php', '404.php', 'search.php', 'comments.php',
+		);
+		// The "minimal complete WP theme" floor — what every content-bearing site needs.
+		$floor_templates = array( 'single.php', 'page.php', 'archive.php', '404.php', 'search.php' );
+
+		$templates_present = array();
+		foreach ( $known_templates as $tpl ) {
+			if ( file_exists( $theme_dir . '/' . $tpl ) ) {
+				$templates_present[] = $tpl;
+			}
+		}
+		$templates_missing = array_values( array_diff( $floor_templates, $templates_present ) );
 
 		// Check WP-CLI availability.
 		$cli = new WPVibe_CLI();
@@ -503,15 +720,67 @@ class WPVibe_REST {
 			'site_name'    => get_bloginfo( 'name' ),
 			'wp_version'   => get_bloginfo( 'version' ),
 			'php_version'  => phpversion(),
+			'wpvibe_plugin_version' => defined( 'WPVIBE_VERSION' ) ? WPVIBE_VERSION : '',
+			'features'     => self::feature_flags(),
 			'active_theme' => array(
-				'name'       => $theme->get( 'Name' ),
-				'stylesheet' => get_stylesheet(),
+				'name'              => $theme->get( 'Name' ),
+				'stylesheet'        => get_stylesheet(),
+				'version'           => $theme->get( 'Version' ),
+				'wpvibe_authored'   => 'yes' === strtolower( trim( (string) $theme->get( 'WPVibe' ) ) ),
+				'uses_tailwind'     => file_exists( $theme_dir . '/theme.css' ),
+				'templates_present' => $templates_present,
+				'templates_missing' => $templates_missing,
 			),
 			'plugins'        => array_keys( get_plugins() ),
 			'themes'         => array_keys( wp_get_themes() ),
 			'wp_cli_available' => $cli_status['available'],
 			'wp_cli_version'   => $cli_status['version'] ?? null,
 		) );
+	}
+
+	// ------------------------------------------------------------------
+	// Content Operations (delegated to WPVibe_Content_Ops)
+	// ------------------------------------------------------------------
+
+	/** Build the {type, args} pair the content ops expect from request params. */
+	private function content_target( $request ) {
+		$type = $request->get_param( 'target_type' );
+		switch ( $type ) {
+			case 'post':
+				return array( $type, array( 'post_id' => (int) $request->get_param( 'post_id' ), 'field' => $request->get_param( 'field' ) ) );
+			case 'meta':
+				return array( $type, array( 'post_id' => (int) $request->get_param( 'post_id' ), 'key' => $request->get_param( 'meta_key' ) ) );
+			case 'option':
+				return array( $type, array( 'name' => $request->get_param( 'option_name' ) ) );
+			default:
+				return array( $type, array() );
+		}
+	}
+
+	public function edit_content( $request ) {
+		list( $type, $args ) = $this->content_target( $request );
+		$content_ops = new WPVibe_Content_Ops();
+		return $content_ops->edit(
+			$type,
+			$args,
+			$request->get_param( 'old_content' ),
+			$request->get_param( 'new_content' ),
+			(bool) $request->get_param( 'replace_all' ),
+			(bool) $request->get_param( 'whole_word' )
+		);
+	}
+
+	public function search_content( $request ) {
+		list( $type, $args ) = $this->content_target( $request );
+		$max = $request->get_param( 'max_results' );
+		$content_ops = new WPVibe_Content_Ops();
+		return $content_ops->search(
+			$type,
+			$args,
+			$request->get_param( 'pattern' ),
+			(bool) $request->get_param( 'case_sensitive' ),
+			null === $max ? 50 : (int) $max
+		);
 	}
 
 	// ------------------------------------------------------------------
@@ -611,9 +880,57 @@ class WPVibe_REST {
 		return $cli->run( $command, $confirm_write );
 	}
 
+	/**
+	 * Destructive-execute endpoint. Called by the Worker AFTER the user
+	 * approves the operation in their browser. Skips the destructive
+	 * classifier; otherwise identical to run_cli. Trust comes from App
+	 * Password auth — the AI cannot reach this endpoint via the MCP tool
+	 * surface (run_wp_cli's schema does not expose this path, and the
+	 * Worker controls all plugin API calls).
+	 */
+	public function run_cli_approved( $request ) {
+		$command       = $request->get_param( 'command' );
+		$confirm_write = (bool) $request->get_param( 'confirm_write' );
+
+		$cli = new WPVibe_CLI();
+		return $cli->run_approved( $command, $confirm_write );
+	}
+
 	public function cli_status() {
 		$cli = new WPVibe_CLI();
 		return rest_ensure_response( $cli->check_availability() );
+	}
+
+	// ------------------------------------------------------------------
+	// Audit log
+	// ------------------------------------------------------------------
+
+	public function audit_log_list( $request ) {
+		$limit  = (int) $request->get_param( 'limit' );
+		$offset = (int) $request->get_param( 'offset' );
+		return rest_ensure_response( array(
+			'total'   => WPVibe_Audit_Log::count(),
+			'entries' => WPVibe_Audit_Log::get_recent( $limit, $offset ),
+		) );
+	}
+
+	public function audit_log_record( $request ) {
+		$params_json  = (string) ( $request->get_param( 'params' ) ?? '' );
+		$dry_run_json = (string) ( $request->get_param( 'dry_run' ) ?? '' );
+
+		// Params/dry_run arrive as JSON strings from the Worker; decode for
+		// the log_execution shape which expects PHP arrays.
+		$params  = '' !== $params_json ? json_decode( $params_json, true ) : null;
+		$dry_run = '' !== $dry_run_json ? json_decode( $dry_run_json, true ) : null;
+
+		WPVibe_Audit_Log::log_execution( array(
+			'operation'      => (string) $request->get_param( 'operation' ),
+			'command'        => (string) $request->get_param( 'command' ),
+			'params'         => $params,
+			'dry_run'        => $dry_run,
+			'result_summary' => (string) ( $request->get_param( 'result_summary' ) ?? '' ),
+		) );
+		return rest_ensure_response( array( 'recorded' => true ) );
 	}
 
 	// ------------------------------------------------------------------
@@ -717,8 +1034,14 @@ class WPVibe_REST {
 				'image/png'  => '.png',
 				'image/gif'  => '.gif',
 				'image/webp' => '.webp',
-				'image/svg+xml' => '.svg',
 			);
+			// SVG can carry JavaScript. Limit to administrators since they
+			// already have unfiltered_html / theme + plugin editor access.
+			// A lower-privilege user uploading a malicious SVG could XSS any
+			// other user who views it in the media library.
+			if ( 'image/svg+xml' === $mime && current_user_can( 'manage_options' ) ) {
+				$ext['image/svg+xml'] = '.svg';
+			}
 			$filename .= isset( $ext[ $mime ] ) ? $ext[ $mime ] : '.jpg';
 		}
 

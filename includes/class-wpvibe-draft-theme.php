@@ -96,18 +96,78 @@ class WPVibe_Draft_Theme {
 		// Capture the clean original name BEFORE the live dir is overwritten; strips any accumulated draft suffix.
 		$original_name = preg_replace( '/(\s*\(WPVibe Draft\))+$/', '', wp_get_theme( $source_slug )->get( 'Name' ) );
 
-		// Backup the current live theme.
+		// Backup the current live theme. Each step must succeed before the
+		// next; if backup fails we abort BEFORE touching the live theme.
 		if ( is_dir( $backup_dir ) ) {
-			$this->delete_directory( $backup_dir );
+			$cleared = $this->delete_directory( $backup_dir );
+			if ( is_wp_error( $cleared ) ) {
+				return new WP_Error(
+					'cleanup_failed',
+					sprintf(
+						/* translators: 1: directory path, 2: error message */
+						__( 'Could not clear the previous backup directory \'%1$s\': %2$s Aborting publish; live theme untouched.', 'vibe-ai' ),
+						$backup_dir,
+						$cleared->get_error_message()
+					),
+					array( 'status' => 500 )
+				);
+			}
 		}
-		$this->copy_directory( $live_dir, $backup_dir );
-		$this->delete_directory( $live_dir );
+
+		// If the live theme directory is missing (a prior interrupted publish or
+		// a manual delete left no source on disk), there is nothing to back up
+		// and nothing to delete — proceed straight to the copy.
+		if ( is_dir( $live_dir ) ) {
+			$backup_result = $this->copy_directory( $live_dir, $backup_dir );
+			if ( is_wp_error( $backup_result ) ) {
+				return new WP_Error(
+					'backup_failed',
+					sprintf(
+						/* translators: %s: error message */
+						__( 'Could not back up the live theme before publishing: %s The live theme is intact; nothing was modified. Fix the underlying filesystem issue (permissions, disk space) and retry.', 'vibe-ai' ),
+						$backup_result->get_error_message()
+					),
+					array( 'status' => 500 )
+				);
+			}
+
+			$deleted_live = $this->delete_directory( $live_dir );
+			if ( is_wp_error( $deleted_live ) ) {
+				return new WP_Error(
+					'delete_live_failed',
+					sprintf(
+						/* translators: 1: live dir, 2: error message, 3: backup dir */
+						__( 'Could not delete the live theme directory \'%1$s\' before replacing it: %2$s A complete backup is at \'%3$s\'. To recover, manually remove \'%1$s\' and rename the backup.', 'vibe-ai' ),
+						$live_dir,
+						$deleted_live->get_error_message(),
+						$backup_dir
+					),
+					array( 'status' => 500 )
+				);
+			}
+		}
 
 		// Move draft to live.
 		$result = $this->copy_directory( $draft_dir, $live_dir );
 		if ( is_wp_error( $result ) ) {
-			// Rollback on failure.
-			$this->copy_directory( $backup_dir, $live_dir );
+			// Rollback. If rollback itself fails the site is in an unrecoverable
+			// state by automation; we have to tell the user precisely how to fix
+			// it by hand.
+			$rollback_result = $this->copy_directory( $backup_dir, $live_dir );
+			if ( is_wp_error( $rollback_result ) ) {
+				return new WP_Error(
+					'publish_and_rollback_failed',
+					sprintf(
+						/* translators: 1: publish error, 2: rollback error, 3: backup dir, 4: live dir */
+						__( 'Publish failed (%1$s) AND rollback failed (%2$s). The live theme directory may be empty or incomplete; a full copy of the previous theme is at \'%3$s\'. To recover, manually move \'%3$s\' to \'%4$s\'.', 'vibe-ai' ),
+						$result->get_error_message(),
+						$rollback_result->get_error_message(),
+						$backup_dir,
+						$live_dir
+					),
+					array( 'status' => 500 )
+				);
+			}
 			$this->delete_directory( $backup_dir );
 			return $result;
 		}
@@ -118,8 +178,20 @@ class WPVibe_Draft_Theme {
 		if ( $fs && $fs->exists( $style_path ) ) {
 			$style = $fs->get_contents( $style_path );
 			if ( false !== $style ) {
-				$style = preg_replace( '/^Theme Name:\s*.+$/m', 'Theme Name: ' . $original_name, $style );
-				$fs->put_contents( $style_path, $style, FS_CHMOD_FILE );
+				$style   = preg_replace( '/^Theme Name:\s*.+$/m', 'Theme Name: ' . $original_name, $style );
+				$written = $fs->put_contents( $style_path, $style, FS_CHMOD_FILE );
+				if ( ! $written ) {
+					return new WP_Error(
+						'name_restore_failed',
+						sprintf(
+							/* translators: 1: source slug, 2: original theme name */
+							__( 'Published draft to \'%1$s\', but could not write style.css to restore the original theme name. The live theme is functional but will display \'%2$s (WPVibe Draft)\' instead of its original name in wp-admin. Edit style.css manually to fix.', 'vibe-ai' ),
+							$source_slug,
+							$original_name
+						),
+						array( 'status' => 500 )
+					);
+				}
 			}
 		}
 
@@ -133,6 +205,12 @@ class WPVibe_Draft_Theme {
 		$this->delete_directory( $draft_dir );
 		delete_option( 'wpvibe_draft_theme' );
 		delete_option( 'wpvibe_draft_source' );
+
+		// The cookie still points at a now-deleted draft slug; clear it so
+		// the next admin request doesn't re-enter a nonexistent preview.
+		if ( class_exists( 'WPVibe_Preview' ) ) {
+			WPVibe_Preview::clear_cookie();
+		}
 
 		WPVibe_Change_Tracker::mark( array(
 			'summary'      => 'Draft theme published',
@@ -198,6 +276,10 @@ class WPVibe_Draft_Theme {
 		delete_option( 'wpvibe_draft_source' );
 		delete_option( 'wpvibe_preview_token' );
 		delete_option( 'wpvibe_preview_token_issued' );
+
+		if ( class_exists( 'WPVibe_Preview' ) ) {
+			WPVibe_Preview::clear_cookie();
+		}
 
 		WPVibe_Change_Tracker::mark( array(
 			'summary'      => 'Draft theme deleted',
@@ -277,7 +359,7 @@ class WPVibe_Draft_Theme {
 	 */
 	private function delete_directory( $dir ) {
 		if ( ! is_dir( $dir ) ) {
-			return;
+			return true;
 		}
 
 		$iterator = new RecursiveIteratorIterator(
@@ -288,13 +370,26 @@ class WPVibe_Draft_Theme {
 		foreach ( $iterator as $item ) {
 			if ( $item->isDir() ) {
 				// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_rmdir -- No WP alternative for rmdir().
-				rmdir( $item->getPathname() );
+				if ( ! @rmdir( $item->getPathname() ) ) {
+					/* translators: %s: directory path */
+					return new WP_Error( 'rmdir_failed', sprintf( __( 'Failed to remove directory: %s', 'vibe-ai' ), $item->getPathname() ), array( 'status' => 500 ) );
+				}
 			} else {
 				wp_delete_file( $item->getPathname() );
+				// wp_delete_file is void; verify by checking the file no longer exists.
+				if ( file_exists( $item->getPathname() ) ) {
+					/* translators: %s: file path */
+					return new WP_Error( 'delete_failed', sprintf( __( 'Failed to delete file: %s', 'vibe-ai' ), $item->getPathname() ), array( 'status' => 500 ) );
+				}
 			}
 		}
 
 		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_rmdir -- No WP alternative for rmdir().
-		rmdir( $dir );
+		if ( ! @rmdir( $dir ) ) {
+			/* translators: %s: directory path */
+			return new WP_Error( 'rmdir_failed', sprintf( __( 'Failed to remove directory: %s', 'vibe-ai' ), $dir ), array( 'status' => 500 ) );
+		}
+
+		return true;
 	}
 }

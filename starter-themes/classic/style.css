@@ -1,0 +1,25 @@
+/*
+Theme Name: {{THEME_NAME}}
+Text Domain: {{THEME_SLUG}}
+Description: {{THEME_DESCRIPTION}}
+Version: 1.0.0
+Requires at least: 6.0
+Requires PHP: 7.4
+License: GPL-2.0-or-later
+WPVibe: yes
+*/
+
+/* This file holds the WordPress theme header (above) plus truly global
+ * rules only. Tailwind handles everything else.
+ *
+ * - Design tokens live in theme.css's @theme block.
+ * - Prose + form styles live in presets.css.
+ * - Layout, color, typography utilities come from Tailwind v4.
+ *
+ * Do NOT add component classes here (.btn-primary, .card, etc.). Use
+ * Tailwind utilities in templates instead.
+ */
+
+html {
+	scroll-behavior: smooth;
+}

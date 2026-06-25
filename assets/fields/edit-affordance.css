@@ -1,0 +1,79 @@
+/* Hover-to-edit affordance. Frontend only, only loaded for users with
+ * edit capability. Theme-overridable via --wpvibe-edit-color. */
+
+:root {
+	--wpvibe-edit-color: #2271b1;          /* WordPress admin blue */
+	--wpvibe-edit-color-pin-fg: #ffffff;
+}
+
+[data-wpvibe-edit],
+[data-wpvibe-edit-setting] {
+	position: relative;
+	transition: outline 100ms ease;
+}
+
+[data-wpvibe-edit]:hover,
+[data-wpvibe-edit]:focus-within,
+[data-wpvibe-edit-setting]:hover,
+[data-wpvibe-edit-setting]:focus-within {
+	outline: 2px dashed var(--wpvibe-edit-color);
+	outline-offset: 4px;
+}
+
+.wpvibe-edit-pin {
+	position: absolute;
+	top: -28px;
+	right: -4px;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	background: var(--wpvibe-edit-color);
+	color: var(--wpvibe-edit-color-pin-fg);
+	font: 600 11px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	padding: 4px 8px;
+	border-radius: 4px;
+	text-decoration: none;
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity 100ms ease;
+	z-index: 99999;
+	white-space: nowrap;
+}
+
+.wpvibe-edit-pin svg {
+	width: 12px;
+	height: 12px;
+	fill: currentColor;
+}
+
+/* Invisible hover bridge across the gap between the pin and the editable
+ * element. Without this, the mouse loses :hover while crossing the gap, the
+ * pin fades, and the user can never reach it. */
+.wpvibe-edit-pin::after {
+	content: '';
+	position: absolute;
+	top: 100%;
+	left: 0;
+	right: 0;
+	height: 12px;
+}
+
+[data-wpvibe-edit]:hover > .wpvibe-edit-pin,
+[data-wpvibe-edit]:focus-within > .wpvibe-edit-pin,
+[data-wpvibe-edit-setting]:hover > .wpvibe-edit-pin,
+[data-wpvibe-edit-setting]:focus-within > .wpvibe-edit-pin,
+.wpvibe-edit-pin:hover,
+.wpvibe-edit-pin:focus {
+	opacity: 1;
+	pointer-events: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	[data-wpvibe-edit],
+	[data-wpvibe-edit-setting],
+	.wpvibe-edit-pin {
+		transition: none;
+	}
+}

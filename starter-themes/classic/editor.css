@@ -1,0 +1,61 @@
+/* Editor styling for the Gutenberg iframe.
+ *
+ * Plain CSS — Tailwind does not run inside the editor iframe, so utility
+ * classes do not work here. We reference the same custom-property names
+ * Tailwind emits on the frontend; the var(--name, fallback) form means
+ * the styling still works even when the iframe has no @theme tokens
+ * defined (which is the common case).
+ *
+ * Keep this small. Gutenberg's own block styles handle most of the work;
+ * this file only needs to bring the body font + colors into alignment
+ * with the frontend.
+ */
+
+body.block-editor-iframe__body {
+	background: var(--color-background, #ffffff);
+	color: var(--color-neutral, #171717);
+	font-family: var(--font-sans, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+}
+
+.wp-block-post-content,
+.editor-styles-wrapper {
+	max-width: 768px;
+	margin: 0 auto;
+}
+
+.wp-block {
+	font-family: inherit;
+}
+
+h1, h2, h3, h4, h5, h6 {
+	font-family: var(--font-sans, system-ui, sans-serif);
+	line-height: 1.2;
+	color: var(--color-neutral, #171717);
+}
+
+a {
+	color: var(--color-primary, #2563eb);
+}
+
+blockquote {
+	border-left: 4px solid var(--color-secondary-200, #e2e8f0);
+	padding-left: 1rem;
+	color: var(--color-secondary-700, #334155);
+	font-style: italic;
+}
+
+code {
+	background: var(--color-secondary-100, #f1f5f9);
+	padding: 0.125rem 0.25rem;
+	border-radius: 0.25rem;
+	font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+	font-size: 0.875em;
+}
+
+pre {
+	background: var(--color-secondary-100, #f1f5f9);
+	padding: 1rem;
+	border-radius: 0.375rem;
+	font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+	overflow-x: auto;
+}

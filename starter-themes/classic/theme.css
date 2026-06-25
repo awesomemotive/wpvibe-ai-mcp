@@ -1,0 +1,80 @@
+/* Tailwind v4 site stylesheet. Single source of truth for design + custom CSS.
+ *
+ * At draft time, this is read inline into a <style type="text/tailwindcss"> block.
+ * At publish time, the Tailwind CLI compiles this file (plus templates) into
+ * dist/styles.css. Every directive works here: @theme, @layer, @utility,
+ * @apply, @keyframes, plus plain CSS. Do NOT write <style> blocks in PHP
+ * templates for theme CSS — put it here so it lands in the compiled bundle.
+ *
+ * functions.php also parses the @theme block at runtime to register the
+ * palette + font sizes with Gutenberg via add_theme_support().
+ *
+ * Conventions:
+ *   1. @theme: tokens only (--color-*, --font-*, --text-*, --radius-*). No
+ *      selectors, no @apply. Tokens auto-generate matching utilities.
+ *   2. Plain CSS: outside @theme, inside @layer. Prefer utility classes in
+ *      templates first; only write CSS here when utilities cannot express it.
+ *      @layer base { h1 { font-size: var(--text-2xl); } }
+ *      @layer components { .card { padding: --spacing(6); } }
+ *   3. New reusable utilities: prefer @utility over @apply.
+ *      @utility content-auto { content-visibility: auto; }
+ *   4. Custom web fonts: load via <link> in template-parts/head.php, then
+ *      reference here via --font-*.
+ *
+ * Token naming (Tailwind v4):
+ *   --color-{slug}        → bg-{slug}, text-{slug}, border-{slug}
+ *   --color-{slug}-{NN}   → numeric shades (skipped in the Gutenberg palette)
+ *   --font-{slug}         → font-{slug}
+ *   --text-{slug}         → text-{slug}
+ *   --radius-{slug}       → rounded-{slug}
+ */
+
+@theme {
+	--color-primary: #2563eb;
+	--color-primary-50:  #eff6ff;
+	--color-primary-100: #dbeafe;
+	--color-primary-500: #3b82f6;
+	--color-primary-600: #2563eb;
+	--color-primary-700: #1d4ed8;
+	--color-primary-900: #1e3a8a;
+
+	--color-secondary: #475569;
+	--color-secondary-50:  #f8fafc;
+	--color-secondary-100: #f1f5f9;
+	--color-secondary-200: #e2e8f0;
+	--color-secondary-300: #cbd5e1;
+	--color-secondary-500: #64748b;
+	--color-secondary-600: #475569;
+	--color-secondary-700: #334155;
+	--color-secondary-900: #0f172a;
+
+	--color-neutral: #171717;
+	--color-background: #ffffff;
+
+	--font-sans:  system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+	--font-serif: Georgia, "Times New Roman", serif;
+	--font-mono:  ui-monospace, "SF Mono", Menlo, monospace;
+
+	--text-sm:   0.875rem;
+	--text-base: 1rem;
+	--text-lg:   1.125rem;
+	--text-xl:   1.25rem;
+	--text-2xl:  1.5rem;
+	--text-3xl:  1.875rem;
+	--text-4xl:  2.25rem;
+	--text-5xl:  3rem;
+}
+
+/* Element-level defaults. Reach for utility classes in templates first; put
+ * a rule here only when the same styling needs to apply across every instance
+ * of an element (e.g. body font features). Keep this layer small. */
+@layer base {
+	/* body { font-feature-settings: "ss01", "ss02"; } */
+}
+
+/* Reusable component classes. Use for compound patterns that recur and need
+ * a name (e.g. .card, .hero-heading, .divider). Reference tokens via var();
+ * @apply works but is finicky — prefer var() + utility classes in templates. */
+@layer components {
+	/* .hero-heading em { font-style: italic; color: var(--color-primary); } */
+}

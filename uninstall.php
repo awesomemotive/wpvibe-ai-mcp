@@ -1,11 +1,11 @@
 <?php
 /**
- * Uninstall WPVibe Connect.
+ * Uninstall the WPVibe plugin (listed as "Vibe AI" on WordPress.org).
  *
  * Removes all plugin options, transients, and leftover draft/backup theme
  * directories on uninstall.
  *
- * @package WPVibe_Connect
+ * @package WPVibe
  */
 
 defined( 'WP_UNINSTALL_PLUGIN' ) || exit;
@@ -16,6 +16,16 @@ delete_option( 'wpvibe_draft_source' );
 delete_option( 'wpvibe_preview_token' );
 delete_option( 'wpvibe_preview_token_issued' );
 delete_option( 'wpvibe_last_active' );
+delete_option( 'wpvibe_installed_at' );
+delete_option( 'wpvibe_review_eligible_since' );
+delete_option( 'wpvibe_review_notice_status' );
+delete_option( 'wpvibe_audit_log_schema' );
+
+// Drop the audit log table created by class-wpvibe-audit-log.php.
+global $wpdb;
+$audit_table = $wpdb->prefix . 'wpvibe_audit_log';
+// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.DirectDatabaseQuery.SchemaChange, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+$wpdb->query( "DROP TABLE IF EXISTS {$audit_table}" );
 
 // Remove transients.
 delete_transient( 'wpvibe_last_change' );

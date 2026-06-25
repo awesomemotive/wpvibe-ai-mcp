@@ -201,6 +201,73 @@
 	color: rgba(0, 0, 0, 0.45);
 }
 
+/* Copy row (URL + Copy button on one line) */
+.wpvibe-copy-row {
+	display: flex;
+	align-items: stretch;
+	gap: 6px;
+	margin-top: 10px;
+	background: #ffffff;
+	border: 1px solid rgba(37, 99, 235, 0.18);
+	border-radius: 8px;
+	padding: 4px 4px 4px 10px;
+}
+
+.wpvibe-copy-text {
+	flex: 1;
+	font-family: 'SF Mono', 'Monaco', 'Menlo', Consolas, monospace;
+	font-size: 12px;
+	color: #2563eb;
+	background: transparent;
+	padding: 6px 0;
+	display: flex;
+	align-items: center;
+	overflow-x: auto;
+	white-space: nowrap;
+	user-select: all;
+}
+
+.wpvibe-copy-btn {
+	flex-shrink: 0;
+	background: #0a0a0a;
+	color: #ffffff;
+	border: none;
+	border-radius: 6px;
+	padding: 6px 14px;
+	font-size: 12px;
+	font-weight: 600;
+	cursor: pointer;
+	transition: background 0.15s ease;
+}
+
+.wpvibe-copy-btn:hover,
+.wpvibe-copy-btn:focus {
+	background: #1a1a1a;
+	outline: none;
+}
+
+.wpvibe-copy-btn.is-copied {
+	background: #16a34a;
+}
+
+.wpvibe-inline-link {
+	display: inline-block;
+	margin-top: 10px;
+	font-size: 12px;
+	color: #2563eb;
+	text-decoration: none;
+}
+
+.wpvibe-inline-link:hover {
+	text-decoration: underline;
+}
+
+.wpvibe-step-hint {
+	font-size: 12px !important;
+	color: rgba(0, 0, 0, 0.4) !important;
+	margin-top: 8px;
+}
+
 /* Footer */
 .wpvibe-footer {
 	display: flex;

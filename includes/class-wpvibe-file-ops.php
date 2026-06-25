@@ -1,6 +1,6 @@
 <?php
 /**
- * Sandboxed file operations for WPVibe Connect.
+ * Sandboxed file operations for WPVibe.
  *
  * All operations are scoped to the active draft theme directory.
  * Path traversal is blocked. Only allowed extensions can be written.
@@ -61,8 +61,13 @@ class WPVibe_File_Ops {
 
 		$full_path = realpath( $draft_dir ) . '/' . ltrim( $relative_path, '/' );
 
-		// After resolving, verify it's still within the draft dir.
-		$real = realpath( dirname( $full_path ) );
+		// Walk up to the nearest existing ancestor; new subdirs (e.g. dist/) are
+		// created later by write(), but realpath() needs an extant path here.
+		$probe = dirname( $full_path );
+		while ( ! is_dir( $probe ) && dirname( $probe ) !== $probe ) {
+			$probe = dirname( $probe );
+		}
+		$real = realpath( $probe );
 		if ( false === $real || strpos( $real, realpath( $draft_dir ) ) !== 0 ) {
 			return new WP_Error( 'path_traversal', __( 'Resolved path is outside the draft theme.', 'vibe-ai' ), array( 'status' => 403 ) );
 		}
@@ -227,7 +232,16 @@ class WPVibe_File_Ops {
 
 		if ( ! $fs->copy( $tmp, $full_path, true, FS_CHMOD_FILE ) ) {
 			wp_delete_file( $tmp );
-			return new WP_Error( 'write_failed', __( 'Failed to save file.', 'vibe-ai' ), array( 'status' => 500 ) );
+			return new WP_Error(
+				'write_failed',
+				sprintf(
+					/* translators: 1: target path, 2: temp file status */
+					__( 'Could not move temporary file into place at \'%1$s\'. Check filesystem permissions on the target. Temp file %2$s.', 'vibe-ai' ),
+					$full_path,
+					file_exists( $tmp ) ? "still present at '{$tmp}'" : 'cleaned up'
+				),
+				array( 'status' => 500 )
+			);
 		}
 		wp_delete_file( $tmp );
 
@@ -260,10 +274,21 @@ class WPVibe_File_Ops {
 			return new WP_Error( 'forbidden_ext', __( 'File extension not allowed.', 'vibe-ai' ), array( 'status' => 403 ) );
 		}
 
-		// Ensure parent directory exists.
+		// Ensure parent directory exists. mkdir failures here cascade into
+		// misleading "write_failed" errors below; surface the real cause.
 		$dir = dirname( $full_path );
 		if ( ! is_dir( $dir ) ) {
-			wp_mkdir_p( $dir );
+			if ( ! wp_mkdir_p( $dir ) && ! is_dir( $dir ) ) {
+				return new WP_Error(
+					'mkdir_failed',
+					sprintf(
+						/* translators: %s: directory path */
+						__( 'Could not create parent directory \'%s\'. Check filesystem permissions on the theme root.', 'vibe-ai' ),
+						$dir
+					),
+					array( 'status' => 500 )
+				);
+			}
 		}
 
 		$is_new = ! file_exists( $full_path );
@@ -276,7 +301,15 @@ class WPVibe_File_Ops {
 		// Write to temp for syntax check.
 		$tmp = $full_path . '.wpvibe-tmp';
 		if ( ! $fs->put_contents( $tmp, $content, FS_CHMOD_FILE ) ) {
-			return new WP_Error( 'write_failed', __( 'Failed to write temp file.', 'vibe-ai' ), array( 'status' => 500 ) );
+			return new WP_Error(
+				'write_failed',
+				sprintf(
+					/* translators: %s: temp file path */
+					__( 'Could not write temporary file \'%s\'. Check filesystem permissions and free disk space.', 'vibe-ai' ),
+					$tmp
+				),
+				array( 'status' => 500 )
+			);
 		}
 
 		$syntax = $this->validate_php_syntax( $tmp );
@@ -287,7 +320,16 @@ class WPVibe_File_Ops {
 
 		if ( ! $fs->copy( $tmp, $full_path, true, FS_CHMOD_FILE ) ) {
 			wp_delete_file( $tmp );
-			return new WP_Error( 'write_failed', __( 'Failed to save file.', 'vibe-ai' ), array( 'status' => 500 ) );
+			return new WP_Error(
+				'write_failed',
+				sprintf(
+					/* translators: 1: target path, 2: temp file status */
+					__( 'Could not move temporary file into place at \'%1$s\'. Check filesystem permissions on the target and its parent directory. Temp file %2$s.', 'vibe-ai' ),
+					$full_path,
+					file_exists( $tmp ) ? "still present at '{$tmp}'" : 'cleaned up'
+				),
+				array( 'status' => 500 )
+			);
 		}
 		wp_delete_file( $tmp );
 
