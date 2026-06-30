@@ -2233,12 +2233,12 @@ class WPVibe_CLI {
 		}
 
 		$key = $positional[1];
-		// Block internal WordPress meta keys unless --force.
-		if ( empty( $flags['force'] ) && strpos( $key, '_wp_' ) === 0 ) {
+		// Block protected meta keys (all '_'-prefixed, plus registered protected) unless --force.
+		if ( empty( $flags['force'] ) && is_protected_meta( $key, 'post' ) ) {
 			return $this->error_result(
 				sprintf(
 					/* translators: %s: meta key */
-					__( 'Meta key \'%s\' is a WordPress internal key. Use --force to override.', 'vibe-ai' ),
+					__( 'Meta key \'%s\' is a protected/internal key. Use --force to override.', 'vibe-ai' ),
 					$key
 				)
 			);
@@ -2280,11 +2280,11 @@ class WPVibe_CLI {
 		}
 
 		$key = $positional[1];
-		if ( empty( $flags['force'] ) && strpos( $key, '_wp_' ) === 0 ) {
+		if ( empty( $flags['force'] ) && is_protected_meta( $key, 'post' ) ) {
 			return $this->error_result(
 				sprintf(
 					/* translators: %s: meta key */
-					__( 'Meta key \'%s\' is a WordPress internal key. Use --force to override.', 'vibe-ai' ),
+					__( 'Meta key \'%s\' is a protected/internal key. Use --force to override.', 'vibe-ai' ),
 					$key
 				)
 			);

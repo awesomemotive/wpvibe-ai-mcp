@@ -25,6 +25,42 @@ class WPVibe_REST {
 	}
 
 	/**
+	 * Resolve a sideload filename that ends in a real image extension.
+	 *
+	 * A title like "CleanShot 2026-06-29 at 14.45.58@2x" makes pathinfo() read
+	 * "58@2x" (from the time) as the extension, so trusting *any* non-empty
+	 * extension lets a bogus one through and media_handle_sideload() rejects the
+	 * upload as a disallowed file type. Only trust a known image extension;
+	 * otherwise append the correct one from the file's actual mime. SVG is
+	 * admin-only since it can carry script.
+	 *
+	 * @param string $filename       Candidate filename (already sanitized).
+	 * @param string $detected_mime  Real mime of the file (wp_get_image_mime/fileinfo).
+	 * @param bool   $allow_svg      Whether the current user may upload SVG.
+	 * @return string Filename guaranteed to end in a real image extension.
+	 */
+	public static function ensure_image_extension( $filename, $detected_mime, $allow_svg ) {
+		$known = array( 'jpg', 'jpeg', 'png', 'gif', 'webp' );
+		if ( $allow_svg ) {
+			$known[] = 'svg';
+		}
+		// Trust the parsed extension only if it is already a real image extension;
+		// a dotted title ("…14.45.58@2x") yields a bogus "58@2x" that pathinfo()
+		// reports as an extension but wp_check_filetype_and_ext() rejects.
+		$current = strtolower( (string) pathinfo( $filename, PATHINFO_EXTENSION ) );
+		if ( in_array( $current, $known, true ) ) {
+			return $filename;
+		}
+		// Otherwise append the proper extension for the real mime, via WP's own
+		// mime->extension map. SVG is admin-only (it can carry script).
+		$ext = $detected_mime ? wp_get_default_extension_for_mime_type( $detected_mime ) : '';
+		if ( ! $ext || ( 'svg' === $ext && ! $allow_svg ) ) {
+			$ext = 'jpg';
+		}
+		return $filename . '.' . $ext;
+	}
+
+	/**
 	 * Validate that a URL is safe to fetch from a public server context.
 	 *
 	 * Rejects non-HTTP(S) schemes and hosts that resolve (IPv4 or IPv6) to any
@@ -55,32 +91,10 @@ class WPVibe_REST {
 			return true;
 		}
 
-		// Resolve every A + AAAA record; reject if *any* is non-public.
-		$records = @dns_get_record( $host, DNS_A + DNS_AAAA );
-		if ( empty( $records ) ) {
-			// Fall back to IPv4 only. If that still fails, block.
-			$v4 = @gethostbynamel( $host );
-			if ( empty( $v4 ) ) {
-				return new WP_Error( 'blocked_url', __( 'URL host could not be resolved.', 'vibe-ai' ), array( 'status' => 403 ) );
-			}
-			foreach ( $v4 as $ip ) {
-				if ( ! self::ip_is_public( $ip ) ) {
-					return new WP_Error( 'blocked_url', __( 'URL resolves to a non-public address.', 'vibe-ai' ), array( 'status' => 403 ) );
-				}
-			}
-			return true;
-		}
-
-		foreach ( $records as $record ) {
-			$ip = '';
-			if ( isset( $record['ip'] ) ) {
-				$ip = $record['ip'];
-			} elseif ( isset( $record['ipv6'] ) ) {
-				$ip = $record['ipv6'];
-			}
-			if ( $ip && ! self::ip_is_public( $ip ) ) {
-				return new WP_Error( 'blocked_url', __( 'URL resolves to a non-public address.', 'vibe-ai' ), array( 'status' => 403 ) );
-			}
+		// Resolve every A + AAAA record; reject if the host can't be resolved or
+		// *any* answer is non-public. Same resolver used to pin the download.
+		if ( empty( self::resolve_public_ips( $host ) ) ) {
+			return new WP_Error( 'blocked_url', __( 'URL host could not be resolved or resolves to a non-public address.', 'vibe-ai' ), array( 'status' => 403 ) );
 		}
 
 		return true;
@@ -92,6 +106,40 @@ class WPVibe_REST {
 			FILTER_VALIDATE_IP,
 			FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE
 		);
+	}
+
+	/**
+	 * Resolve a host to its public A/AAAA addresses. Returns an empty array if
+	 * the host can't be resolved or any answer is non-public — callers pin to
+	 * these IPs and must fail closed on an empty result.
+	 */
+	public static function resolve_public_ips( $host ) {
+		$ips     = array();
+		$records = @dns_get_record( $host, DNS_A + DNS_AAAA );
+		if ( ! empty( $records ) ) {
+			foreach ( $records as $record ) {
+				if ( ! empty( $record['ip'] ) ) {
+					$ips[] = $record['ip'];
+				} elseif ( ! empty( $record['ipv6'] ) ) {
+					$ips[] = $record['ipv6'];
+				}
+			}
+		}
+		if ( empty( $ips ) ) {
+			$v4 = @gethostbynamel( $host );
+			if ( ! empty( $v4 ) ) {
+				$ips = $v4;
+			}
+		}
+
+		$public = array();
+		foreach ( $ips as $ip ) {
+			if ( ! self::ip_is_public( $ip ) ) {
+				return array();
+			}
+			$public[] = $ip;
+		}
+		return $public;
 	}
 
 	private function __construct() {
@@ -1006,9 +1054,32 @@ class WPVibe_REST {
 		};
 		add_filter( 'http_request_redirection_url', $redirect_guard, 10, 1 );
 
+		// Pin the connection to the validated public IPs so a DNS rebind can't
+		// swap in an internal address between validation and fetch. WP's curl
+		// transport disables CURLOPT_FOLLOWLOCATION and re-fires http_api_curl
+		// per redirect hop, so each hop re-pins. Streams transport (no hook)
+		// falls back to validate_public_http_url + the redirect guard above.
+		$pin_dns = function ( $handle, $args, $request_url ) {
+			$host = wp_parse_url( $request_url, PHP_URL_HOST );
+			if ( ! $host || filter_var( $host, FILTER_VALIDATE_IP ) ) {
+				return;
+			}
+			$scheme = strtolower( (string) wp_parse_url( $request_url, PHP_URL_SCHEME ) );
+			$port   = wp_parse_url( $request_url, PHP_URL_PORT );
+			if ( ! $port ) {
+				$port = ( 'https' === $scheme ) ? 443 : 80;
+			}
+			$ips = WPVibe_REST::resolve_public_ips( $host );
+			// Fail closed: with no validated public IP, pin to TEST-NET-1 (RFC 5737, unroutable).
+			$target = $ips ? $ips[0] : '192.0.2.1';
+			curl_setopt( $handle, CURLOPT_RESOLVE, array( "{$host}:{$port}:{$target}" ) );
+		};
+		add_action( 'http_api_curl', $pin_dns, 10, 3 );
+
 		// Download the image to a temp file.
 		$tmp = download_url( $url, 30 );
 
+		remove_action( 'http_api_curl', $pin_dns, 10 );
 		remove_filter( 'http_request_redirection_url', $redirect_guard, 10 );
 		if ( is_wp_error( $tmp ) ) {
 			return new WP_Error(
@@ -1022,28 +1093,18 @@ class WPVibe_REST {
 			);
 		}
 
-		// Extract filename from URL.
-		$url_path = wp_parse_url( $url, PHP_URL_PATH );
-		$filename = $title ? sanitize_file_name( $title ) : basename( $url_path );
-
-		// Ensure the file has an extension.
-		if ( ! pathinfo( $filename, PATHINFO_EXTENSION ) ) {
-			$mime = mime_content_type( $tmp );
-			$ext  = array(
-				'image/jpeg' => '.jpg',
-				'image/png'  => '.png',
-				'image/gif'  => '.gif',
-				'image/webp' => '.webp',
-			);
-			// SVG can carry JavaScript. Limit to administrators since they
-			// already have unfiltered_html / theme + plugin editor access.
-			// A lower-privilege user uploading a malicious SVG could XSS any
-			// other user who views it in the media library.
-			if ( 'image/svg+xml' === $mime && current_user_can( 'manage_options' ) ) {
-				$ext['image/svg+xml'] = '.svg';
-			}
-			$filename .= isset( $ext[ $mime ] ) ? $ext[ $mime ] : '.jpg';
+		// Resolve a filename that ends in a real image extension. A title such as
+		// "…14.45.58@2x" makes pathinfo() read "58@2x" as the extension, so we
+		// validate against known image types and fall back to the file's actual
+		// mime — otherwise media_handle_sideload() rejects it as a bad file type.
+		// SVG stays admin-only (it can carry script: XSS risk in the media list).
+		$url_path      = wp_parse_url( $url, PHP_URL_PATH );
+		$filename      = $title ? sanitize_file_name( $title ) : basename( (string) $url_path );
+		$detected_mime = wp_get_image_mime( $tmp );
+		if ( ! $detected_mime && function_exists( 'mime_content_type' ) ) {
+			$detected_mime = mime_content_type( $tmp );
 		}
+		$filename = self::ensure_image_extension( $filename, $detected_mime, current_user_can( 'manage_options' ) );
 
 		$file_array = array(
 			'name'     => $filename,

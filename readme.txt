@@ -4,7 +4,7 @@ Tags: mcp, mcp-server, claude, chatgpt, ai-assistant
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.5.0
+Stable tag: 1.5.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -190,6 +190,12 @@ Vibe AI has multiple safety layers: draft theme isolation for file editing, file
 No. Vibe AI lets you manage your WordPress site entirely through conversation with your AI assistant. No coding required for content management. Theme editing is also conversational, your AI writes the code for your WordPress theme.
 
 == Changelog ==
+
+= 1.5.1 =
+* Hardening: Image imports now pin the download to the exact IP address that passed the security check, closing a DNS-rebinding window where a hostname could switch to an internal address between validation and download.
+* Hardening: Content meta edits and searches now enforce WordPress per-key meta permissions, so a user can no longer read or change protected post meta they are not authorized for, even on posts they can otherwise edit.
+* Hardening: The WP-CLI post meta update and delete commands now guard every protected meta key (not just core internal keys) behind the same explicit --force override.
+* Fix: Image imports no longer fail with "you are not allowed to upload this file type" when the source name has dots before the extension (e.g. macOS screenshots like "...14.45.58@2x"). The importer now derives the extension from the file's actual type instead of trusting the parsed name.
 
 = 1.5.0 =
 * Feature: Surgical content edits. WPVibe can now make targeted find-and-replace changes to a post's content, excerpt, or title, to post meta, and to site options without rewriting the whole value. Two new endpoints (content search and content edit) locate the exact text first and then replace a single match (or all matches), so large posts no longer have to round-trip through the AI in full. Serialized values are refused so they cannot be corrupted.

@@ -2,6 +2,16 @@
 
 All notable changes to the WPVibe WordPress plugin *(listed on WordPress.org as "Vibe AI")*. The canonical source for WordPress.org's update API is `readme.txt`; this file mirrors the same information in markdown for GitHub readers.
 
+## [1.5.1] - 2026-06-30
+
+### Security
+- Image imports now pin the download to the exact IP address that passed the security check, closing a DNS-rebinding window where a hostname could switch to an internal address between validation and download.
+- Content meta edits and searches now enforce WordPress per-key meta permissions, so a user can no longer read or change protected post meta they are not authorized for, even on posts they can otherwise edit.
+- The WP-CLI post meta update and delete commands now guard every protected meta key (not just core internal keys) behind the same explicit `--force` override.
+
+### Fixed
+- Image imports no longer fail with "you are not allowed to upload this file type" when the source name has dots before the extension (e.g. macOS screenshots like "…14.45.58@2x"). The importer now derives the extension from the file's actual type instead of trusting the parsed name.
+
 ## [1.5.0] - 2026-06-25
 
 ### Added

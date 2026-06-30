@@ -306,6 +306,12 @@ class WPVibe_Content_Ops {
 				if ( ! get_post( $post_id ) ) {
 					return new WP_Error( 'not_found', __( 'Post not found.', 'vibe-ai' ), array( 'status' => 404 ) );
 				}
+				// edit_post is post-level; protected/registered meta keys carry their
+				// own auth boundary (protected-meta rule + auth_callback) that direct
+				// get_post_meta() bypasses. edit_post_meta maps both via map_meta_cap.
+				if ( ! current_user_can( 'edit_post_meta', $post_id, $key ) ) {
+					return new WP_Error( 'meta_forbidden', __( 'You are not allowed to access this meta key.', 'vibe-ai' ), array( 'status' => 403 ) );
+				}
 				if ( ! metadata_exists( 'post', $post_id, $key ) ) {
 					return new WP_Error( 'meta_not_found', __( 'Meta key not found on this post.', 'vibe-ai' ), array( 'status' => 404 ) );
 				}
@@ -346,9 +352,15 @@ class WPVibe_Content_Ops {
 				return true;
 
 			case 'meta':
+				$post_id = (int) $args['post_id'];
+				$key     = (string) $args['key'];
+				// Same meta-level auth boundary as load(); edit_post alone is not it.
+				if ( ! current_user_can( 'edit_post_meta', $post_id, $key ) ) {
+					return new WP_Error( 'meta_forbidden', __( 'You are not allowed to edit this meta key.', 'vibe-ai' ), array( 'status' => 403 ) );
+				}
 				// update_metadata unslashes; slash to preserve backslashes.
-				$ok = update_post_meta( (int) $args['post_id'], (string) $args['key'], wp_slash( $updated ) );
-				if ( false === $ok && (string) get_post_meta( (int) $args['post_id'], (string) $args['key'], true ) !== (string) $updated ) {
+				$ok = update_post_meta( $post_id, $key, wp_slash( $updated ) );
+				if ( false === $ok && (string) get_post_meta( $post_id, $key, true ) !== (string) $updated ) {
 					return new WP_Error( 'update_failed', __( 'Failed to update the meta value.', 'vibe-ai' ), array( 'status' => 500 ) );
 				}
 				return true;
