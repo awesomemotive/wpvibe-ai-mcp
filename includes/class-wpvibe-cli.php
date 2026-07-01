@@ -700,6 +700,19 @@ class WPVibe_CLI {
 		if ( ! function_exists( 'get_plugins' ) ) {
 			require_once ABSPATH . 'wp-admin/includes/plugin.php';
 		}
+
+		// Populate update availability. Refresh from WP.org when the caller asks
+		// for update info (--update filter or update/update_version in --fields) or
+		// the cache is empty; otherwise use the cached result to avoid a network hit.
+		$wants_updates = isset( $flags['update'] )
+			|| ( ! empty( $flags['fields'] ) && preg_match( '/\bupdate(_version)?\b/', $flags['fields'] ) );
+		$update_cache = get_site_transient( 'update_plugins' );
+		if ( $wants_updates || ! is_object( $update_cache ) || empty( $update_cache->checked ) ) {
+			wp_update_plugins();
+			$update_cache = get_site_transient( 'update_plugins' );
+		}
+		$responses = ( is_object( $update_cache ) && ! empty( $update_cache->response ) ) ? $update_cache->response : array();
+
 		$all     = get_plugins();
 		$results = array();
 		foreach ( $all as $file => $data ) {
@@ -708,11 +721,17 @@ class WPVibe_CLI {
 			if ( isset( $flags['status'] ) && $flags['status'] !== $status ) {
 				continue;
 			}
+			$has_update = isset( $responses[ $file ] ) && ! empty( $responses[ $file ]->new_version );
+			if ( isset( $flags['update'] ) && 'available' === $flags['update'] && ! $has_update ) {
+				continue;
+			}
 			$results[] = array(
-				'name'    => $data['Name'],
-				'status'  => $status,
-				'version' => $data['Version'],
-				'file'    => $file,
+				'name'           => $data['Name'],
+				'status'         => $status,
+				'version'        => $data['Version'],
+				'update'         => $has_update ? 'available' : 'none',
+				'update_version' => $has_update ? $responses[ $file ]->new_version : '',
+				'file'           => $file,
 			);
 		}
 		return $this->success_result( $this->filter_fields( $results, $flags ) );

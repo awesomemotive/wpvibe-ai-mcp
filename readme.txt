@@ -4,7 +4,7 @@ Tags: mcp, mcp-server, claude, chatgpt, ai-assistant
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.5.1
+Stable tag: 1.5.2
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -190,6 +190,10 @@ Vibe AI has multiple safety layers: draft theme isolation for file editing, file
 No. Vibe AI lets you manage your WordPress site entirely through conversation with your AI assistant. No coding required for content management. Theme editing is also conversational, your AI writes the code for your WordPress theme.
 
 == Changelog ==
+
+= 1.5.2 =
+* Fix: The WP-CLI plugin list command now reports update availability. It exposes "update" (available/none) and "update_version" fields and honors the --update=available filter, so an assistant can reliably see which plugins have updates instead of getting blank update info.
+* Fix: Permission-denied errors now name the specific missing WordPress capability (e.g. "edit_theme_options") instead of WordPress's generic "not allowed" message, so an assistant connected with a lower-privilege account gets an actionable next step instead of a dead end.
 
 = 1.5.1 =
 * Hardening: Image imports now pin the download to the exact IP address that passed the security check, closing a DNS-rebinding window where a hostname could switch to an internal address between validation and download.

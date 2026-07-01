@@ -2,6 +2,12 @@
 
 All notable changes to the WPVibe WordPress plugin *(listed on WordPress.org as "Vibe AI")*. The canonical source for WordPress.org's update API is `readme.txt`; this file mirrors the same information in markdown for GitHub readers.
 
+## [1.5.2] - 2026-07-01
+
+### Fixed
+- The WP-CLI plugin list command now reports update availability. It exposes "update" (available/none) and "update_version" fields and honors the `--update=available` filter, so an assistant can reliably see which plugins have updates instead of getting blank update info.
+- Permission-denied errors now name the specific missing WordPress capability (e.g. "edit_theme_options") instead of WordPress's generic "not allowed" message, so an assistant connected with a lower-privilege account gets an actionable next step instead of a dead end.
+
 ## [1.5.1] - 2026-06-30
 
 ### Security

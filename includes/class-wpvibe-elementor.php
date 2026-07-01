@@ -94,11 +94,28 @@ class WPVibe_Elementor {
 	// ------------------------------------------------------------------
 
 	public function can_edit_posts() {
-		return current_user_can( 'edit_posts' );
+		return current_user_can( 'edit_posts' ) ? true : $this->missing_capability_error( 'edit_posts' );
 	}
 
 	public function can_manage_options() {
-		return current_user_can( 'manage_options' );
+		return current_user_can( 'manage_options' ) ? true : $this->missing_capability_error( 'manage_options' );
+	}
+
+	/**
+	 * Build a WP_Error naming the missing capability, instead of returning a
+	 * bare `false` (WordPress's generic "Sorry, you are not allowed to do
+	 * that" 403/401 tells the AI nothing it can act on).
+	 */
+	private function missing_capability_error( $capability ) {
+		return new WP_Error(
+			'wpvibe_missing_capability',
+			sprintf(
+				/* translators: %s: WordPress capability name, e.g. edit_posts */
+				__( 'This action requires the WordPress capability "%s", which the connected account does not have. Administrators have it by default — reconnect with an account that has this capability for full access.', 'vibe-ai' ),
+				$capability
+			),
+			array( 'status' => rest_authorization_required_code(), 'capability' => $capability )
+		);
 	}
 
 	/**

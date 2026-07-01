@@ -496,7 +496,7 @@ class WPVibe_REST {
 			'methods'             => 'POST',
 			'callback'            => array( $this, 'upload_media' ),
 			'permission_callback' => function () {
-				return current_user_can( 'upload_files' );
+				return current_user_can( 'upload_files' ) ? true : $this->missing_capability_error( 'upload_files' );
 			},
 			'args'                => array(
 				'url' => array(
@@ -558,11 +558,28 @@ class WPVibe_REST {
 	// ------------------------------------------------------------------
 
 	/**
+	 * Build a WP_Error naming the missing capability, instead of returning a
+	 * bare `false` (WordPress's generic "Sorry, you are not allowed to do
+	 * that" 403/401 tells the AI nothing it can act on).
+	 */
+	private function missing_capability_error( $capability ) {
+		return new WP_Error(
+			'wpvibe_missing_capability',
+			sprintf(
+				/* translators: %s: WordPress capability name, e.g. edit_theme_options */
+				__( 'This action requires the WordPress capability "%s", which the connected account does not have. Administrators have it by default — reconnect with an account that has this capability for full access.', 'vibe-ai' ),
+				$capability
+			),
+			array( 'status' => rest_authorization_required_code(), 'capability' => $capability )
+		);
+	}
+
+	/**
 	 * Site info and theme management — edit_theme_options.
 	 * Matches WP core /wp/v2/themes permission model.
 	 */
 	public function can_manage_themes() {
-		return current_user_can( 'edit_theme_options' );
+		return current_user_can( 'edit_theme_options' ) ? true : $this->missing_capability_error( 'edit_theme_options' );
 	}
 
 	/**
@@ -570,7 +587,7 @@ class WPVibe_REST {
 	 * Same gate as wp-cli option/transient operations.
 	 */
 	public function can_manage_options() {
-		return current_user_can( 'manage_options' );
+		return current_user_can( 'manage_options' ) ? true : $this->missing_capability_error( 'manage_options' );
 	}
 
 	/**
@@ -578,7 +595,7 @@ class WPVibe_REST {
 	 * Covers Admins, Editors, Authors, and Contributors.
 	 */
 	public function can_edit_posts() {
-		return current_user_can( 'edit_posts' );
+		return current_user_can( 'edit_posts' ) ? true : $this->missing_capability_error( 'edit_posts' );
 	}
 
 	/**
@@ -586,7 +603,7 @@ class WPVibe_REST {
 	 * Same capability WordPress requires for the Theme File Editor.
 	 */
 	public function can_read_themes() {
-		return current_user_can( 'edit_themes' );
+		return current_user_can( 'edit_themes' ) ? true : $this->missing_capability_error( 'edit_themes' );
 	}
 
 	/**
@@ -611,7 +628,7 @@ class WPVibe_REST {
 			);
 		}
 
-		return current_user_can( 'edit_themes' );
+		return current_user_can( 'edit_themes' ) ? true : $this->missing_capability_error( 'edit_themes' );
 	}
 
 	/**
@@ -624,11 +641,7 @@ class WPVibe_REST {
 			return $can_edit;
 		}
 
-		if ( ! $can_edit ) {
-			return false;
-		}
-
-		return current_user_can( 'switch_themes' );
+		return current_user_can( 'switch_themes' ) ? true : $this->missing_capability_error( 'switch_themes' );
 	}
 
 	/**
@@ -649,7 +662,7 @@ class WPVibe_REST {
 	 * Per-command capability checks happen in the handler.
 	 */
 	public function can_run_cli() {
-		return current_user_can( 'manage_options' );
+		return current_user_can( 'manage_options' ) ? true : $this->missing_capability_error( 'manage_options' );
 	}
 
 	/**
@@ -660,13 +673,13 @@ class WPVibe_REST {
 	public function can_edit_content( $request ) {
 		$type = $request->get_param( 'target_type' );
 		if ( 'option' === $type ) {
-			return current_user_can( 'manage_options' );
+			return current_user_can( 'manage_options' ) ? true : $this->missing_capability_error( 'manage_options' );
 		}
 		$post_id = (int) $request->get_param( 'post_id' );
 		if ( $post_id > 0 ) {
-			return current_user_can( 'edit_post', $post_id );
+			return current_user_can( 'edit_post', $post_id ) ? true : $this->missing_capability_error( 'edit_post' );
 		}
-		return current_user_can( 'edit_posts' );
+		return current_user_can( 'edit_posts' ) ? true : $this->missing_capability_error( 'edit_posts' );
 	}
 
 	// ------------------------------------------------------------------
