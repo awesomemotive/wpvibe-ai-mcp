@@ -2,6 +2,25 @@
 
 All notable changes to the WPVibe WordPress plugin *(listed on WordPress.org as "Vibe AI")*. The canonical source for WordPress.org's update API is `readme.txt`; this file mirrors the same information in markdown for GitHub readers.
 
+## [1.6.0] - 2026-07-02
+
+Large WP-CLI emulation expansion. Every new write is gated behind browser approval where it is destructive, and none of it bypasses WordPress capability checks.
+
+### Added
+- Command discovery: `help` returns the full supported-command catalog (name, tier, usage, approval requirement) generated from the security allowlist, and `help <command>` filters it. `cli version` / `cli info` return honest emulator identity (plugin, WordPress, and PHP versions) instead of an error.
+- `search-replace` (previously a stub): serialized-data-aware find/replace that unserializes, replaces, and re-serializes nested arrays and objects with correct lengths, so widget settings and theme mods survive a domain migration. Works table by table in primary-key chunks, skips the `guid` column by default (`--include-guids` to opt in), supports `--dry-run`, `--skip-tables`, `--skip-columns`, and explicit tables. Live runs pause for browser approval with per-table match counts and warn when the replacement would change the site URL; `--dry-run` runs without approval.
+- Role and capability editing (the gap core REST cannot fill): `cap add/remove` on roles, `role create` (with `--clone`), `role delete`, `role reset`, and `user add-cap/remove-cap`. Every change pauses for browser approval spelling out the literal grant, administrator-equivalent capabilities are flagged, and lockout protections refuse removing core capabilities from the administrator role, deleting the administrator role, or deleting the last administrator user.
+- `theme install`, `theme update`, and `theme delete` (delete approval-gated; refuses the active theme and the parent of an active child), symmetric with the existing plugin commands.
+- `cron event run <hook>` and `cron event delete <hook>` (both approval-gated), plus `cron test` for WP-Cron spawn diagnostics.
+- Unified `cache purge`: detects the installed cache plugin (LiteSpeed Cache, WP Rocket, SG Optimizer, WP Super Cache, W3 Total Cache, Breeze, plus the Elementor CSS cache) and calls each plugin's own purge API, then flushes the object cache. The plugin-specific spellings assistants guess first work as scoped aliases.
+- `config get <constant>` for diagnostics like WP_DEBUG or DISALLOW_FILE_EDIT. Credentials and secrets (database credentials and anything matching KEY, SALT, SECRET, PASSWORD, or TOKEN) are blocked; `config list/set/edit` remain blocked.
+- `option patch insert|update|delete` for surgical changes to one key inside a nested settings array without rewriting the whole option.
+- WP-CLI checksum verification: `core verify-checksums` and `plugin verify-checksums` compare installed files against the official WordPress.org checksums, report modified, missing, and unexpected files, and support `--include-root`, `--exclude`, `--version`, `--locale`, and `--strict`.
+- Permission diagnostics `cap list <role>` (with `--show-grant`) and `role list`; `maintenance-mode status` (core file, drop-in, and maintenance-plugin detection); and symmetric read commands: `core version`, `core check-update`, `db tables`, `db prefix`, `post-type list`, `menu location list`, `menu item list`, `theme mod list`, `theme get`, `plugin get`, `media image-size`, `transient get`, and `user get`.
+
+### Changed
+- Deleting an option now pauses for browser approval with a preview of the stored value, since options have no trash and a plugin's entire configuration can live in one. The AI's own temporary options (`wpvibe_task_` prefix) and transients stay approval-free, and the session-bypass checkbox covers repeated cleanup.
+
 ## [1.5.2] - 2026-07-01
 
 ### Fixed

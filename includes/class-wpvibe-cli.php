@@ -26,6 +26,9 @@ class WPVibe_CLI {
 	/** Set when the Worker calls run_approved(); allows handlers to proceed past destructive gates. */
 	private $skip_destructive = false;
 
+	/** Resolved allowlist key of the command being dispatched (for handlers shared across aliases). */
+	private $current_command = '';
+
 	const ALLOWLIST = array(
 		// Read tier
 		'plugin list'      => array( 'tier' => 'read', 'cap' => 'activate_plugins' ),
@@ -52,6 +55,40 @@ class WPVibe_CLI {
 		'cache type'       => array( 'tier' => 'read', 'cap' => 'manage_options' ),
 		'cron event list'  => array( 'tier' => 'read', 'cap' => 'manage_options' ),
 		'db query'         => array( 'tier' => 'read', 'cap' => 'manage_options' ),
+		'db tables'        => array( 'tier' => 'read', 'cap' => 'manage_options' ),
+		'db prefix'        => array( 'tier' => 'read', 'cap' => 'manage_options' ),
+		'core version'     => array( 'tier' => 'read', 'cap' => 'manage_options' ),
+		'core check-update' => array( 'tier' => 'read', 'cap' => 'update_core' ),
+		// Checksum verification is read-only; listed here so it resolves before
+		// the blocked "core" base-command check in resolve_command().
+		'core verify-checksums'   => array( 'tier' => 'read', 'cap' => 'manage_options' ),
+		'plugin verify-checksums' => array( 'tier' => 'read', 'cap' => 'activate_plugins' ),
+		'plugin get'       => array( 'tier' => 'read', 'cap' => 'activate_plugins' ),
+		// Both spellings arrive from AIs in the wild.
+		'post-type list'   => array( 'tier' => 'read', 'cap' => 'edit_posts' ),
+		'post type list'   => array( 'tier' => 'read', 'cap' => 'edit_posts' ),
+		'menu location list' => array( 'tier' => 'read', 'cap' => 'edit_theme_options' ),
+		'theme mod list'   => array( 'tier' => 'read', 'cap' => 'edit_theme_options' ),
+		// Discoverability: pure metadata, lowest-privilege cap. `help` turns
+		// failed command guessing into discovery; `cli version`/`cli info`
+		// answer the "what environment is this?" probe with emulator identity.
+		'help'             => array( 'tier' => 'read', 'cap' => 'read' ),
+		'cli version'      => array( 'tier' => 'read', 'cap' => 'read' ),
+		'cli info'         => array( 'tier' => 'read', 'cap' => 'read' ),
+		// Resolves before the blocked "config" base check, same as checksums.
+		'config get'       => array( 'tier' => 'read', 'cap' => 'manage_options' ),
+		// Role/cap definitions are code-level metadata, not user data — the
+		// subscriber-level cap makes permission diagnostics work exactly when
+		// the connected account is the one missing capabilities.
+		'cap list'         => array( 'tier' => 'read', 'cap' => 'read' ),
+		'role list'        => array( 'tier' => 'read', 'cap' => 'read' ),
+		'maintenance-mode status' => array( 'tier' => 'read', 'cap' => 'manage_options' ),
+		'media image-size' => array( 'tier' => 'read', 'cap' => 'upload_files' ),
+		'transient get'    => array( 'tier' => 'read', 'cap' => 'manage_options' ),
+		'menu item list'   => array( 'tier' => 'read', 'cap' => 'edit_theme_options' ),
+		'user get'         => array( 'tier' => 'read', 'cap' => 'list_users' ),
+		'theme get'        => array( 'tier' => 'read', 'cap' => 'switch_themes' ),
+		'cron test'        => array( 'tier' => 'read', 'cap' => 'manage_options' ),
 
 		// Write tier
 		'theme activate'       => array( 'tier' => 'write', 'cap' => 'switch_themes' ),
@@ -72,9 +109,68 @@ class WPVibe_CLI {
 		'post meta update'     => array( 'tier' => 'write', 'cap' => 'edit_posts' ),
 		'post meta delete'     => array( 'tier' => 'write', 'cap' => 'edit_posts' ),
 		'cache flush'          => array( 'tier' => 'write', 'cap' => 'manage_options' ),
+		'cache purge'          => array( 'tier' => 'write', 'cap' => 'manage_options' ),
+		// Third-party cache verbs AIs guess first — aliases of `cache purge`
+		// scoped to the named plugin (the largest rejected-command cluster).
+		'litespeed-purge'      => array( 'tier' => 'write', 'cap' => 'manage_options' ),
+		'elementor flush-css'  => array( 'tier' => 'write', 'cap' => 'manage_options' ),
+		'elementor flush_css'  => array( 'tier' => 'write', 'cap' => 'manage_options' ),
+		'rocket clean'         => array( 'tier' => 'write', 'cap' => 'manage_options' ),
+		'sg purge'             => array( 'tier' => 'write', 'cap' => 'manage_options' ),
+		'super-cache flush'    => array( 'tier' => 'write', 'cap' => 'manage_options' ),
+		'w3-total-cache flush' => array( 'tier' => 'write', 'cap' => 'manage_options' ),
+		'breeze purge'         => array( 'tier' => 'write', 'cap' => 'manage_options' ),
+		'option patch'         => array( 'tier' => 'write', 'cap' => 'manage_options' ),
 		'rewrite flush'        => array( 'tier' => 'write', 'cap' => 'manage_options' ),
 		'search-replace'       => array( 'tier' => 'write', 'cap' => 'manage_options' ),
+		// Gate-era writes (2026-07: the 1.5.0 approval gate makes these safe).
+		'cron event run'    => array( 'tier' => 'write', 'cap' => 'manage_options', 'destructive' => true, 'bulk' => array( 'label' => 'cron_hook' ) ),
+		'cron event delete' => array( 'tier' => 'write', 'cap' => 'manage_options', 'destructive' => true, 'bulk' => array( 'label' => 'cron_hook' ) ),
+		'theme install'     => array( 'tier' => 'write', 'cap' => 'install_themes', 'check_file_mods' => true ),
+		'theme update'      => array( 'tier' => 'write', 'cap' => 'update_themes', 'check_file_mods' => true ),
+		'theme delete'      => array( 'tier' => 'write', 'cap' => 'delete_themes', 'check_file_mods' => true, 'destructive' => true, 'bulk' => array( 'label' => 'theme' ) ),
+		// Role & capability definitions: core REST has no endpoint for these
+		// (the gap role-editor plugins fill). All gated + lockout-protected.
+		'cap add'           => array( 'tier' => 'write', 'cap' => 'manage_options', 'destructive' => true ),
+		'cap remove'        => array( 'tier' => 'write', 'cap' => 'manage_options', 'destructive' => true ),
+		'role create'       => array( 'tier' => 'write', 'cap' => 'manage_options', 'destructive' => true ),
+		'role delete'       => array( 'tier' => 'write', 'cap' => 'manage_options', 'destructive' => true ),
+		'role reset'        => array( 'tier' => 'write', 'cap' => 'manage_options', 'destructive' => true ),
+		'user add-cap'      => array( 'tier' => 'write', 'cap' => 'promote_users', 'destructive' => true ),
+		'user remove-cap'   => array( 'tier' => 'write', 'cap' => 'promote_users', 'destructive' => true ),
 	);
+
+	/** Administrator-equivalent power: allowed, but the approval preview flags them. */
+	const HIGH_RISK_CAPS = array(
+		'manage_options',
+		'edit_users',
+		'promote_users',
+		'delete_users',
+		'activate_plugins',
+		'edit_files',
+		'edit_plugins',
+		'edit_themes',
+		'unfiltered_html',
+		'unfiltered_upload',
+		'update_core',
+	);
+
+	/** WP core default capabilities (populate_roles). Never removable from the administrator role. */
+	const CORE_ADMIN_CAPS = array(
+		'activate_plugins', 'create_users', 'customize', 'delete_others_pages', 'delete_others_posts',
+		'delete_pages', 'delete_plugins', 'delete_posts', 'delete_private_pages', 'delete_private_posts',
+		'delete_published_pages', 'delete_published_posts', 'delete_site', 'delete_themes', 'delete_users',
+		'edit_dashboard', 'edit_files', 'edit_others_pages', 'edit_others_posts', 'edit_pages',
+		'edit_plugins', 'edit_posts', 'edit_private_pages', 'edit_private_posts', 'edit_published_pages',
+		'edit_published_posts', 'edit_theme_options', 'edit_themes', 'edit_users', 'export', 'import',
+		'install_plugins', 'install_themes', 'list_users', 'manage_categories', 'manage_links',
+		'manage_options', 'moderate_comments', 'promote_users', 'publish_pages', 'publish_posts',
+		'read', 'read_private_pages', 'read_private_posts', 'remove_users', 'switch_themes',
+		'unfiltered_html', 'unfiltered_upload', 'update_core', 'update_plugins', 'update_themes',
+		'upload_files',
+	);
+
+	const DEFAULT_ROLES = array( 'administrator', 'editor', 'author', 'contributor', 'subscriber' );
 
 	const BLOCKED_OPTIONS = array(
 		'siteurl',
@@ -151,7 +247,149 @@ class WPVibe_CLI {
 		'transient delete'  => 'handle_transient_delete',
 		'transient list'    => 'handle_transient_list',
 		'user delete'       => 'handle_user_delete',
-		'search-replace'    => 'handle_not_implemented',
+		'search-replace'    => 'handle_search_replace',
+		'db tables'         => 'handle_db_tables',
+		'db prefix'         => 'handle_db_prefix',
+		'core version'      => 'handle_core_version',
+		'core check-update' => 'handle_core_check_update',
+		'core verify-checksums'   => 'handle_core_verify_checksums',
+		'plugin verify-checksums' => 'handle_plugin_verify_checksums',
+		'plugin get'        => 'handle_plugin_status',
+		'post-type list'    => 'handle_post_type_list',
+		'post type list'    => 'handle_post_type_list',
+		'menu location list' => 'handle_menu_location_list',
+		'theme mod list'    => 'handle_theme_mod_list',
+		'help'              => 'handle_help',
+		'cli version'       => 'handle_cli_version',
+		'cli info'          => 'handle_cli_version',
+		'cap list'          => 'handle_cap_list',
+		'role list'         => 'handle_role_list',
+		'maintenance-mode status' => 'handle_maintenance_mode_status',
+		'media image-size'  => 'handle_media_image_size',
+		'transient get'     => 'handle_transient_get',
+		'menu item list'    => 'handle_menu_item_list',
+		'user get'          => 'handle_user_get',
+		'theme get'         => 'handle_theme_get',
+		'cron test'         => 'handle_cron_test',
+		'cron event run'    => 'handle_cron_event_run',
+		'cron event delete' => 'handle_cron_event_delete',
+		'theme install'     => 'handle_theme_install',
+		'theme update'      => 'handle_theme_update',
+		'theme delete'      => 'handle_theme_delete',
+		'config get'        => 'handle_config_get',
+		'option patch'      => 'handle_option_patch',
+		'cache purge'       => 'handle_cache_purge',
+		'litespeed-purge'      => 'handle_cache_purge',
+		'elementor flush-css'  => 'handle_cache_purge',
+		'elementor flush_css'  => 'handle_cache_purge',
+		'rocket clean'         => 'handle_cache_purge',
+		'sg purge'             => 'handle_cache_purge',
+		'super-cache flush'    => 'handle_cache_purge',
+		'w3-total-cache flush' => 'handle_cache_purge',
+		'breeze purge'         => 'handle_cache_purge',
+		'cap add'           => 'handle_cap_add',
+		'cap remove'        => 'handle_cap_remove',
+		'role create'       => 'handle_role_create',
+		'role delete'       => 'handle_role_delete',
+		'role reset'        => 'handle_role_reset',
+		'user add-cap'      => 'handle_user_add_cap',
+		'user remove-cap'   => 'handle_user_remove_cap',
+	);
+
+	const EMULATOR_NAME = 'WPVibe CLI emulation (vibe-ai plugin)';
+
+	/** One-line usage per allowlisted command; the `help` catalog is generated from this. */
+	const USAGE = array(
+		'plugin list'             => 'plugin list [--status=<active|inactive>] [--update=available] [--fields=<fields>]',
+		'plugin status'           => 'plugin status <slug>',
+		'plugin search'           => 'plugin search <term> [--per_page=<n>] [--page=<n>]',
+		'plugin get'              => 'plugin get <slug>',
+		'plugin verify-checksums' => 'plugin verify-checksums [<slug>...] [--all] [--strict]',
+		'theme list'              => 'theme list [--status=<active|inactive>] [--fields=<fields>]',
+		'theme status'            => 'theme status <slug>',
+		'theme mod list'          => 'theme mod list',
+		'option get'              => 'option get <key>',
+		'option list'             => 'option list [--search=<pattern>] [--autoload=<on|off>]',
+		'user list'               => 'user list [--role=<role>] [--number=<n>]',
+		'post list'               => 'post list [--post_type=<type>] [--post_status=<status>] [--posts_per_page=<n>]',
+		'post get'                => 'post get <id> [--fields=<fields>]',
+		'post meta get'           => 'post meta get <id> [<key>] [--all]',
+		'post meta list'          => 'post meta list <id> [--all]',
+		'taxonomy list'           => 'taxonomy list [--public=<bool>]',
+		'term list'               => 'term list <taxonomy> [--number=<n>] [--search=<term>]',
+		'media list'              => 'media list [--post_mime_type=<type>] [--posts_per_page=<n>]',
+		'comment list'            => 'comment list [--status=<status>] [--post_id=<id>] [--number=<n>]',
+		'comment count'           => 'comment count [<post-id>]',
+		'menu list'               => 'menu list',
+		'menu location list'      => 'menu location list',
+		'widget list'             => 'widget list',
+		'sidebar list'            => 'sidebar list',
+		'rewrite list'            => 'rewrite list',
+		'cache type'              => 'cache type',
+		'cron event list'         => 'cron event list',
+		'db query'                => 'db query "<sql>" [--limit=<n>] (SELECT runs directly; writes need approval)',
+		'db tables'               => 'db tables',
+		'db prefix'               => 'db prefix',
+		'core version'            => 'core version [--extra]',
+		'core check-update'       => 'core check-update',
+		'core verify-checksums'   => 'core verify-checksums [--include-root] [--exclude=<files>] [--version=<version>] [--locale=<locale>]',
+		'post-type list'          => 'post-type list [--fields=<fields>]',
+		'post type list'          => 'post type list [--fields=<fields>]',
+		'transient list'          => 'transient list [--search=<pattern>]',
+		'help'                    => 'help [<command>]',
+		'cli version'             => 'cli version',
+		'cli info'                => 'cli info',
+		'cap list'                => 'cap list <role> [--show-grant]',
+		'role list'               => 'role list',
+		'maintenance-mode status' => 'maintenance-mode status',
+		'media image-size'        => 'media image-size',
+		'transient get'           => 'transient get <key> [--network]',
+		'menu item list'          => 'menu item list <menu>',
+		'user get'                => 'user get <id|login|email> [--fields=<fields>]',
+		'theme get'               => 'theme get <slug> [--fields=<fields>]',
+		'cron test'               => 'cron test',
+		'theme activate'          => 'theme activate <slug>',
+		'plugin activate'         => 'plugin activate <slug>',
+		'plugin deactivate'       => 'plugin deactivate <slug>',
+		'plugin install'          => 'plugin install <slug> [--version=<version>] [--activate]',
+		'plugin update'           => 'plugin update <slug>',
+		'plugin uninstall'        => 'plugin uninstall <slug> [<slug>...]',
+		'option update'           => 'option update <key> <value>',
+		'option add'              => 'option add <key> <value> [--autoload=<yes|no>]',
+		'option delete'           => 'option delete <key>',
+		'transient delete'        => 'transient delete <name> | --all | --expired',
+		'user delete'             => 'user delete <id|login|email> [<id>...] [--reassign=<user>]',
+		'post create'             => 'post create --post_title=<title> [--post_content=<content>] [--post_status=<status>] [--post_type=<type>]',
+		'post update'             => 'post update <id> [<id>...] [--post_title=<title>] [--post_content=<content>] [--post_status=<status>]',
+		'post delete'             => 'post delete <id> [<id>...] [--force]',
+		'post meta update'        => 'post meta update <id> <key> <value> [--force]',
+		'post meta delete'        => 'post meta delete <id> <key> [--force]',
+		'cache flush'             => 'cache flush',
+		'cache purge'             => 'cache purge (detects the installed cache plugin and purges it, plus the object cache)',
+		'litespeed-purge'         => 'litespeed-purge [all] (alias of cache purge, scoped to LiteSpeed Cache)',
+		'elementor flush-css'     => 'elementor flush-css (alias of cache purge, scoped to the Elementor CSS cache)',
+		'elementor flush_css'     => 'elementor flush_css (alias of cache purge, scoped to the Elementor CSS cache)',
+		'rocket clean'            => 'rocket clean (alias of cache purge, scoped to WP Rocket)',
+		'sg purge'                => 'sg purge (alias of cache purge, scoped to SG Optimizer)',
+		'super-cache flush'       => 'super-cache flush (alias of cache purge, scoped to WP Super Cache)',
+		'w3-total-cache flush'    => 'w3-total-cache flush [all] (alias of cache purge, scoped to W3 Total Cache)',
+		'breeze purge'            => 'breeze purge (alias of cache purge, scoped to Breeze)',
+		'config get'              => 'config get <constant> (credentials/keys/salts are blocked; table_prefix supported)',
+		'option patch'            => 'option patch <insert|update|delete> <option> <key-path>... [<value>]',
+		'rewrite flush'           => 'rewrite flush',
+		'cron event run'          => 'cron event run <hook> [<hook>...]',
+		'cron event delete'       => 'cron event delete <hook> [<hook>...]',
+		'theme install'           => 'theme install <slug> [--version=<version>] [--activate]',
+		'theme update'            => 'theme update <slug>',
+		'theme delete'            => 'theme delete <slug> [<slug>...]',
+		'cap add'                 => 'cap add <role> <cap>... [--grant=<true|false>]',
+		'cap remove'              => 'cap remove <role> <cap>...',
+		'role create'             => 'role create <role-key> <role-name> [--clone=<role>]',
+		'role delete'             => 'role delete <role-key>',
+		'role reset'              => 'role reset <role-key>... | --all',
+		'user add-cap'            => 'user add-cap <id|login|email> <cap>',
+		'user remove-cap'         => 'user remove-cap <id|login|email> <cap>',
+		'search-replace'          => 'search-replace <old> <new> [<table>...] [--dry-run] [--skip-tables=<tables>] [--skip-columns=<cols>] [--include-guids] [--all-tables]',
 	);
 
 	/**
@@ -365,6 +603,25 @@ class WPVibe_CLI {
 			);
 		}
 
+		// search-replace rewrites content in place across tables. --dry-run is a
+		// pure read and runs freely; the live run needs approval with a
+		// match-count preview.
+		if ( 'search-replace' === $command_key ) {
+			if ( ! empty( $flags['dry_run'] ) ) {
+				return null;
+			}
+			$old = $positional[0] ?? '';
+			if ( '' === $old || ! isset( $positional[1] ) ) {
+				return null; // Handler will return a usage error.
+			}
+			$new = $positional[1];
+			return array(
+				'operation' => 'search_replace:' . $old . '=>' . $new,
+				'reason'    => __( 'search-replace rewrites database content in place, table by table. It handles serialized data safely, but the change is irreversible without a backup. Review the per-table match counts before approving.', 'vibe-ai' ),
+				'dry_run'   => $this->build_search_replace_dry_run( $old, $new, array_slice( $positional, 2 ), $flags ),
+			);
+		}
+
 		// db query: mutating SQL needs approval. Bare-word verbs, plus REPLACE
 		// matched only as a statement so the REPLACE() string function inside a
 		// read-only SELECT is not misread as a write.
@@ -399,6 +656,25 @@ class WPVibe_CLI {
 				);
 			}
 			return null;
+		}
+
+		// Options have no trash: deleting one permanently destroys whatever
+		// configuration lived in it. AI temp state (wpvibe_task_*) and
+		// transient rows stay approval-free so the hygiene cleanup loop
+		// doesn't drown the user; one bypass approval covers option delete:*.
+		if ( 'option delete' === $command_key ) {
+			$key = $positional[0] ?? '';
+			if ( '' === $key
+				|| 0 === strpos( $key, 'wpvibe_task_' )
+				|| 0 === strpos( $key, '_transient_' )
+				|| 0 === strpos( $key, '_site_transient_' ) ) {
+				return null;
+			}
+			return array(
+				'operation' => 'option delete:' . $key,
+				'reason'    => __( 'Options are deleted permanently (WordPress has no trash for them), and a plugin\'s entire configuration can live in a single option. Review the value preview before approving.', 'vibe-ai' ),
+				'dry_run'   => $this->build_option_delete_dry_run( $key ),
+			);
 		}
 
 		// Bulk transient wipes — `wp transient delete --all` clears every
@@ -440,8 +716,18 @@ class WPVibe_CLI {
 
 	private function reason_for_command( $command_key ) {
 		$reasons = array(
-			'user delete'      => __( 'User deletion removes the account permanently. Authored content references are fragile and reassignment requires manual care.', 'vibe-ai' ),
-			'plugin uninstall' => __( 'Plugin uninstall removes the plugin from the filesystem (different from deactivate). Plugin data and settings are typically lost.', 'vibe-ai' ),
+			'user delete'       => __( 'User deletion removes the account permanently. Authored content references are fragile and reassignment requires manual care.', 'vibe-ai' ),
+			'plugin uninstall'  => __( 'Plugin uninstall removes the plugin from the filesystem (different from deactivate). Plugin data and settings are typically lost.', 'vibe-ai' ),
+			'cron event run'    => __( 'Runs the hook\'s scheduled callbacks immediately. Cron callbacks can do anything the owning plugin can do (send emails, hit APIs, modify data).', 'vibe-ai' ),
+			'cron event delete' => __( 'Removes every scheduled instance of this hook. If the owning plugin depends on it, its background work silently stops until something reschedules it.', 'vibe-ai' ),
+			'theme delete'      => __( 'Theme delete removes the theme from the filesystem. Any customizations inside the theme folder are lost.', 'vibe-ai' ),
+			'cap add'           => __( 'Grants capabilities to every user with this role. Capabilities are the WordPress security boundary — review the literal grant below.', 'vibe-ai' ),
+			'cap remove'        => __( 'Removes capabilities from every user with this role and can lock people out of workflows they rely on.', 'vibe-ai' ),
+			'role create'       => __( 'Creates a new role definition. Cloned capabilities take effect for anyone later assigned this role.', 'vibe-ai' ),
+			'role delete'       => __( 'Deletes the role definition. Users currently holding it are left with no role until reassigned.', 'vibe-ai' ),
+			'role reset'        => __( 'Resets the role to its WordPress-default capabilities: custom grants are removed and removed defaults restored.', 'vibe-ai' ),
+			'user add-cap'      => __( 'Grants a capability directly to one user, on top of what their role provides.', 'vibe-ai' ),
+			'user remove-cap'   => __( 'Removes a capability granted directly to this user (role-derived capabilities are unaffected).', 'vibe-ai' ),
 		);
 		return $reasons[ $command_key ] ?? __( 'This operation is classified as destructive and requires explicit approval.', 'vibe-ai' );
 	}
@@ -480,7 +766,94 @@ class WPVibe_CLI {
 				'file'     => $file,
 			);
 		}
+		if ( 'cron event run' === $command_key || 'cron event delete' === $command_key ) {
+			return $this->describe_target( 'cron_hook', $positional[0] ?? '?' );
+		}
+		if ( 'theme delete' === $command_key ) {
+			return $this->describe_target( 'theme', $positional[0] ?? '?' );
+		}
+		if ( in_array( $command_key, array( 'cap add', 'cap remove', 'role create', 'role delete', 'role reset', 'user add-cap', 'user remove-cap' ), true ) ) {
+			return $this->build_role_cap_dry_run( $command_key, $positional, $flags );
+		}
 		return array( 'command' => $command_key, 'positional' => $positional, 'flags' => $flags );
+	}
+
+	/** Approval preview for role/capability edits: the literal grant, spelled out. */
+	private function build_role_cap_dry_run( $command_key, $positional, $flags ) {
+		$dry = array( 'command' => 'wp ' . $command_key );
+
+		if ( 'cap add' === $command_key || 'cap remove' === $command_key ) {
+			$role = $positional[0] ?? '?';
+			$caps = array_slice( $positional, 1 );
+			$dry['role']         = $role;
+			$dry['capabilities'] = $caps;
+			$dry['summary']      = 'cap add' === $command_key
+				/* translators: 1: capability list, 2: role */
+				? sprintf( __( 'Add %1$s to role `%2$s`.', 'vibe-ai' ), '`' . implode( '`, `', $caps ) . '`', $role )
+				/* translators: 1: capability list, 2: role */
+				: sprintf( __( 'Remove %1$s from role `%2$s`.', 'vibe-ai' ), '`' . implode( '`, `', $caps ) . '`', $role );
+			$high = array_values( array_intersect( $caps, self::HIGH_RISK_CAPS ) );
+			if ( $high && 'cap add' === $command_key ) {
+				$dry['high_risk_capabilities'] = $high;
+				/* translators: %s: capability list */
+				$dry['warning'] = sprintf( __( '%s grant administrator-equivalent power. A user with these capabilities can take over the site.', 'vibe-ai' ), '`' . implode( '`, `', $high ) . '`' );
+			}
+			if ( 'cap remove' === $command_key && 'administrator' === $role && array_intersect( $caps, self::CORE_ADMIN_CAPS ) ) {
+				$dry['warning'] = __( 'Removing core capabilities from the administrator role is refused at execution (lockout protection).', 'vibe-ai' );
+			}
+			return $dry;
+		}
+
+		if ( 'role create' === $command_key ) {
+			$dry['role_key']  = $positional[0] ?? '?';
+			$dry['role_name'] = $positional[1] ?? '';
+			if ( ! empty( $flags['clone'] ) ) {
+				$dry['clone_from'] = $flags['clone'];
+				$src               = get_role( $flags['clone'] );
+				$dry['cloned_capability_count'] = $src ? count( array_filter( $src->capabilities ) ) : null;
+			}
+			/* translators: %s: role key */
+			$dry['summary'] = sprintf( __( 'Create role `%s`.', 'vibe-ai' ), $dry['role_key'] );
+			return $dry;
+		}
+
+		if ( 'role delete' === $command_key || 'role reset' === $command_key ) {
+			$targets = ! empty( $flags['all'] ) && 'role reset' === $command_key ? self::DEFAULT_ROLES : $positional;
+			$dry['roles'] = array();
+			foreach ( $targets as $role_key ) {
+				$role_obj = get_role( $role_key );
+				$entry    = array( 'role' => $role_key, 'exists' => (bool) $role_obj );
+				if ( $role_obj ) {
+					$entry['capability_count'] = count( array_filter( $role_obj->capabilities ) );
+					$users                     = count_users();
+					$entry['user_count']       = isset( $users['avail_roles'][ $role_key ] ) ? (int) $users['avail_roles'][ $role_key ] : 0;
+				}
+				$dry['roles'][] = $entry;
+			}
+			if ( 'role delete' === $command_key && in_array( 'administrator', $targets, true ) ) {
+				$dry['warning'] = __( 'Deleting the administrator role is refused at execution (lockout protection).', 'vibe-ai' );
+			}
+			if ( 'role delete' === $command_key ) {
+				$dry['note'] = __( 'Users holding a deleted role are left with no role until reassigned.', 'vibe-ai' );
+			}
+			return $dry;
+		}
+
+		// user add-cap / user remove-cap
+		$dry = array_merge( $dry, $this->describe_target( 'user', $positional[0] ?? '?' ) );
+		$cap = $positional[1] ?? '?';
+		$dry['capability'] = $cap;
+		$dry['summary']    = 'user add-cap' === $command_key
+			/* translators: 1: capability, 2: user */
+			? sprintf( __( 'Grant `%1$s` directly to user `%2$s`.', 'vibe-ai' ), $cap, $positional[0] ?? '?' )
+			/* translators: 1: capability, 2: user */
+			: sprintf( __( 'Remove the direct `%1$s` grant from user `%2$s`.', 'vibe-ai' ), $cap, $positional[0] ?? '?' );
+		if ( 'user add-cap' === $command_key && in_array( $cap, self::HIGH_RISK_CAPS, true ) ) {
+			$dry['high_risk_capabilities'] = array( $cap );
+			/* translators: %s: capability */
+			$dry['warning'] = sprintf( __( '`%s` grants administrator-equivalent power.', 'vibe-ai' ), $cap );
+		}
+		return $dry;
 	}
 
 	/**
@@ -546,9 +919,52 @@ class WPVibe_CLI {
 				return ( $file && isset( $all[ $file ] ) )
 					? array( 'target' => $t, 'name' => $all[ $file ]['Name'], 'version' => $all[ $file ]['Version'], 'active' => is_plugin_active( $file ) )
 					: array( 'target' => $t, 'note' => __( 'not found', 'vibe-ai' ) );
+			case 'cron_hook':
+				$instances = 0;
+				$next      = null;
+				$crons     = function_exists( '_get_cron_array' ) ? _get_cron_array() : array();
+				foreach ( (array) $crons as $timestamp => $hooks ) {
+					if ( isset( $hooks[ $t ] ) ) {
+						$instances += count( $hooks[ $t ] );
+						if ( null === $next ) {
+							$next = gmdate( 'Y-m-d H:i:s', (int) $timestamp );
+						}
+					}
+				}
+				return $instances > 0
+					? array( 'target' => $t, 'scheduled_instances' => $instances, 'next_run' => $next )
+					: array( 'target' => $t, 'note' => __( 'no scheduled events for this hook', 'vibe-ai' ) );
+			case 'theme':
+				$theme = wp_get_theme( $t );
+				if ( ! $theme->exists() ) {
+					return array( 'target' => $t, 'note' => __( 'not found', 'vibe-ai' ) );
+				}
+				$desc = array( 'target' => $t, 'name' => $theme->get( 'Name' ), 'version' => $theme->get( 'Version' ), 'active' => ( get_stylesheet() === $t ) );
+				if ( ! $desc['active'] && get_template() === $t ) {
+					$desc['note'] = __( 'PARENT of the active child theme — deleting it breaks the site. Execution will refuse.', 'vibe-ai' );
+				}
+				return $desc;
 			default:
 				return array( 'target' => $t );
 		}
+	}
+
+	/** Approval preview for option delete: what's in it, how big, and whether execution will refuse anyway. */
+	private function build_option_delete_dry_run( $key ) {
+		$dry   = array( 'command' => 'wp option delete', 'option' => $key );
+		$value = get_option( $key, null );
+		if ( null === $value ) {
+			$dry['note'] = __( 'Option not found — execution will fail.', 'vibe-ai' );
+			return $dry;
+		}
+		$str                     = is_scalar( $value ) ? (string) $value : (string) wp_json_encode( $value );
+		$dry['value_type']       = strtolower( gettype( $value ) );
+		$dry['value_size_chars'] = strlen( $str );
+		$dry['value_preview']    = mb_substr( $str, 0, 200 ) . ( strlen( $str ) > 200 ? '… [truncated]' : '' );
+		if ( in_array( $key, self::BLOCKED_OPTIONS, true ) ) {
+			$dry['warning'] = __( 'This option is permanently protected by WPVibe; execution will refuse even after approval.', 'vibe-ai' );
+		}
+		return $dry;
 	}
 
 	private function build_db_query_dry_run( $keyword, $sql, $normalized ) {
@@ -688,7 +1104,8 @@ class WPVibe_CLI {
 			}
 		}
 
-		$handler = self::HANDLERS[ $command_key ];
+		$this->current_command = $command_key;
+		$handler               = self::HANDLERS[ $command_key ];
 		return $this->{$handler}( $positional, $flags, $confirm_write );
 	}
 
@@ -1951,6 +2368,10 @@ class WPVibe_CLI {
 			require_once ABSPATH . 'wp-admin/includes/user.php';
 		}
 
+		// Lockout protection: never delete the last administrator.
+		$admin_ids = array_map( 'intval', (array) get_users( array( 'role' => 'administrator', 'fields' => 'ID', 'number' => -1 ) ) );
+		$admins_remaining = count( $admin_ids );
+
 		$idents  = $positional;
 		$results = array();
 		$ok      = 0;
@@ -1961,6 +2382,13 @@ class WPVibe_CLI {
 			if ( ! $user ) {
 				$results[] = array( 'target' => $ident, 'status' => 'error', 'error' => 'not found' );
 				continue;
+			}
+			if ( in_array( (int) $user->ID, $admin_ids, true ) ) {
+				if ( $admins_remaining <= 1 ) {
+					$results[] = array( 'target' => $user->user_login, 'id' => $user->ID, 'status' => 'error', 'error' => __( 'refused: this is the last administrator (lockout protection)', 'vibe-ai' ) );
+					continue;
+				}
+				$admins_remaining--;
 			}
 			if ( wp_delete_user( $user->ID, $reassign ) ) {
 				$ok++;
@@ -2325,6 +2753,308 @@ class WPVibe_CLI {
 		return $this->success_result( array( 'message' => sprintf( __( 'Deleted meta \'%1$s\' from post #%2$d.', 'vibe-ai' ), $key, $post_id ) ) );
 	}
 
+	private function handle_config_get( $positional, $flags ) {
+		if ( empty( $positional[0] ) ) {
+			return $this->error_result( __( 'Constant name required. Usage: config get <constant>', 'vibe-ai' ) );
+		}
+		$name = $positional[0];
+
+		// Not a constant — special-cased via $wpdb (same value as `db prefix`).
+		if ( 'table_prefix' === $name ) {
+			global $wpdb;
+			return array( 'exit_code' => 0, 'stdout' => $wpdb->prefix, 'stderr' => '' );
+		}
+
+		// Blocklist runs before the existence check so responses never leak
+		// whether a secret is configured.
+		$blocked_exact = array( 'DB_PASSWORD', 'DB_USER', 'DB_HOST' );
+		if ( in_array( strtoupper( $name ), $blocked_exact, true ) || preg_match( '/KEY|SALT|SECRET|PASSWORD|TOKEN/i', $name ) ) {
+			/* translators: %s: constant name */
+			return $this->error_result( sprintf( __( 'Constant \'%s\' is blocked for security. Credentials, keys, salts, and secrets are never exposed to AI tools.', 'vibe-ai' ), $name ) );
+		}
+
+		if ( ! defined( $name ) ) {
+			/* translators: %s: constant name */
+			return $this->error_result( sprintf( __( 'The constant \'%s\' is not defined on this site.', 'vibe-ai' ), $name ) );
+		}
+
+		$value = constant( $name );
+		return $this->success_result( array(
+			'name'  => $name,
+			'value' => $value,
+			'type'  => strtolower( gettype( $value ) ),
+		) );
+	}
+
+	private function handle_option_patch( $positional, $flags ) {
+		$action = $positional[0] ?? '';
+		if ( ! in_array( $action, array( 'insert', 'update', 'delete' ), true ) || empty( $positional[1] ) ) {
+			return $this->error_result( __( 'Usage: option patch <insert|update|delete> <option> <key-path>... [<value>]', 'vibe-ai' ) );
+		}
+		$key = $positional[1];
+		if ( in_array( $key, self::BLOCKED_OPTIONS, true ) ) {
+			return $this->error_result( $this->blocked_option_message( $key, 'patched' ) );
+		}
+
+		$rest  = array_slice( $positional, 2 );
+		$value = null;
+		if ( 'delete' === $action ) {
+			$path = $rest;
+		} else {
+			if ( count( $rest ) < 2 ) {
+				return $this->error_result( __( 'Both a key path and a value are required. Usage: option patch <insert|update> <option> <key-path>... <value>', 'vibe-ai' ) );
+			}
+			$value   = array_pop( $rest );
+			$decoded = json_decode( $value, true );
+			if ( null !== $decoded ) {
+				$value = $decoded;
+			}
+			$path = $rest;
+		}
+		if ( empty( $path ) ) {
+			return $this->error_result( __( 'Key path required.', 'vibe-ai' ) );
+		}
+
+		$current = get_option( $key, null );
+		if ( null === $current ) {
+			/* translators: %s: option key */
+			return $this->error_result( sprintf( __( 'Option \'%s\' not found.', 'vibe-ai' ), $key ) );
+		}
+		if ( ! is_array( $current ) && ! is_object( $current ) ) {
+			/* translators: %s: option key */
+			return $this->error_result( sprintf( __( 'Option \'%s\' is not an array or object; use `option update` for scalar values.', 'vibe-ai' ), $key ) );
+		}
+
+		$error   = null;
+		$patched = $this->patch_structure( $current, $path, $action, $value, $error );
+		if ( null !== $error ) {
+			return $this->error_result( $error );
+		}
+
+		update_option( $key, $patched );
+		$stored = get_option( $key );
+		if ( maybe_serialize( $stored ) !== maybe_serialize( $patched ) ) {
+			/* translators: %s: option key */
+			return $this->error_result( sprintf( __( 'Could not patch option \'%s\'. The stored value does not match; a pre_update_option filter may have rejected the write.', 'vibe-ai' ), $key ) );
+		}
+
+		WPVibe_Change_Tracker::mark( array(
+			'summary'      => "Option patched: {$key} → " . implode( '.', $path ),
+			'action_label' => 'Refresh',
+		) );
+
+		/* translators: 1: action, 2: key path, 3: option key */
+		return $this->success_result( array( 'message' => sprintf( __( 'Patched (%1$s) \'%2$s\' in option \'%3$s\'.', 'vibe-ai' ), $action, implode( '.', $path ), $key ) ) );
+	}
+
+	/** Walk a nested array/stdClass along $path and apply insert/update/delete at the leaf. */
+	private function patch_structure( $data, $path, $action, $value, &$error, $trail = '' ) {
+		$segment = $path[0];
+		$seg_key = is_numeric( $segment ) ? (int) $segment : $segment;
+		$rest    = array_slice( $path, 1 );
+		$is_obj  = is_object( $data );
+		$where   = '' === $trail ? (string) $segment : $trail . '.' . $segment;
+
+		if ( ! is_array( $data ) && ! $is_obj ) {
+			/* translators: %s: key path position */
+			$error = sprintf( __( 'Cannot descend into a non-array value at \'%s\'.', 'vibe-ai' ), $trail ?: (string) $segment );
+			return $data;
+		}
+
+		$exists = $is_obj ? property_exists( $data, (string) $seg_key ) : array_key_exists( $seg_key, $data );
+
+		if ( empty( $rest ) ) {
+			if ( 'insert' === $action && $exists ) {
+				/* translators: %s: key path */
+				$error = sprintf( __( 'Key \'%s\' already exists. Use `option patch update` to change it.', 'vibe-ai' ), $where );
+				return $data;
+			}
+			if ( 'insert' !== $action && ! $exists ) {
+				/* translators: %s: key path */
+				$error = sprintf( __( 'No data exists at key path \'%s\'.', 'vibe-ai' ), $where );
+				return $data;
+			}
+			if ( 'delete' === $action ) {
+				if ( $is_obj ) {
+					unset( $data->{$seg_key} );
+				} else {
+					unset( $data[ $seg_key ] );
+				}
+			} elseif ( $is_obj ) {
+				$data->{$seg_key} = $value;
+			} else {
+				$data[ $seg_key ] = $value;
+			}
+			return $data;
+		}
+
+		if ( ! $exists ) {
+			/* translators: %s: key path */
+			$error = sprintf( __( 'No data exists at key path \'%s\'.', 'vibe-ai' ), $where );
+			return $data;
+		}
+		if ( $is_obj ) {
+			$data->{$seg_key} = $this->patch_structure( $data->{$seg_key}, $rest, $action, $value, $error, $where );
+		} else {
+			$data[ $seg_key ] = $this->patch_structure( $data[ $seg_key ], $rest, $action, $value, $error, $where );
+		}
+		return $data;
+	}
+
+	/**
+	 * Detector table for the unified cache purge: each entry knows whether its
+	 * plugin is present and how to call its own purge API ("own the brains,
+	 * rent the muscle" — we orchestrate, never reimplement).
+	 */
+	private function cache_purge_targets() {
+		return array(
+			'litespeed'      => array(
+				'name'   => 'LiteSpeed Cache',
+				'active' => defined( 'LSCWP_V' ) || is_plugin_active( 'litespeed-cache/litespeed-cache.php' ),
+				'purge'  => function () {
+					do_action( 'litespeed_purge_all' );
+					return true;
+				},
+			),
+			'elementor'      => array(
+				'name'   => 'Elementor CSS cache',
+				'active' => class_exists( '\Elementor\Plugin' ),
+				'purge'  => function () {
+					if ( isset( \Elementor\Plugin::$instance->files_manager ) ) {
+						\Elementor\Plugin::$instance->files_manager->clear_cache();
+						return true;
+					}
+					return false;
+				},
+			),
+			'wp-rocket'      => array(
+				'name'   => 'WP Rocket',
+				'active' => function_exists( 'rocket_clean_domain' ),
+				'purge'  => function () {
+					rocket_clean_domain();
+					return true;
+				},
+			),
+			'sg-optimizer'   => array(
+				'name'   => 'SG Optimizer (Speed Optimizer)',
+				'active' => function_exists( 'sg_cachepress_purge_cache' ),
+				'purge'  => function () {
+					return false !== sg_cachepress_purge_cache();
+				},
+			),
+			'wp-super-cache' => array(
+				'name'   => 'WP Super Cache',
+				'active' => function_exists( 'wp_cache_clear_cache' ),
+				'purge'  => function () {
+					wp_cache_clear_cache();
+					return true;
+				},
+			),
+			'w3-total-cache' => array(
+				'name'   => 'W3 Total Cache',
+				'active' => function_exists( 'w3tc_flush_all' ),
+				'purge'  => function () {
+					w3tc_flush_all();
+					return true;
+				},
+			),
+			'breeze'         => array(
+				'name'   => 'Breeze',
+				'active' => class_exists( 'Breeze_PurgeCache' ) || is_plugin_active( 'breeze/breeze.php' ),
+				'purge'  => function () {
+					do_action( 'breeze_clear_all_cache' );
+					return true;
+				},
+			),
+		);
+	}
+
+	const CACHE_PURGE_ALIASES = array(
+		'litespeed-purge'      => 'litespeed',
+		'elementor flush-css'  => 'elementor',
+		'elementor flush_css'  => 'elementor',
+		'rocket clean'         => 'wp-rocket',
+		'sg purge'             => 'sg-optimizer',
+		'super-cache flush'    => 'wp-super-cache',
+		'w3-total-cache flush' => 'w3-total-cache',
+		'breeze purge'         => 'breeze',
+	);
+
+	private function handle_cache_purge( $positional, $flags ) {
+		if ( ! function_exists( 'is_plugin_active' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		}
+		$targets = $this->cache_purge_targets();
+
+		// Third-party alias spellings purge only the plugin they name.
+		$alias = self::CACHE_PURGE_ALIASES[ $this->current_command ] ?? null;
+		if ( null !== $alias ) {
+			$target = $targets[ $alias ];
+			if ( ! $target['active'] ) {
+				return $this->error_result(
+					sprintf(
+						/* translators: %s: cache plugin name */
+						__( '%s is not active on this site. Run `cache purge` to purge whatever cache is installed, or `cache flush` for the object cache.', 'vibe-ai' ),
+						$target['name']
+					)
+				);
+			}
+			try {
+				$ok = call_user_func( $target['purge'] );
+			} catch ( \Throwable $e ) {
+				/* translators: 1: cache plugin name, 2: error message */
+				return $this->error_result( sprintf( __( 'Purging %1$s failed: %2$s', 'vibe-ai' ), $target['name'], $e->getMessage() ) );
+			}
+			if ( ! $ok ) {
+				/* translators: %s: cache plugin name */
+				return $this->error_result( sprintf( __( 'Purging %s failed (its purge API was unavailable).', 'vibe-ai' ), $target['name'] ) );
+			}
+			WPVibe_Change_Tracker::mark( array( 'summary' => "Cache purged: {$target['name']}", 'action_label' => 'View Site', 'url' => home_url( '/' ) ) );
+			/* translators: %s: cache plugin name */
+			return $this->success_result( array( 'message' => sprintf( __( '%s cache purged.', 'vibe-ai' ), $target['name'] ) ) );
+		}
+
+		// `cache purge`: purge every detected cache plugin + the object cache.
+		$purged = array();
+		$failed = array();
+		foreach ( $targets as $target ) {
+			if ( ! $target['active'] ) {
+				continue;
+			}
+			try {
+				$ok = call_user_func( $target['purge'] );
+			} catch ( \Throwable $e ) {
+				$failed[] = array( 'name' => $target['name'], 'error' => $e->getMessage() );
+				continue;
+			}
+			if ( $ok ) {
+				$purged[] = $target['name'];
+			} else {
+				$failed[] = array( 'name' => $target['name'], 'error' => __( 'purge API unavailable', 'vibe-ai' ) );
+			}
+		}
+		$object_cache_flushed = (bool) wp_cache_flush();
+
+		if ( $purged ) {
+			/* translators: %s: plugin names */
+			$message = sprintf( __( 'Purged: %s. Object cache flushed.', 'vibe-ai' ), implode( ', ', $purged ) );
+		} else {
+			$message = __( 'No known cache plugin detected; flushed the WordPress object cache.', 'vibe-ai' );
+		}
+
+		WPVibe_Change_Tracker::mark( array( 'summary' => 'Caches purged', 'action_label' => 'View Site', 'url' => home_url( '/' ) ) );
+
+		$data = array(
+			'message'              => $message,
+			'purged'               => $purged,
+			'object_cache_flushed' => $object_cache_flushed,
+		);
+		if ( $failed ) {
+			$data['failed'] = $failed;
+		}
+		return $this->success_result( $data );
+	}
+
 	private function handle_cache_flush( $positional, $flags ) {
 		$ok = wp_cache_flush();
 		if ( false === $ok ) {
@@ -2350,6 +3080,1464 @@ class WPVibe_CLI {
 
 	private function handle_not_implemented( $positional, $flags ) {
 		return $this->error_result( __( 'This command is not yet implemented via native dispatch. Use the WordPress admin dashboard.', 'vibe-ai' ) );
+	}
+
+	// ------------------------------------------------------------------
+	// search-replace (serialized-data-aware, gated)
+	// ------------------------------------------------------------------
+
+	/** Set true when replace_in_value hits a __PHP_Incomplete_Class; the row is skipped. */
+	private $sr_incomplete = false;
+	private $sr_skipped_serialized = 0;
+	private $sr_timed_out = false;
+
+	private function handle_search_replace( $positional, $flags ) {
+		global $wpdb;
+
+		if ( ! empty( $flags['regex'] ) ) {
+			return $this->error_result( __( '--regex is not supported by the WPVibe emulation. Use a literal search string.', 'vibe-ai' ) );
+		}
+		if ( ! empty( $flags['export'] ) || ! empty( $flags['log'] ) || ! empty( $flags['network'] ) ) {
+			return $this->error_result( __( '--export, --log, and --network are not supported by the WPVibe emulation.', 'vibe-ai' ) );
+		}
+		if ( count( $positional ) < 2 ) {
+			return $this->error_result( __( 'Usage: search-replace <old> <new> [<table>...] [--dry-run]', 'vibe-ai' ) );
+		}
+		$old = $positional[0];
+		$new = $positional[1];
+		if ( '' === $old ) {
+			return $this->error_result( __( 'The <old> search string cannot be empty.', 'vibe-ai' ) );
+		}
+		if ( $old === $new ) {
+			return $this->error_result( __( 'Replacement value is identical to search value; nothing to do.', 'vibe-ai' ) );
+		}
+
+		$dry_run = ! empty( $flags['dry_run'] );
+		if ( ! $dry_run && ! $this->skip_destructive ) {
+			// classify_destructive should have caught this; defense-in-depth.
+			return $this->error_result( __( 'search-replace requires explicit approval. Run with --dry-run to preview.', 'vibe-ai' ) );
+		}
+
+		$tables = $this->resolve_search_replace_tables( array_slice( $positional, 2 ), $flags );
+		if ( is_wp_error( $tables ) ) {
+			return $this->error_result( $tables->get_error_message() );
+		}
+
+		$skip_columns    = array_filter( array_map( 'trim', explode( ',', (string) ( $flags['skip_columns'] ?? '' ) ) ) );
+		$include_columns = array_filter( array_map( 'trim', explode( ',', (string) ( $flags['include_columns'] ?? '' ) ) ) );
+		$guid_skipped    = false;
+		if ( empty( $flags['include_guids'] ) && ! in_array( 'guid', $include_columns, true ) ) {
+			// WP best practice: GUIDs are permanent identifiers, not URLs.
+			$skip_columns[] = 'guid';
+			$guid_skipped   = true;
+		}
+
+		if ( function_exists( 'set_time_limit' ) ) {
+			@set_time_limit( 300 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+		}
+		// We run inside a REST request, not a shell: keep a hard budget and
+		// report completed vs remaining tables so the AI can re-run scoped.
+		$deadline = microtime( true ) + 240;
+
+		$this->sr_skipped_serialized = 0;
+		$this->sr_timed_out          = false;
+		$report    = array();
+		$total     = 0;
+		$completed = array();
+		$remaining = array();
+
+		foreach ( $tables as $i => $table ) {
+			if ( microtime( true ) > $deadline ) {
+				$this->sr_timed_out = true;
+			}
+			if ( $this->sr_timed_out ) {
+				$remaining = array_slice( $tables, $i );
+				break;
+			}
+			list( $primary_keys, $text_columns ) = $this->table_columns( $table );
+			if ( empty( $primary_keys ) ) {
+				$report[] = array( 'table' => $table, 'column' => '', 'count' => 0, 'note' => __( 'Skipped: no primary key.', 'vibe-ai' ) );
+				$completed[] = $table;
+				continue;
+			}
+			foreach ( $text_columns as $col ) {
+				if ( in_array( $col, $skip_columns, true ) || in_array( "$table.$col", $skip_columns, true ) ) {
+					continue;
+				}
+				if ( ! empty( $include_columns ) && ! in_array( $col, $include_columns, true ) && ! in_array( "$table.$col", $include_columns, true ) ) {
+					continue;
+				}
+				$count = $this->search_replace_column( $table, $col, $primary_keys, $old, $new, $dry_run, $deadline );
+				if ( $count > 0 ) {
+					$report[] = array( 'table' => $table, 'column' => $col, 'count' => $count );
+				}
+				$total += $count;
+				if ( $this->sr_timed_out ) {
+					break;
+				}
+			}
+			if ( $this->sr_timed_out ) {
+				$remaining = array_slice( $tables, $i );
+				break;
+			}
+			$completed[] = $table;
+		}
+
+		if ( ! $dry_run && $total > 0 ) {
+			WPVibe_Change_Tracker::mark( array(
+				'summary'      => "search-replace: {$total} replacement(s)",
+				'action_label' => 'View Site',
+				'url'          => home_url( '/' ),
+			) );
+		}
+
+		$message = $dry_run
+			/* translators: %d: replacement count */
+			? sprintf( __( '%d replacement(s) to be made.', 'vibe-ai' ), $total )
+			/* translators: %d: replacement count */
+			: sprintf( __( 'Made %d replacement(s).', 'vibe-ai' ), $total );
+		if ( ! $dry_run && $total > 0 && function_exists( 'wp_using_ext_object_cache' ) && wp_using_ext_object_cache() ) {
+			$message .= ' ' . __( 'A persistent object cache is active — run `cache flush` so stale values are not served.', 'vibe-ai' );
+		}
+
+		$data = array(
+			'dry_run'      => $dry_run,
+			'total'        => $total,
+			'report'       => $report,
+			'message'      => $message,
+		);
+		if ( $guid_skipped ) {
+			$data['guid_note'] = __( 'The guid column was skipped (WordPress best practice). Pass --include-guids to replace inside GUIDs too.', 'vibe-ai' );
+		}
+		if ( $this->sr_skipped_serialized > 0 ) {
+			/* translators: %d: skipped row count */
+			$data['skipped_serialized_rows'] = $this->sr_skipped_serialized;
+			$data['skipped_serialized_note'] = __( 'Rows whose serialized data references PHP classes that are not loadable were skipped to avoid corruption.', 'vibe-ai' );
+		}
+		if ( $this->sr_timed_out ) {
+			$data['timed_out']        = true;
+			$data['tables_completed'] = $completed;
+			$data['tables_remaining'] = $remaining;
+			$data['note']             = __( 'Time budget exceeded. Re-run the same command scoped to the remaining tables to finish.', 'vibe-ai' );
+		}
+
+		$result = $this->success_result( $data );
+		if ( $dry_run ) {
+			$result['tier'] = 'read';
+		}
+		return $result;
+	}
+
+	private function resolve_search_replace_tables( $table_args, $flags ) {
+		global $wpdb;
+		$all = $wpdb->get_col( 'SHOW TABLES' );
+		if ( ! is_array( $all ) ) {
+			$all = array();
+		}
+		if ( ! empty( $table_args ) ) {
+			$resolved = array();
+			foreach ( $table_args as $arg ) {
+				$arg = str_replace( '{prefix}', $wpdb->prefix, $arg );
+				if ( false !== strpos( $arg, '*' ) || false !== strpos( $arg, '?' ) ) {
+					$matched = array();
+					foreach ( $all as $t ) {
+						if ( fnmatch( $arg, $t ) ) {
+							$matched[] = $t;
+						}
+					}
+					if ( empty( $matched ) ) {
+						/* translators: %s: table pattern */
+						return new WP_Error( 'no_tables', sprintf( __( 'No tables match "%s".', 'vibe-ai' ), $arg ) );
+					}
+					$resolved = array_merge( $resolved, $matched );
+				} elseif ( in_array( $arg, $all, true ) ) {
+					$resolved[] = $arg;
+				} else {
+					/* translators: %s: table name */
+					return new WP_Error( 'no_table', sprintf( __( 'Table "%s" does not exist.', 'vibe-ai' ), $arg ) );
+				}
+			}
+			$tables = array_values( array_unique( $resolved ) );
+		} elseif ( ! empty( $flags['all_tables'] ) ) {
+			$tables = $all;
+		} else {
+			$tables = array();
+			foreach ( $all as $t ) {
+				if ( 0 === strpos( $t, $wpdb->prefix ) ) {
+					$tables[] = $t;
+				}
+			}
+		}
+
+		$skip_tables = array_filter( array_map( 'trim', explode( ',', (string) ( $flags['skip_tables'] ?? '' ) ) ) );
+		if ( $skip_tables ) {
+			$tables = array_values( array_filter( $tables, function ( $t ) use ( $skip_tables ) {
+				foreach ( $skip_tables as $skip ) {
+					if ( $t === $skip || fnmatch( $skip, $t ) ) {
+						return false;
+					}
+				}
+				return true;
+			} ) );
+		}
+
+		if ( empty( $tables ) ) {
+			return new WP_Error( 'no_tables', __( 'No tables in scope for search-replace.', 'vibe-ai' ) );
+		}
+		return $tables;
+	}
+
+	/** DESCRIBE a table: [primary key columns, text-family columns (char/varchar/text)]. */
+	private function table_columns( $table ) {
+		global $wpdb;
+		$primary = array();
+		$text    = array();
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$results = $wpdb->get_results( 'DESCRIBE ' . $this->esc_sql_ident( $table ) ); // nosemgrep: direct-db-query
+		foreach ( (array) $results as $col ) {
+			if ( isset( $col->Key ) && 'PRI' === $col->Key ) {
+				$primary[] = $col->Field;
+			}
+			if ( isset( $col->Type ) && ( false !== stripos( $col->Type, 'char' ) || false !== stripos( $col->Type, 'text' ) ) ) {
+				$text[] = $col->Field;
+			}
+		}
+		return array( $primary, $text );
+	}
+
+	/**
+	 * Replace within one table column, chunked by primary key so large tables
+	 * never load whole. Mirrors wp-cli's php_handle_col (the --precise path —
+	 * always serialized-safe, never blind SQL UPDATE).
+	 */
+	private function search_replace_column( $table, $col, $primary_keys, $old, $new, $dry_run, $deadline ) {
+		global $wpdb;
+
+		$count     = 0;
+		$table_sql = $this->esc_sql_ident( $table );
+		$col_sql   = $this->esc_sql_ident( $col );
+		$old_json  = $this->json_encode_strip_quotes( $old );
+		$new_json  = $this->json_encode_strip_quotes( $new );
+
+		$match = $col_sql . $wpdb->prepare( ' LIKE BINARY %s', '%' . $wpdb->esc_like( $old ) . '%' );
+		if ( $old_json !== $old ) {
+			$match = '( ' . $match . ' OR ' . $col_sql . $wpdb->prepare( ' LIKE BINARY %s', '%' . $wpdb->esc_like( $old_json ) . '%' ) . ' )';
+		}
+
+		$single_pk = ( 1 === count( $primary_keys ) );
+		$pk_sql    = implode( ', ', array_map( array( $this, 'esc_sql_ident' ), $primary_keys ) );
+		$chunk     = 1000;
+		$last_key  = null;
+		$passes    = 0;
+
+		while ( true ) {
+			if ( microtime( true ) > $deadline ) {
+				$this->sr_timed_out = true;
+				break;
+			}
+			$where = 'WHERE ' . $match;
+			if ( $single_pk && null !== $last_key ) {
+				$where .= ' AND ' . $pk_sql . ' > ' . $this->esc_sql_value( $last_key );
+			}
+			$order = $single_pk ? " ORDER BY {$pk_sql} ASC" : '';
+			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$rows = $wpdb->get_results( "SELECT {$pk_sql} FROM {$table_sql} {$where}{$order} LIMIT {$chunk}" ); // nosemgrep: direct-db-query
+			if ( empty( $rows ) ) {
+				break;
+			}
+
+			$count_before = $count;
+			foreach ( $rows as $keys ) {
+				$where_parts = array();
+				foreach ( (array) $keys as $k => $v ) {
+					$where_parts[] = $this->esc_sql_ident( $k ) . ' = ' . $this->esc_sql_value( $v );
+				}
+				$where_row = implode( ' AND ', $where_parts );
+				// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+				$value = $wpdb->get_var( "SELECT {$col_sql} FROM {$table_sql} WHERE {$where_row}" ); // nosemgrep: direct-db-query
+				if ( null === $value || '' === $value ) {
+					continue;
+				}
+				$this->sr_incomplete = false;
+				$replaced            = $this->replace_in_value( $value, $old, $new, $old_json, $new_json );
+				if ( $this->sr_incomplete ) {
+					$this->sr_skipped_serialized++;
+					continue;
+				}
+				if ( $replaced === $value || gettype( $replaced ) !== gettype( $value ) ) {
+					continue;
+				}
+				if ( $dry_run ) {
+					$count++;
+					continue;
+				}
+				$update_where = array();
+				foreach ( (array) $keys as $k => $v ) {
+					$update_where[ $k ] = $v;
+				}
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+				$ok = $wpdb->update( $table, array( $col => $replaced ), $update_where );
+				if ( false !== $ok ) {
+					$count++;
+				}
+			}
+
+			if ( $single_pk ) {
+				$last_row = end( $rows );
+				$pk_name  = $primary_keys[0];
+				$last_key = $last_row->{$pk_name};
+				continue;
+			}
+
+			// Composite PK: live runs converge because replaced rows stop
+			// matching the LIKE. Dry runs would loop forever, so single capped
+			// pass; live runs bail when a pass makes no progress.
+			if ( $dry_run || $count === $count_before || ++$passes > 500 ) {
+				break;
+			}
+		}
+
+		return $count;
+	}
+
+	private function replace_in_value( $data, $old, $new, $old_json, $new_json, $depth = 0 ) {
+		if ( $depth > 64 ) {
+			return $data;
+		}
+		if ( is_string( $data ) ) {
+			if ( 'b:0;' === trim( $data ) ) {
+				return $data;
+			}
+			$unserialized = false;
+			if ( function_exists( 'is_serialized' ) && is_serialized( $data ) ) {
+				$error_level = error_reporting();
+				error_reporting( $error_level & ~E_NOTICE & ~E_WARNING ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions
+				// stdClass only: WordPress uses it everywhere (theme mods, widget
+				// data); arbitrary classes would deserialize as side effects.
+				$unserialized = @unserialize( $data, array( 'allowed_classes' => array( 'stdClass' ) ) ); // phpcs:ignore
+				error_reporting( $error_level ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions
+			}
+			if ( false !== $unserialized ) {
+				$inner = $this->replace_in_value( $unserialized, $old, $new, $old_json, $new_json, $depth + 1 );
+				if ( $this->sr_incomplete ) {
+					return $data;
+				}
+				return serialize( $inner ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_serialize
+			}
+			$data = str_replace( $old, $new, $data );
+			if ( $old_json !== $old ) {
+				// Raw JSON in the DB (font data, block attrs) stores escaped slashes.
+				$data = str_replace( $old_json, $new_json, $data );
+			}
+			return $data;
+		}
+		if ( is_array( $data ) ) {
+			foreach ( $data as $k => $v ) {
+				$data[ $k ] = $this->replace_in_value( $v, $old, $new, $old_json, $new_json, $depth + 1 );
+			}
+			return $data;
+		}
+		if ( $data instanceof \__PHP_Incomplete_Class ) {
+			$this->sr_incomplete = true;
+			return $data;
+		}
+		if ( is_object( $data ) ) {
+			foreach ( get_object_vars( $data ) as $k => $v ) {
+				$data->$k = $this->replace_in_value( $v, $old, $new, $old_json, $new_json, $depth + 1 );
+			}
+			return $data;
+		}
+		return $data;
+	}
+
+	private function build_search_replace_dry_run( $old, $new, $table_args, $flags ) {
+		global $wpdb;
+		$preview = array(
+			'command' => 'wp search-replace',
+			'old'     => $old,
+			'new'     => $new,
+		);
+
+		$tables = $this->resolve_search_replace_tables( $table_args, $flags );
+		if ( is_wp_error( $tables ) ) {
+			$preview['note'] = $tables->get_error_message();
+			return $preview;
+		}
+
+		$deadline      = microtime( true ) + 15;
+		$cap           = 1000;
+		$counts        = array();
+		$not_previewed = 0;
+		foreach ( $tables as $table ) {
+			if ( microtime( true ) > $deadline ) {
+				$not_previewed++;
+				continue;
+			}
+			list( , $text_columns ) = $this->table_columns( $table );
+			if ( empty( $text_columns ) ) {
+				continue;
+			}
+			$conds = array();
+			foreach ( $text_columns as $col ) {
+				$conds[] = $this->esc_sql_ident( $col ) . $wpdb->prepare( ' LIKE BINARY %s', '%' . $wpdb->esc_like( $old ) . '%' );
+			}
+			$sql = 'SELECT COUNT(*) FROM (SELECT 1 FROM ' . $this->esc_sql_ident( $table ) . ' WHERE ' . implode( ' OR ', $conds ) . ' LIMIT ' . ( $cap + 1 ) . ') AS subq';
+			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$n = $wpdb->get_var( $sql ); // nosemgrep: direct-db-query
+			if ( null === $n || ! empty( $wpdb->last_error ) ) {
+				continue;
+			}
+			$n = (int) $n;
+			if ( $n > 0 ) {
+				$counts[ $table ] = ( $n > $cap ) ? $cap . '+' : $n;
+			}
+		}
+
+		$preview['tables_in_scope']          = count( $tables );
+		$preview['matching_rows_per_table']  = $counts;
+		if ( $not_previewed > 0 ) {
+			/* translators: %d: table count */
+			$preview['preview_truncated'] = sprintf( __( '%d table(s) not scanned for the preview (time budget); they will still be processed on execution.', 'vibe-ai' ), $not_previewed );
+		}
+
+		$warnings = array();
+		foreach ( array( 'siteurl', 'home' ) as $opt ) {
+			$val = get_option( $opt );
+			if ( is_string( $val ) && '' !== $val && false !== strpos( $val, $old ) ) {
+				/* translators: 1: option name, 2: current value */
+				$warnings[] = sprintf( __( 'This replacement will change the "%1$s" option (currently "%2$s"). Changing the site URL can break the WPVibe connection itself (the stored site URL will no longer match) and logs everyone out. Only approve if this is an intentional migration.', 'vibe-ai' ), $opt, $val );
+			}
+		}
+		if ( $warnings ) {
+			$preview['warnings'] = $warnings;
+		}
+		if ( empty( $flags['include_guids'] ) ) {
+			$preview['guid_note'] = __( 'The guid column is skipped by default (WordPress best practice). Pass --include-guids to replace inside GUIDs too.', 'vibe-ai' );
+		}
+		$preview['note'] = __( 'Counts are rows containing the search string per table, not total replacements. Serialized values are handled safely at execution. Tip: run with --dry-run first for an exact replacement count.', 'vibe-ai' );
+		return $preview;
+	}
+
+	/** Backtick-escape a MySQL identifier (doubling embedded backticks). */
+	private function esc_sql_ident( $ident ) {
+		return '`' . str_replace( '`', '``', $ident ) . '`';
+	}
+
+	/** Quote a value for use in WHERE against a primary key; integers pass bare. */
+	private function esc_sql_value( $value ) {
+		if ( preg_match( '/^[+-]?[0-9]{1,20}$/', (string) $value ) ) {
+			return (string) $value;
+		}
+		return "'" . esc_sql( (string) $value ) . "'";
+	}
+
+	/** JSON-encoded form of a string without the surrounding quotes ("a/b" → "a\/b"). */
+	private function json_encode_strip_quotes( $str ) {
+		$encoded = json_encode( $str ); // phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode
+		return false !== $encoded ? substr( $encoded, 1, -1 ) : $str;
+	}
+
+	private function handle_help( $positional, $flags ) {
+		$filter   = implode( ' ', $positional );
+		$commands = array();
+		foreach ( self::ALLOWLIST as $key => $meta ) {
+			if ( '' !== $filter && 0 !== strpos( $key, $filter ) ) {
+				continue;
+			}
+			$entry = array(
+				'command' => $key,
+				'tier'    => $meta['tier'],
+				'usage'   => self::USAGE[ $key ] ?? $key,
+			);
+			if ( ! empty( $meta['destructive'] ) ) {
+				$entry['requires_approval'] = true;
+			}
+			$commands[] = $entry;
+		}
+		if ( '' !== $filter && empty( $commands ) ) {
+			/* translators: %s: command name the user asked help for */
+			return $this->error_result( sprintf( __( 'No supported command matches "%s". Run `help` with no arguments for the full catalog.', 'vibe-ai' ), $filter ) );
+		}
+		return $this->success_result( array(
+			'emulator' => self::EMULATOR_NAME,
+			'note'     => __( 'Native PHP dispatch with a security allowlist, not real WP-CLI. The commands below are the complete supported set; anything else is blocked. Write commands marked requires_approval pause for browser approval before executing.', 'vibe-ai' ),
+			'commands' => $commands,
+		) );
+	}
+
+	private function handle_cli_version( $positional, $flags ) {
+		global $wp_version;
+		return $this->success_result( array(
+			'emulator'       => self::EMULATOR_NAME,
+			'plugin_version' => defined( 'WPVIBE_VERSION' ) ? WPVIBE_VERSION : '',
+			'note'           => __( 'Native PHP dispatch with a security allowlist, not real WP-CLI. Run `help` for the supported command catalog.', 'vibe-ai' ),
+			'wp_version'     => $wp_version,
+			'php_version'    => PHP_VERSION,
+		) );
+	}
+
+	private function handle_cap_list( $positional, $flags ) {
+		if ( empty( $positional[0] ) ) {
+			return $this->error_result( __( 'Role required. Usage: cap list <role> [--show-grant]', 'vibe-ai' ) );
+		}
+		$role = get_role( $positional[0] );
+		if ( ! $role ) {
+			$names = function_exists( 'wp_roles' ) ? implode( ', ', array_keys( wp_roles()->roles ) ) : '';
+			/* translators: 1: role slug, 2: available role slugs */
+			return $this->error_result( sprintf( __( 'Role \'%1$s\' not found. Available roles: %2$s', 'vibe-ai' ), $positional[0], $names ) );
+		}
+		$caps = (array) $role->capabilities;
+		if ( empty( $flags['show_grant'] ) ) {
+			$granted = array_keys( array_filter( $caps ) );
+			sort( $granted );
+			return $this->success_result( $granted );
+		}
+		ksort( $caps );
+		$results = array();
+		foreach ( $caps as $cap => $grant ) {
+			$results[] = array( 'capability' => $cap, 'grant' => (bool) $grant );
+		}
+		return $this->success_result( $results );
+	}
+
+	private function handle_role_list( $positional, $flags ) {
+		$results = array();
+		foreach ( wp_roles()->roles as $slug => $def ) {
+			$results[] = array(
+				'name'             => $def['name'],
+				'role'             => $slug,
+				'capability_count' => count( array_filter( (array) ( $def['capabilities'] ?? array() ) ) ),
+			);
+		}
+		return $this->success_result( $this->filter_fields( $results, $flags ) );
+	}
+
+	private function handle_media_image_size( $positional, $flags ) {
+		$results = array(
+			array( 'name' => 'full', 'width' => null, 'height' => null, 'crop' => false ),
+		);
+		$sizes = function_exists( 'wp_get_registered_image_subsizes' ) ? wp_get_registered_image_subsizes() : array();
+		foreach ( $sizes as $name => $size ) {
+			$results[] = array(
+				'name'   => $name,
+				'width'  => (int) ( $size['width'] ?? 0 ),
+				'height' => (int) ( $size['height'] ?? 0 ),
+				'crop'   => ! empty( $size['crop'] ),
+			);
+		}
+		return $this->success_result( $this->filter_fields( $results, $flags ) );
+	}
+
+	private function handle_transient_get( $positional, $flags ) {
+		if ( empty( $positional[0] ) ) {
+			return $this->error_result( __( 'Transient key required. Usage: transient get <key> [--network]', 'vibe-ai' ) );
+		}
+		$value = ! empty( $flags['network'] ) ? get_site_transient( $positional[0] ) : get_transient( $positional[0] );
+		if ( false === $value ) {
+			/* translators: %s: transient key */
+			return $this->error_result( sprintf( __( 'Transient \'%s\' is not set (or has expired).', 'vibe-ai' ), $positional[0] ) );
+		}
+		return array(
+			'exit_code' => 0,
+			'stdout'    => is_scalar( $value ) ? (string) $value : wp_json_encode( $value, JSON_PRETTY_PRINT ),
+			'stderr'    => '',
+		);
+	}
+
+	private function handle_menu_item_list( $positional, $flags ) {
+		if ( empty( $positional[0] ) ) {
+			return $this->error_result( __( 'Menu required. Usage: menu item list <menu> (accepts id, slug, or name)', 'vibe-ai' ) );
+		}
+		$menu  = is_numeric( $positional[0] ) ? (int) $positional[0] : $positional[0];
+		$items = wp_get_nav_menu_items( $menu );
+		if ( false === $items ) {
+			/* translators: %s: menu identifier */
+			return $this->error_result( sprintf( __( 'Menu \'%s\' not found. Run `menu list` to see available menus.', 'vibe-ai' ), $positional[0] ) );
+		}
+		$results = array();
+		foreach ( $items as $item ) {
+			$results[] = array(
+				'db_id'     => (int) $item->ID,
+				'type'      => $item->type,
+				'object'    => $item->object,
+				'object_id' => (int) $item->object_id,
+				'title'     => $item->title,
+				'link'      => $item->url,
+				'position'  => (int) $item->menu_order,
+				'parent'    => (int) $item->menu_item_parent,
+			);
+		}
+		return $this->success_result( $this->filter_fields( $results, $flags ) );
+	}
+
+	private function handle_user_get( $positional, $flags ) {
+		if ( empty( $positional[0] ) ) {
+			return $this->error_result( __( 'User identifier required. Usage: user get <id|login|email>', 'vibe-ai' ) );
+		}
+		$ident = $positional[0];
+		$user  = is_numeric( $ident )
+			? get_user_by( 'id', (int) $ident )
+			: ( is_email( $ident ) ? get_user_by( 'email', $ident ) : get_user_by( 'login', $ident ) );
+		if ( ! $user ) {
+			/* translators: %s: user identifier */
+			return $this->error_result( sprintf( __( 'User \'%s\' not found.', 'vibe-ai' ), $ident ) );
+		}
+		$data = array(
+			'ID'              => (int) $user->ID,
+			'user_login'      => $user->user_login,
+			'display_name'    => $user->display_name,
+			'user_email'      => $user->user_email,
+			'user_registered' => $user->user_registered,
+			'user_nicename'   => $user->user_nicename,
+			'user_url'        => $user->user_url,
+			'roles'           => implode( ',', (array) $user->roles ),
+		);
+		return $this->success_result( $this->filter_fields( array( $data ), $flags )[0] ?? $data );
+	}
+
+	private function handle_theme_get( $positional, $flags ) {
+		if ( empty( $positional[0] ) ) {
+			return $this->error_result( __( 'Theme slug required. Usage: theme get <slug>', 'vibe-ai' ) );
+		}
+		$theme = wp_get_theme( $positional[0] );
+		if ( ! $theme->exists() ) {
+			/* translators: %s: theme slug */
+			return $this->error_result( sprintf( __( 'Theme \'%s\' not found.', 'vibe-ai' ), $positional[0] ) );
+		}
+		$parent = $theme->parent();
+		$data   = array(
+			'name'           => $theme->get( 'Name' ),
+			'version'        => $theme->get( 'Version' ),
+			'status'         => ( get_stylesheet() === $positional[0] ) ? 'active' : 'inactive',
+			'parent_theme'   => $parent ? $parent->get( 'Name' ) : '',
+			'template'       => $theme->get_template(),
+			'stylesheet'     => $theme->get_stylesheet(),
+			'template_dir'   => $theme->get_template_directory(),
+			'stylesheet_dir' => $theme->get_stylesheet_directory(),
+			'description'    => $theme->get( 'Description' ),
+			'author'         => wp_strip_all_tags( $theme->get( 'Author' ) ),
+			'tags'           => (array) $theme->get( 'Tags' ),
+		);
+		return $this->success_result( $this->filter_fields( array( $data ), $flags )[0] ?? $data );
+	}
+
+	private function handle_cron_test( $positional, $flags ) {
+		if ( defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON ) {
+			return $this->error_result( __( 'The DISABLE_WP_CRON constant is set to true. WP-Cron spawning is disabled — scheduled events only run if a system cron hits wp-cron.php directly.', 'vibe-ai' ) );
+		}
+		$notes = array();
+		if ( defined( 'ALTERNATE_WP_CRON' ) && ALTERNATE_WP_CRON ) {
+			$notes[] = __( 'The ALTERNATE_WP_CRON constant is set to true; cron runs via a redirect fallback rather than the HTTP spawn tested here.', 'vibe-ai' );
+		}
+		$doing    = sprintf( '%.22F', microtime( true ) );
+		$url      = add_query_arg( 'doing_wp_cron', $doing, site_url( 'wp-cron.php' ) );
+		$response = wp_remote_post( $url, array(
+			'timeout'   => 10,
+			'blocking'  => true,
+			'sslverify' => apply_filters( 'https_local_ssl_verify', false ),
+		) );
+		if ( is_wp_error( $response ) ) {
+			/* translators: %s: HTTP error message */
+			return $this->error_result( sprintf( __( 'WP-Cron spawn failed: %s. The site cannot reach its own wp-cron.php (loopback requests blocked?), so scheduled events will not run on traffic.', 'vibe-ai' ), $response->get_error_message() ) );
+		}
+		$code = (int) wp_remote_retrieve_response_code( $response );
+		if ( $code >= 300 ) {
+			/* translators: %d: HTTP status code */
+			return $this->error_result( sprintf( __( 'WP-Cron spawn returned HTTP %d (expected 200). Scheduled events may not be running.', 'vibe-ai' ), $code ) );
+		}
+		return $this->success_result( array(
+			'message'           => __( 'WP-Cron spawning is working as expected.', 'vibe-ai' ),
+			'spawn_status_code' => $code,
+			'notes'             => $notes,
+		) );
+	}
+
+	private function handle_maintenance_mode_status( $positional, $flags ) {
+		// Real `wp maintenance-mode status` only checks the core .maintenance
+		// file. Plugin-based maintenance is the kind users actually have, and
+		// the drop-in decides what visitors see — so this reports all three.
+		$core    = $this->core_maintenance_state( ABSPATH . '.maintenance' );
+		$drop_in = array(
+			'present' => file_exists( WP_CONTENT_DIR . '/maintenance.php' ),
+			'path'    => 'wp-content/maintenance.php',
+			'note'    => __( 'Custom maintenance page, served whenever core maintenance mode is active.', 'vibe-ai' ),
+		);
+		$plugins = $this->detect_maintenance_plugins();
+
+		$plugin_enabled = array();
+		foreach ( $plugins as $p ) {
+			if ( ! empty( $p['enabled'] ) ) {
+				$plugin_enabled[] = $p['name'];
+			}
+		}
+
+		$active = $core['active'] || ! empty( $plugin_enabled );
+		if ( $core['active'] ) {
+			$message = __( 'Maintenance mode is active (core .maintenance file). Visitors and REST requests get a maintenance page instead of normal responses.', 'vibe-ai' );
+		} elseif ( ! empty( $plugin_enabled ) ) {
+			/* translators: %s: plugin names */
+			$message = sprintf( __( 'Maintenance/coming-soon mode is active via plugin: %s. The site answers frontend requests with the plugin\'s holding page.', 'vibe-ai' ), implode( ', ', $plugin_enabled ) );
+		} else {
+			$message = __( 'Maintenance mode is not active.', 'vibe-ai' );
+		}
+
+		return $this->success_result( array(
+			'active'                   => $active,
+			'core_maintenance_file'    => $core,
+			'maintenance_page_drop_in' => $drop_in,
+			'maintenance_plugins'      => $plugins,
+			'message'                  => $message,
+		) );
+	}
+
+	/**
+	 * Effective state of the core .maintenance file. Core ignores the file once
+	 * $upgrading is more than 10 minutes old, so presence alone is not "active".
+	 */
+	private function core_maintenance_state( $path ) {
+		$state = array( 'present' => file_exists( $path ), 'active' => false );
+		if ( ! $state['present'] ) {
+			return $state;
+		}
+		$contents = (string) file_get_contents( $path );
+		if ( preg_match( '/\$upgrading\s*=\s*(\d+)/', $contents, $m ) ) {
+			$started             = (int) $m[1];
+			$state['started_at'] = gmdate( 'Y-m-d H:i:s', $started );
+			$state['active']     = ( time() - $started ) < 600;
+			if ( ! $state['active'] ) {
+				$state['note'] = __( 'The .maintenance file is present but its timestamp is older than 10 minutes, so core ignores it. A stuck file usually means an update died mid-flight; it is safe to delete.', 'vibe-ai' );
+			}
+		} else {
+			$state['note'] = __( 'No parseable $upgrading timestamp in the .maintenance file; core treats that as expired (not in maintenance).', 'vibe-ai' );
+		}
+		return $state;
+	}
+
+	/**
+	 * Known maintenance/coming-soon plugins with their enable state where the
+	 * option schema is known; enabled=null means "active but state unreadable".
+	 */
+	private function detect_maintenance_plugins() {
+		if ( ! function_exists( 'is_plugin_active' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		}
+		$found = array();
+
+		foreach ( array( 'coming-soon/coming-soon.php', 'seedprod-pro/seedprod-pro.php' ) as $file ) {
+			if ( is_plugin_active( $file ) ) {
+				$settings = json_decode( (string) get_option( 'seedprod_settings' ), true );
+				$modes    = array();
+				if ( ! empty( $settings['enable_coming_soon_mode'] ) ) {
+					$modes[] = 'coming_soon';
+				}
+				if ( ! empty( $settings['enable_maintenance_mode'] ) ) {
+					$modes[] = 'maintenance';
+				}
+				$found[] = array( 'plugin' => $file, 'name' => 'SeedProd', 'enabled' => ! empty( $modes ), 'modes' => $modes );
+			}
+		}
+
+		if ( is_plugin_active( 'wp-maintenance-mode/wp-maintenance-mode.php' ) ) {
+			$settings = get_option( 'wpmm_settings' );
+			$found[]  = array(
+				'plugin'  => 'wp-maintenance-mode/wp-maintenance-mode.php',
+				'name'    => 'LightStart (WP Maintenance Mode)',
+				'enabled' => ! empty( $settings['general']['status'] ),
+			);
+		}
+
+		if ( is_plugin_active( 'under-construction-page/under-construction.php' ) ) {
+			$options = get_option( 'ucp_options' );
+			$found[] = array(
+				'plugin'  => 'under-construction-page/under-construction.php',
+				'name'    => 'Under Construction',
+				'enabled' => ! empty( $options['status'] ),
+			);
+		}
+
+		if ( is_plugin_active( 'cmp-coming-soon-maintenance/niteo-cmp.php' ) ) {
+			$found[] = array(
+				'plugin'  => 'cmp-coming-soon-maintenance/niteo-cmp.php',
+				'name'    => 'CMP Coming Soon & Maintenance',
+				'enabled' => ( '1' === (string) get_option( 'niteoCS_status' ) ),
+			);
+		}
+
+		if ( is_plugin_active( 'maintenance/maintenance.php' ) ) {
+			$found[] = array(
+				'plugin'  => 'maintenance/maintenance.php',
+				'name'    => 'Maintenance',
+				'enabled' => null,
+				'note'    => __( 'Plugin is active; enable state is not readable from options — check its settings page.', 'vibe-ai' ),
+			);
+		}
+
+		return $found;
+	}
+
+	private function handle_cron_event_run( $positional, $flags ) {
+		if ( empty( $positional ) ) {
+			return $this->error_result( __( 'Hook required. Usage: cron event run <hook> [<hook>...]', 'vibe-ai' ) );
+		}
+		$crons   = _get_cron_array() ?: array();
+		$results = array();
+		$ok      = 0;
+		foreach ( $positional as $hook ) {
+			$instances = array();
+			foreach ( $crons as $timestamp => $hooks ) {
+				if ( isset( $hooks[ $hook ] ) ) {
+					foreach ( $hooks[ $hook ] as $event ) {
+						$instances[] = $event;
+					}
+				}
+			}
+			if ( empty( $instances ) ) {
+				$results[] = array( 'hook' => $hook, 'status' => 'error', 'error' => __( 'no scheduled events for this hook', 'vibe-ai' ) );
+				continue;
+			}
+			$executed = 0;
+			$error    = null;
+			foreach ( $instances as $event ) {
+				try {
+					do_action_ref_array( $hook, isset( $event['args'] ) ? (array) $event['args'] : array() );
+					$executed++;
+				} catch ( \Throwable $e ) {
+					$error = $e->getMessage();
+					break;
+				}
+			}
+			if ( null !== $error ) {
+				/* translators: %s: error message */
+				$results[] = array( 'hook' => $hook, 'status' => 'error', 'executed' => $executed, 'error' => sprintf( __( 'callback threw: %s', 'vibe-ai' ), $error ) );
+				continue;
+			}
+			$ok++;
+			$results[] = array( 'hook' => $hook, 'status' => 'executed', 'executed' => $executed );
+		}
+
+		WPVibe_Change_Tracker::mark( array(
+			'summary'      => "Cron hook(s) run: {$ok}/" . count( $positional ),
+			'action_label' => 'Refresh',
+		) );
+
+		return $this->success_result( array(
+			/* translators: 1: success count, 2: total */
+			'message' => sprintf( __( 'Executed %1$d of %2$d hook(s).', 'vibe-ai' ), $ok, count( $positional ) ),
+			'results' => $results,
+		) );
+	}
+
+	private function handle_cron_event_delete( $positional, $flags ) {
+		if ( empty( $positional ) ) {
+			return $this->error_result( __( 'Hook required. Usage: cron event delete <hook> [<hook>...]', 'vibe-ai' ) );
+		}
+		$results = array();
+		$total   = 0;
+		foreach ( $positional as $hook ) {
+			$removed = wp_unschedule_hook( $hook );
+			if ( false === $removed || is_wp_error( $removed ) ) {
+				$results[] = array( 'hook' => $hook, 'status' => 'error', 'error' => __( 'unschedule failed', 'vibe-ai' ) );
+				continue;
+			}
+			$total    += (int) $removed;
+			$results[] = array( 'hook' => $hook, 'status' => 'deleted', 'events_removed' => (int) $removed );
+		}
+
+		WPVibe_Change_Tracker::mark( array(
+			'summary'      => "Cron events deleted: {$total}",
+			'action_label' => 'Refresh',
+		) );
+
+		return $this->success_result( array(
+			/* translators: %d: number of events removed */
+			'message' => sprintf( __( 'Removed %d scheduled event(s).', 'vibe-ai' ), $total ),
+			'results' => $results,
+		) );
+	}
+
+	private function handle_theme_install( $positional, $flags, $confirm_write = false ) {
+		if ( empty( $positional[0] ) ) {
+			return $this->error_result( __( 'Theme slug required.', 'vibe-ai' ) );
+		}
+		$slug = sanitize_key( $positional[0] );
+
+		require_once ABSPATH . 'wp-admin/includes/file.php';
+		require_once ABSPATH . 'wp-admin/includes/misc.php';
+		require_once ABSPATH . 'wp-admin/includes/theme.php';
+
+		$api_args = array( 'slug' => $slug, 'fields' => array( 'sections' => false ) );
+		if ( ! empty( $flags['version'] ) ) {
+			$api_args['version'] = $flags['version'];
+		}
+		$api = themes_api( 'theme_information', $api_args );
+		if ( is_wp_error( $api ) ) {
+			return $this->error_result( $api->get_error_message() );
+		}
+
+		if ( ! $confirm_write ) {
+			return array(
+				'exit_code'             => 0,
+				'stdout'                => wp_json_encode( array(
+					'name'          => $api->name,
+					'slug'          => $api->slug,
+					'version'       => $api->version,
+					'requires'      => $api->requires ?? '',
+					'requires_php'  => $api->requires_php ?? '',
+					'rating'        => $api->rating ?? 0,
+					'download_link' => $api->download_link,
+				), JSON_PRETTY_PRINT ),
+				'stderr'                => '',
+				'requires_confirmation' => true,
+				'message'               => sprintf(
+					/* translators: 1: theme name, 2: theme version */
+					__( 'Ready to install %1$s v%2$s. Call again with confirm_write=true to proceed.', 'vibe-ai' ),
+					$api->name,
+					$api->version
+				),
+			);
+		}
+
+		require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
+		global $wpdb;
+		if ( empty( $wpdb->dbname ) ) {
+			// SQLite-integration sites (Studio, Playground) leave dbname empty.
+			$wpdb->dbname = 'wordpress';
+		}
+
+		$skin     = new Automatic_Upgrader_Skin();
+		$upgrader = new Theme_Upgrader( $skin );
+		try {
+			$result = $upgrader->install( $api->download_link );
+		} catch ( \Throwable $e ) {
+			$skin_messages = $skin->get_upgrade_messages();
+			return $this->error_result(
+				sprintf(
+					/* translators: 1: theme name, 2: error message, 3: upgrader messages */
+					__( 'Install of %1$s threw a fatal error: %2$s%3$s', 'vibe-ai' ),
+					$api->name,
+					$e->getMessage(),
+					$skin_messages ? ' Upgrader log: ' . implode( ' / ', $skin_messages ) : ''
+				)
+			);
+		}
+		if ( is_wp_error( $result ) ) {
+			return $this->error_result( $result->get_error_message() );
+		}
+		if ( ! $result ) {
+			$messages = $skin->get_upgrade_messages();
+			return $this->error_result( __( 'Install failed.', 'vibe-ai' ) . ( $messages ? ' Upgrader log: ' . implode( ' / ', $messages ) : '' ) );
+		}
+
+		$activated = false;
+		if ( ! empty( $flags['activate'] ) ) {
+			$theme      = $upgrader->theme_info();
+			$stylesheet = $theme ? $theme->get_stylesheet() : $slug;
+			switch_theme( $stylesheet );
+			$activated = ( get_stylesheet() === $stylesheet );
+			if ( ! $activated ) {
+				return $this->error_result(
+					sprintf(
+						/* translators: 1: theme name, 2: theme version */
+						__( 'Installed %1$s v%2$s, but activation did not take effect. The theme may not meet WP/PHP requirements. Activate it manually or run `theme activate`.', 'vibe-ai' ),
+						$api->name,
+						$api->version
+					)
+				);
+			}
+		}
+
+		WPVibe_Change_Tracker::mark( array(
+			'summary'      => "Theme installed: {$slug}" . ( $activated ? ' (activated)' : '' ),
+			'action_label' => 'Manage Themes',
+			'admin_url'    => admin_url( 'themes.php' ),
+		) );
+
+		/* translators: 1: theme name, 2: theme version */
+		$msg = sprintf( __( 'Installed %1$s v%2$s.', 'vibe-ai' ), $api->name, $api->version );
+		if ( $activated ) {
+			$msg .= ' ' . __( 'Theme activated.', 'vibe-ai' );
+		}
+		return $this->success_result( array( 'message' => $msg ) );
+	}
+
+	private function handle_theme_update( $positional, $flags, $confirm_write = false ) {
+		if ( empty( $positional[0] ) ) {
+			return $this->error_result( __( 'Theme slug required.', 'vibe-ai' ) );
+		}
+		$slug  = $positional[0];
+		$theme = wp_get_theme( $slug );
+		if ( ! $theme->exists() ) {
+			/* translators: %s: theme slug */
+			return $this->error_result( sprintf( __( 'Theme \'%s\' not found.', 'vibe-ai' ), $slug ) );
+		}
+
+		wp_update_themes();
+		$update_data = get_site_transient( 'update_themes' );
+		if ( ! isset( $update_data->response[ $slug ] ) ) {
+			return $this->error_result( __( 'No update available for this theme.', 'vibe-ai' ) );
+		}
+		// Theme update entries are arrays (unlike plugins, which are objects).
+		$update = (array) $update_data->response[ $slug ];
+
+		if ( ! $confirm_write ) {
+			return array(
+				'exit_code'             => 0,
+				'stdout'                => wp_json_encode( array(
+					'name'            => $theme->get( 'Name' ),
+					'current_version' => $theme->get( 'Version' ),
+					'new_version'     => $update['new_version'] ?? '',
+				), JSON_PRETTY_PRINT ),
+				'stderr'                => '',
+				'requires_confirmation' => true,
+				'message'               => sprintf(
+					/* translators: 1: theme name, 2: current version, 3: new version */
+					__( 'Ready to update %1$s from %2$s to %3$s. Call again with confirm_write=true to proceed.', 'vibe-ai' ),
+					$theme->get( 'Name' ),
+					$theme->get( 'Version' ),
+					$update['new_version'] ?? ''
+				),
+			);
+		}
+
+		require_once ABSPATH . 'wp-admin/includes/file.php';
+		require_once ABSPATH . 'wp-admin/includes/misc.php';
+		require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
+		$skin     = new Automatic_Upgrader_Skin();
+		$upgrader = new Theme_Upgrader( $skin );
+		$result   = $upgrader->upgrade( $slug );
+		if ( is_wp_error( $result ) ) {
+			return $this->error_result( $result->get_error_message() );
+		}
+		if ( ! $result ) {
+			$messages = $skin->get_upgrade_messages();
+			return $this->error_result( __( 'Update failed.', 'vibe-ai' ) . ( $messages ? ' Upgrader log: ' . implode( ' / ', $messages ) : '' ) );
+		}
+
+		WPVibe_Change_Tracker::mark( array(
+			'summary'      => "Theme updated: {$slug}",
+			'action_label' => 'Manage Themes',
+			'admin_url'    => admin_url( 'themes.php' ),
+		) );
+
+		return $this->success_result( array(
+			'message' => sprintf(
+				/* translators: 1: theme name, 2: new version */
+				__( 'Updated %1$s to v%2$s.', 'vibe-ai' ),
+				$theme->get( 'Name' ),
+				$update['new_version'] ?? ''
+			),
+		) );
+	}
+
+	private function handle_theme_delete( $positional, $flags ) {
+		if ( empty( $positional[0] ) ) {
+			return $this->error_result( __( 'Theme slug required. Usage: theme delete <slug> [<slug>...]', 'vibe-ai' ) );
+		}
+
+		require_once ABSPATH . 'wp-admin/includes/theme.php';
+
+		$results = array();
+		$ok      = 0;
+		foreach ( $positional as $slug ) {
+			$theme = wp_get_theme( $slug );
+			if ( ! $theme->exists() ) {
+				$results[] = array( 'target' => $slug, 'status' => 'error', 'error' => 'not found' );
+				continue;
+			}
+			if ( get_stylesheet() === $slug ) {
+				$results[] = array( 'target' => $slug, 'status' => 'error', 'error' => __( 'cannot delete the active theme', 'vibe-ai' ) );
+				continue;
+			}
+			if ( get_template() === $slug ) {
+				$results[] = array( 'target' => $slug, 'status' => 'error', 'error' => __( 'cannot delete the parent of the active child theme', 'vibe-ai' ) );
+				continue;
+			}
+			$result = delete_theme( $slug );
+			if ( is_wp_error( $result ) ) {
+				$results[] = array( 'target' => $slug, 'status' => 'error', 'error' => $result->get_error_message() );
+				continue;
+			}
+			if ( false === $result ) {
+				$results[] = array( 'target' => $slug, 'status' => 'error', 'error' => 'filesystem error' );
+				continue;
+			}
+			$ok++;
+			$results[] = array( 'target' => $slug, 'status' => 'deleted' );
+		}
+
+		WPVibe_Change_Tracker::mark( array(
+			'summary'      => count( $positional ) > 1 ? "Themes deleted: {$ok}/" . count( $positional ) : "Theme deleted: {$positional[0]}",
+			'action_label' => 'Manage Themes',
+			'admin_url'    => admin_url( 'themes.php' ),
+		) );
+
+		if ( 1 === count( $positional ) ) {
+			$only = $results[0];
+			if ( 'error' === $only['status'] ) {
+				/* translators: 1: theme slug, 2: error message */
+				return $this->error_result( sprintf( __( 'Theme \'%1$s\': %2$s', 'vibe-ai' ), $only['target'], $only['error'] ) );
+			}
+			/* translators: %s: theme slug */
+			return $this->success_result( array( 'message' => sprintf( __( 'Theme \'%s\' deleted.', 'vibe-ai' ), $positional[0] ) ) );
+		}
+
+		return $this->success_result( array(
+			/* translators: 1: success count, 2: total */
+			'message'   => sprintf( __( 'Deleted %1$d of %2$d themes.', 'vibe-ai' ), $ok, count( $positional ) ),
+			'succeeded' => $ok,
+			'total'     => count( $positional ),
+			'results'   => $results,
+		) );
+	}
+
+	// ------------------------------------------------------------------
+	// Role & capability editing (gated + lockout-protected)
+	// ------------------------------------------------------------------
+
+	private function resolve_role_or_error( $role_key ) {
+		if ( empty( $role_key ) ) {
+			return new WP_Error( 'no_role', __( 'Role required.', 'vibe-ai' ) );
+		}
+		$role = get_role( $role_key );
+		if ( ! $role ) {
+			$names = function_exists( 'wp_roles' ) ? implode( ', ', array_keys( wp_roles()->roles ) ) : '';
+			/* translators: 1: role slug, 2: available role slugs */
+			return new WP_Error( 'no_role', sprintf( __( 'Role \'%1$s\' not found. Available roles: %2$s', 'vibe-ai' ), $role_key, $names ) );
+		}
+		return $role;
+	}
+
+	private function handle_cap_add( $positional, $flags ) {
+		if ( count( $positional ) < 2 ) {
+			return $this->error_result( __( 'Usage: cap add <role> <cap>... [--grant=<true|false>]', 'vibe-ai' ) );
+		}
+		$role = $this->resolve_role_or_error( $positional[0] );
+		if ( is_wp_error( $role ) ) {
+			return $this->error_result( $role->get_error_message() );
+		}
+		$caps  = array_slice( $positional, 1 );
+		$grant = true;
+		if ( isset( $flags['grant'] ) ) {
+			$grant = ! ( 'false' === $flags['grant'] || false === $flags['grant'] || '0' === $flags['grant'] );
+		}
+
+		$added   = 0;
+		$skipped = array();
+		foreach ( $caps as $cap ) {
+			if ( $grant && $role->has_cap( $cap ) ) {
+				$skipped[] = array( 'capability' => $cap, 'reason' => 'already granted' );
+				continue;
+			}
+			if ( ! $grant && isset( $role->capabilities[ $cap ] ) && false === $role->capabilities[ $cap ] ) {
+				$skipped[] = array( 'capability' => $cap, 'reason' => 'already denied' );
+				continue;
+			}
+			$role->add_cap( $cap, $grant );
+			$added++;
+		}
+
+		WPVibe_Change_Tracker::mark( array(
+			'summary'      => "Capabilities added to role: {$positional[0]}",
+			'action_label' => 'Manage Users',
+			'admin_url'    => admin_url( 'users.php' ),
+		) );
+
+		$data = array(
+			/* translators: 1: count, 2: role */
+			'message' => sprintf( __( 'Added %1$d capability(ies) to \'%2$s\' role%3$s.', 'vibe-ai' ), $added, $positional[0], $grant ? '' : ' ' . __( 'as false (denied)', 'vibe-ai' ) ),
+			'added'   => $added,
+		);
+		if ( $skipped ) {
+			$data['skipped'] = $skipped;
+		}
+		$high = array_values( array_intersect( $caps, self::HIGH_RISK_CAPS ) );
+		if ( $high && $grant ) {
+			$data['high_risk_capabilities'] = $high;
+		}
+		return $this->success_result( $data );
+	}
+
+	private function handle_cap_remove( $positional, $flags ) {
+		if ( count( $positional ) < 2 ) {
+			return $this->error_result( __( 'Usage: cap remove <role> <cap>...', 'vibe-ai' ) );
+		}
+		$role_key = $positional[0];
+		$caps     = array_slice( $positional, 1 );
+
+		// Lockout protection (real WP-CLI has none): the administrator role
+		// keeps its core capabilities, or the AI could brick site management.
+		if ( 'administrator' === $role_key ) {
+			$core = array_values( array_intersect( $caps, self::CORE_ADMIN_CAPS ) );
+			if ( $core ) {
+				return $this->error_result(
+					sprintf(
+						/* translators: %s: capability list */
+						__( 'Refused: removing core capabilities (%s) from the administrator role would lock administrators out of site management. Use `role reset administrator` if the role is already damaged.', 'vibe-ai' ),
+						implode( ', ', $core )
+					)
+				);
+			}
+		}
+
+		$role = $this->resolve_role_or_error( $role_key );
+		if ( is_wp_error( $role ) ) {
+			return $this->error_result( $role->get_error_message() );
+		}
+
+		$removed = 0;
+		$skipped = array();
+		foreach ( $caps as $cap ) {
+			if ( ! isset( $role->capabilities[ $cap ] ) ) {
+				$skipped[] = array( 'capability' => $cap, 'reason' => 'not set on this role' );
+				continue;
+			}
+			$role->remove_cap( $cap );
+			$removed++;
+		}
+
+		WPVibe_Change_Tracker::mark( array(
+			'summary'      => "Capabilities removed from role: {$role_key}",
+			'action_label' => 'Manage Users',
+			'admin_url'    => admin_url( 'users.php' ),
+		) );
+
+		$data = array(
+			/* translators: 1: count, 2: role */
+			'message' => sprintf( __( 'Removed %1$d capability(ies) from \'%2$s\' role.', 'vibe-ai' ), $removed, $role_key ),
+			'removed' => $removed,
+		);
+		if ( $skipped ) {
+			$data['skipped'] = $skipped;
+		}
+		return $this->success_result( $data );
+	}
+
+	private function handle_role_create( $positional, $flags ) {
+		if ( count( $positional ) < 2 ) {
+			return $this->error_result( __( 'Usage: role create <role-key> <role-name> [--clone=<role>]', 'vibe-ai' ) );
+		}
+		$role_key  = $positional[0];
+		$role_name = $positional[1];
+		if ( get_role( $role_key ) ) {
+			/* translators: %s: role key */
+			return $this->error_result( sprintf( __( 'Role \'%s\' already exists.', 'vibe-ai' ), $role_key ) );
+		}
+
+		$clone_caps = null;
+		if ( ! empty( $flags['clone'] ) ) {
+			$src = get_role( $flags['clone'] );
+			if ( ! $src ) {
+				/* translators: %s: role key */
+				return $this->error_result( sprintf( __( 'Clone source role \'%s\' not found.', 'vibe-ai' ), $flags['clone'] ) );
+			}
+			$clone_caps = $src->capabilities;
+		}
+
+		$new_role = add_role( $role_key, $role_name );
+		if ( ! $new_role ) {
+			return $this->error_result( __( 'Role could not be created.', 'vibe-ai' ) );
+		}
+		if ( $clone_caps ) {
+			// Unlike real WP-CLI (which grants everything true), preserve
+			// grant=false denials from the source role.
+			foreach ( $clone_caps as $cap => $grant ) {
+				$new_role->add_cap( $cap, $grant );
+			}
+		}
+
+		WPVibe_Change_Tracker::mark( array(
+			'summary'      => "Role created: {$role_key}",
+			'action_label' => 'Manage Users',
+			'admin_url'    => admin_url( 'users.php' ),
+		) );
+
+		$message = null !== $clone_caps
+			/* translators: 1: role key, 2: source role */
+			? sprintf( __( 'Role \'%1$s\' created. Cloned capabilities from \'%2$s\'.', 'vibe-ai' ), $role_key, $flags['clone'] )
+			/* translators: %s: role key */
+			: sprintf( __( 'Role \'%s\' created.', 'vibe-ai' ), $role_key );
+		return $this->success_result( array( 'message' => $message ) );
+	}
+
+	private function handle_role_delete( $positional, $flags ) {
+		if ( empty( $positional[0] ) ) {
+			return $this->error_result( __( 'Usage: role delete <role-key>', 'vibe-ai' ) );
+		}
+		$role_key = $positional[0];
+		if ( 'administrator' === $role_key ) {
+			return $this->error_result( __( 'Refused: the administrator role cannot be deleted (lockout protection).', 'vibe-ai' ) );
+		}
+		if ( ! get_role( $role_key ) ) {
+			/* translators: %s: role key */
+			return $this->error_result( sprintf( __( 'Role \'%s\' not found.', 'vibe-ai' ), $role_key ) );
+		}
+
+		$users      = count_users();
+		$user_count = isset( $users['avail_roles'][ $role_key ] ) ? (int) $users['avail_roles'][ $role_key ] : 0;
+
+		remove_role( $role_key );
+		if ( get_role( $role_key ) ) {
+			/* translators: %s: role key */
+			return $this->error_result( sprintf( __( 'Role \'%s\' could not be deleted.', 'vibe-ai' ), $role_key ) );
+		}
+
+		WPVibe_Change_Tracker::mark( array(
+			'summary'      => "Role deleted: {$role_key}",
+			'action_label' => 'Manage Users',
+			'admin_url'    => admin_url( 'users.php' ),
+		) );
+
+		$data = array(
+			/* translators: %s: role key */
+			'message' => sprintf( __( 'Role \'%s\' deleted.', 'vibe-ai' ), $role_key ),
+		);
+		if ( $user_count > 0 ) {
+			/* translators: %d: user count */
+			$data['note'] = sprintf( __( '%d user(s) held this role and now have no role. Reassign them via the users REST API or wp-admin.', 'vibe-ai' ), $user_count );
+		}
+		return $this->success_result( $data );
+	}
+
+	private function handle_role_reset( $positional, $flags ) {
+		$all = ! empty( $flags['all'] );
+		if ( ! $all && empty( $positional ) ) {
+			return $this->error_result( __( 'Usage: role reset <role-key>... | --all', 'vibe-ai' ) );
+		}
+		if ( ! function_exists( 'populate_roles' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/schema.php';
+		}
+
+		$requested = $all ? self::DEFAULT_ROLES : array_values( array_unique( $positional ) );
+		$targets   = array();
+		$results   = array();
+		foreach ( $requested as $role_key ) {
+			if ( ! in_array( $role_key, self::DEFAULT_ROLES, true ) ) {
+				// Real WP-CLI: custom roles are not affected by reset.
+				$results[] = array( 'role' => $role_key, 'status' => 'skipped', 'note' => __( 'custom role, not affected by reset', 'vibe-ai' ) );
+				continue;
+			}
+			$targets[] = $role_key;
+		}
+		if ( empty( $targets ) ) {
+			return $this->error_result( __( 'Must specify a default role to reset (administrator, editor, author, contributor, subscriber).', 'vibe-ai' ) );
+		}
+
+		// populate_roles() recreates every missing default role, so remember
+		// which defaults were deliberately absent and re-remove them after.
+		$absent_defaults = array();
+		foreach ( self::DEFAULT_ROLES as $role_key ) {
+			if ( ! in_array( $role_key, $targets, true ) && ! get_role( $role_key ) ) {
+				$absent_defaults[] = $role_key;
+			}
+		}
+
+		$before = array();
+		foreach ( $targets as $role_key ) {
+			$role_obj            = get_role( $role_key );
+			$before[ $role_key ] = $role_obj ? array_keys( array_filter( $role_obj->capabilities ) ) : array();
+			remove_role( $role_key );
+		}
+
+		populate_roles();
+
+		foreach ( $absent_defaults as $role_key ) {
+			remove_role( $role_key );
+		}
+
+		foreach ( $targets as $role_key ) {
+			$role_obj = get_role( $role_key );
+			$after    = $role_obj ? array_keys( array_filter( $role_obj->capabilities ) ) : array();
+			$restored = count( array_diff( $after, $before[ $role_key ] ) );
+			$removed  = count( array_diff( $before[ $role_key ], $after ) );
+			$results[] = array(
+				'role'                  => $role_key,
+				'status'                => 'reset',
+				'capabilities_restored' => $restored,
+				'capabilities_removed'  => $removed,
+			);
+		}
+
+		WPVibe_Change_Tracker::mark( array(
+			'summary'      => 'Role(s) reset to WordPress defaults: ' . implode( ', ', $targets ),
+			'action_label' => 'Manage Users',
+			'admin_url'    => admin_url( 'users.php' ),
+		) );
+
+		return $this->success_result( array(
+			/* translators: %d: role count */
+			'message' => sprintf( __( 'Reset %d role(s) to WordPress defaults.', 'vibe-ai' ), count( $targets ) ),
+			'results' => $results,
+		) );
+	}
+
+	private function handle_user_add_cap( $positional, $flags ) {
+		if ( count( $positional ) < 2 ) {
+			return $this->error_result( __( 'Usage: user add-cap <id|login|email> <cap>', 'vibe-ai' ) );
+		}
+		$user = $this->resolve_user( $positional[0] );
+		if ( ! $user ) {
+			/* translators: %s: user identifier */
+			return $this->error_result( sprintf( __( 'User \'%s\' not found.', 'vibe-ai' ), $positional[0] ) );
+		}
+		$cap = $positional[1];
+		$user->add_cap( $cap );
+
+		WPVibe_Change_Tracker::mark( array(
+			'summary'      => "Capability added to user: {$user->user_login} → {$cap}",
+			'action_label' => 'Manage Users',
+			'admin_url'    => admin_url( 'users.php' ),
+		) );
+
+		$data = array(
+			/* translators: 1: capability, 2: user login */
+			'message' => sprintf( __( 'Added \'%1$s\' capability for user \'%2$s\'.', 'vibe-ai' ), $cap, $user->user_login ),
+		);
+		if ( in_array( $cap, self::HIGH_RISK_CAPS, true ) ) {
+			$data['high_risk_capabilities'] = array( $cap );
+		}
+		return $this->success_result( $data );
+	}
+
+	private function handle_user_remove_cap( $positional, $flags ) {
+		if ( count( $positional ) < 2 ) {
+			return $this->error_result( __( 'Usage: user remove-cap <id|login|email> <cap>', 'vibe-ai' ) );
+		}
+		$user = $this->resolve_user( $positional[0] );
+		if ( ! $user ) {
+			/* translators: %s: user identifier */
+			return $this->error_result( sprintf( __( 'User \'%s\' not found.', 'vibe-ai' ), $positional[0] ) );
+		}
+		$cap = $positional[1];
+		// Only individual grants are removable, matching real WP-CLI; caps that
+		// come from a role are removed from the role via `cap remove`.
+		if ( ! isset( $user->caps[ $cap ] ) ) {
+			return $this->error_result(
+				sprintf(
+					/* translators: 1: capability, 2: user login */
+					__( 'No direct \'%1$s\' capability on user \'%2$s\'. If it comes from their role, remove it from the role with `cap remove <role> %1$s`.', 'vibe-ai' ),
+					$cap,
+					$user->user_login
+				)
+			);
+		}
+		$user->remove_cap( $cap );
+
+		WPVibe_Change_Tracker::mark( array(
+			'summary'      => "Capability removed from user: {$user->user_login} → {$cap}",
+			'action_label' => 'Manage Users',
+			'admin_url'    => admin_url( 'users.php' ),
+		) );
+
+		return $this->success_result( array(
+			/* translators: 1: capability, 2: user login */
+			'message' => sprintf( __( 'Removed \'%1$s\' cap for user \'%2$s\'.', 'vibe-ai' ), $cap, $user->user_login ),
+		) );
+	}
+
+	private function resolve_user( $ident ) {
+		return is_numeric( $ident )
+			? get_user_by( 'id', (int) $ident )
+			: ( is_email( $ident ) ? get_user_by( 'email', $ident ) : get_user_by( 'login', $ident ) );
 	}
 
 	// ------------------------------------------------------------------
@@ -2412,12 +4600,12 @@ class WPVibe_CLI {
 		$base    = $positional[0] ?? '';
 		$blocked = array( 'eval', 'eval-file', 'shell', 'core', 'config', 'package', 'server', 'site' );
 		if ( in_array( $base, $blocked, true ) ) {
-			/* translators: %s: command name */
-			return new WP_Error( 'command_blocked', sprintf( __( '"%s" commands are blocked for security.', 'vibe-ai' ), $base ), array( 'status' => 403 ) );
+			/* translators: 1: command name, 2: the same command name */
+			return new WP_Error( 'command_blocked', sprintf( __( '"%1$s" commands are blocked for security. Individually supported subcommands (if any) are listed by `help %2$s`; run `help` for the full catalog.', 'vibe-ai' ), $base, $base ), array( 'status' => 403 ) );
 		}
 
 		/* translators: %s: command name */
-		return new WP_Error( 'command_not_allowed', sprintf( __( 'Command "%s" is not in the allowlist.', 'vibe-ai' ), implode( ' ', array_slice( $positional, 0, 2 ) ) ), array( 'status' => 403 ) );
+		return new WP_Error( 'command_not_allowed', sprintf( __( 'Command "%s" is not in the allowlist. Run `help` for the full supported-command catalog — the capability may exist under different syntax.', 'vibe-ai' ), implode( ' ', array_slice( $positional, 0, 2 ) ) ), array( 'status' => 403 ) );
 	}
 
 	private function strip_blocked_flags( $tokens ) {
@@ -2458,6 +4646,357 @@ class WPVibe_CLI {
 			__( 'How to reply: in one short sentence, tell the user this specific option is permanently protected and they should change it through WordPress admin if they really need to. Do not offer alternative deletion methods.', 'vibe-ai' ),
 			'</wpvibe-blocked-option>',
 		) );
+	}
+
+	private function handle_db_tables( $positional, $flags ) {
+		global $wpdb;
+		$tables = $wpdb->get_col( 'SHOW TABLES' );
+		return $this->success_result( is_array( $tables ) ? $tables : array() );
+	}
+
+	private function handle_db_prefix( $positional, $flags ) {
+		global $wpdb;
+		return $this->success_result( array( 'prefix' => $wpdb->prefix ) );
+	}
+
+	private function handle_core_version( $positional, $flags ) {
+		global $wp_version;
+		$data = array( 'version' => $wp_version );
+		if ( isset( $flags['extra'] ) ) {
+			global $wp_db_version;
+			$data['db_version'] = $wp_db_version;
+			$data['locale']     = get_locale();
+			$data['php']        = PHP_VERSION;
+		}
+		return $this->success_result( $data );
+	}
+
+	private function handle_core_check_update( $positional, $flags ) {
+		if ( ! function_exists( 'get_core_updates' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/update.php';
+		}
+		wp_version_check();
+		$updates   = get_core_updates();
+		$available = array();
+		foreach ( (array) $updates as $update ) {
+			if ( ! isset( $update->response ) || 'latest' === $update->response ) {
+				continue;
+			}
+			$available[] = array(
+				'version'     => $update->current ?? '',
+				'update_type' => $update->response,
+				'locale'      => $update->locale ?? '',
+			);
+		}
+		if ( empty( $available ) ) {
+			return $this->success_result( array( 'message' => __( 'WordPress is at the latest version.', 'vibe-ai' ) ) );
+		}
+		return $this->success_result( $available );
+	}
+
+	private function handle_post_type_list( $positional, $flags ) {
+		$results = array();
+		foreach ( get_post_types( array(), 'objects' ) as $type ) {
+			$results[] = array(
+				'name'         => $type->name,
+				'label'        => $type->label,
+				'public'       => $type->public ? 'true' : 'false',
+				'hierarchical' => $type->hierarchical ? 'true' : 'false',
+				'description'  => $type->description,
+			);
+		}
+		return $this->success_result( $this->filter_fields( $results, $flags ) );
+	}
+
+	private function handle_menu_location_list( $positional, $flags ) {
+		$assigned = get_nav_menu_locations();
+		$results  = array();
+		foreach ( get_registered_nav_menus() as $location => $description ) {
+			$menu      = ! empty( $assigned[ $location ] ) ? wp_get_nav_menu_object( $assigned[ $location ] ) : null;
+			$results[] = array(
+				'location'      => $location,
+				'description'   => $description,
+				'assigned_menu' => $menu ? $menu->name : '',
+			);
+		}
+		return $this->success_result( $results );
+	}
+
+	private function handle_theme_mod_list( $positional, $flags ) {
+		$mods    = get_theme_mods();
+		$results = array();
+		foreach ( (array) $mods as $key => $value ) {
+			$results[] = array(
+				'key'   => (string) $key,
+				'value' => is_scalar( $value ) ? (string) $value : wp_json_encode( $value ),
+			);
+		}
+		return $this->success_result( $results );
+	}
+
+	private function handle_core_verify_checksums( $positional, $flags ) {
+		global $wp_version;
+		$version      = ! empty( $flags['version'] ) ? $flags['version'] : $wp_version;
+		$locale       = ! empty( $flags['locale'] ) ? $flags['locale'] : get_locale();
+		$include_root = ! empty( $flags['include_root'] );
+		$exclude      = ! empty( $flags['exclude'] ) ? array_map( 'trim', explode( ',', $flags['exclude'] ) ) : array();
+
+		$checksums = $this->fetch_core_checksums( $version, $locale );
+		if ( ! $checksums && 'en_US' !== $locale ) {
+			// Localized packages often have no published checksums; en_US covers
+			// everything except the translated readme/license files.
+			$checksums = $this->fetch_core_checksums( $version, 'en_US' );
+		}
+		if ( ! $checksums ) {
+			/* translators: 1: WordPress version, 2: locale */
+			return $this->error_result( sprintf( __( 'Could not retrieve core checksums for WordPress %1$s (%2$s).', 'vibe-ai' ), $version, $locale ) );
+		}
+
+		if ( function_exists( 'set_time_limit' ) ) {
+			@set_time_limit( 120 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+		}
+
+		$mismatched = array();
+		$missing    = array();
+		$checked    = 0;
+		foreach ( $checksums as $file => $md5 ) {
+			// wp-content ships in the zip but is expected to diverge (themes,
+			// plugins, languages) — real WP-CLI skips it too.
+			if ( 0 === strpos( $file, 'wp-content/' ) ) {
+				continue;
+			}
+			if ( in_array( $file, $exclude, true ) ) {
+				continue;
+			}
+			$path = ABSPATH . $file;
+			$checked++;
+			if ( ! file_exists( $path ) ) {
+				$missing[] = $file;
+				continue;
+			}
+			if ( md5_file( $path ) !== $md5 ) {
+				$mismatched[] = $file;
+			}
+		}
+
+		// Unknown files inside the core directories ("File should not exist" in
+		// real WP-CLI) — the security-relevant half: malware more often adds
+		// files than modifies them.
+		$should_not_exist = array();
+		$disk_files       = $this->collect_files_recursive( ABSPATH, function ( $rel ) use ( $include_root ) {
+			return $this->core_checksum_in_scope( $rel, $include_root );
+		} );
+		if ( null !== $disk_files ) {
+			$manifest = array();
+			foreach ( array_keys( $checksums ) as $file ) {
+				if ( $this->core_checksum_in_scope( $file, $include_root ) ) {
+					$manifest[ $file ] = true;
+				}
+			}
+			foreach ( $disk_files as $rel ) {
+				if ( ! isset( $manifest[ $rel ] ) && ! in_array( $rel, $exclude, true ) ) {
+					$should_not_exist[] = $rel;
+				}
+			}
+			sort( $should_not_exist );
+		}
+
+		$verified = empty( $mismatched ) && empty( $missing );
+		if ( ! $verified ) {
+			$message = __( 'WordPress installation does NOT verify against checksums. Modified or missing core files can indicate a compromise — compare the listed files against a clean WordPress download before trusting this install.', 'vibe-ai' );
+		} elseif ( ! empty( $should_not_exist ) ) {
+			$message = __( 'Core files verify against checksums, but unknown files were found inside the core directories (should_not_exist). WordPress never adds extra files there — unexpected additions are a common malware pattern; identify or remove each one before trusting this install.', 'vibe-ai' );
+		} else {
+			$message = __( 'WordPress installation verifies against checksums.', 'vibe-ai' );
+		}
+
+		return $this->success_result( array(
+			'verified'         => $verified,
+			'wp_version'       => $version,
+			'files_checked'    => $checked,
+			'mismatched'       => $this->cap_file_list( $mismatched ),
+			'missing'          => $this->cap_file_list( $missing ),
+			'should_not_exist' => $this->cap_file_list( $should_not_exist ),
+			'message'          => $message,
+		) );
+	}
+
+	private function handle_plugin_verify_checksums( $positional, $flags ) {
+		if ( ! function_exists( 'get_plugins' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		}
+		$all   = get_plugins();
+		$slugs = array();
+		if ( isset( $flags['all'] ) ) {
+			foreach ( $all as $file => $data ) {
+				$slugs[ $this->plugin_slug_from_file( $file ) ] = $file;
+			}
+		} else {
+			if ( empty( $positional ) ) {
+				return $this->error_result( __( 'Plugin slug required (or pass --all).', 'vibe-ai' ) );
+			}
+			foreach ( $positional as $slug ) {
+				$file = $this->resolve_plugin_file( $slug );
+				if ( ! $file ) {
+					/* translators: %s: plugin slug */
+					return $this->error_result( sprintf( __( 'Plugin \'%s\' not found.', 'vibe-ai' ), $slug ) );
+				}
+				$slugs[ $this->plugin_slug_from_file( $file ) ] = $file;
+			}
+		}
+
+		if ( function_exists( 'set_time_limit' ) ) {
+			@set_time_limit( 120 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+		}
+
+		$results = array();
+		foreach ( $slugs as $slug => $file ) {
+			$version  = $all[ $file ]['Version'] ?? '';
+			// Plugin checksums live on downloads.wordpress.org, not api.wordpress.org.
+			$response = wp_remote_get(
+				'https://downloads.wordpress.org/plugin-checksums/' . rawurlencode( $slug ) . '/' . rawurlencode( $version ) . '.json',
+				array( 'timeout' => 15 )
+			);
+			$body  = is_wp_error( $response ) ? null : json_decode( wp_remote_retrieve_body( $response ), true );
+			$files = is_array( $body ) && ! empty( $body['files'] ) && is_array( $body['files'] ) ? $body['files'] : null;
+			if ( ! $files ) {
+				$results[] = array(
+					'plugin'   => $slug,
+					'version'  => $version,
+					'verified' => null,
+					'message'  => __( 'Checksums not available (not hosted on WordPress.org, or a premium/custom plugin).', 'vibe-ai' ),
+				);
+				continue;
+			}
+
+			$is_single  = ( '.' === dirname( $file ) );
+			$root       = trailingslashit( WP_PLUGIN_DIR ) . ( $is_single ? '' : trailingslashit( dirname( $file ) ) );
+			$strict     = ! empty( $flags['strict'] );
+			$mismatched = array();
+			$missing    = array();
+			foreach ( $files as $relpath => $hashes ) {
+				// WP.org regenerates readmes after release, so legitimate installs
+				// diff there; real WP-CLI skips them unless --strict.
+				if ( ! $strict && $this->is_soft_change_file( $relpath ) ) {
+					continue;
+				}
+				$expected = isset( $hashes['md5'] ) ? (array) $hashes['md5'] : array();
+				if ( empty( $expected ) ) {
+					continue;
+				}
+				$path = $root . $relpath;
+				if ( ! file_exists( $path ) ) {
+					$missing[] = $relpath;
+					continue;
+				}
+				if ( ! in_array( md5_file( $path ), $expected, true ) ) {
+					$mismatched[] = $relpath;
+				}
+			}
+
+			// Files on disk but absent from the manifest ("File was added" in
+			// real WP-CLI) — added files are the classic malware injection shape.
+			$added = array();
+			$disk  = $is_single ? array( basename( $file ) ) : $this->collect_files_recursive( $root, null );
+			if ( is_array( $disk ) ) {
+				foreach ( $disk as $relpath ) {
+					if ( ! array_key_exists( $relpath, $files ) ) {
+						$added[] = $relpath;
+					}
+				}
+				sort( $added );
+			}
+
+			$verified  = empty( $mismatched ) && empty( $missing ) && empty( $added );
+			$results[] = array(
+				'plugin'     => $slug,
+				'version'    => $version,
+				'verified'   => $verified,
+				'mismatched' => $this->cap_file_list( $mismatched ),
+				'missing'    => $this->cap_file_list( $missing ),
+				'added'      => $this->cap_file_list( $added ),
+			);
+		}
+		return $this->success_result( $results );
+	}
+
+	/** Real WP-CLI's soft-change files: only strict mode flags plugin readme diffs. */
+	private function is_soft_change_file( $file ) {
+		return in_array( strtolower( $file ), array( 'readme.txt', 'readme.md' ), true );
+	}
+
+	/**
+	 * Mirrors real WP-CLI's core-checksum scope: wp-admin/, wp-includes/, and
+	 * root wp-* files (never wp-config.php). --include-root widens to the whole
+	 * root except .htaccess, .maintenance, wp-config.php, and wp-content/.
+	 */
+	private function core_checksum_in_scope( $rel, $include_root ) {
+		if ( $include_root ) {
+			return 1 !== preg_match( '/^(\.htaccess$|\.maintenance$|wp-config\.php$|wp-content\/)/', $rel );
+		}
+		return 0 === strpos( $rel, 'wp-admin/' )
+			|| 0 === strpos( $rel, 'wp-includes/' )
+			|| 1 === preg_match( '/^wp-(?!config\.php)([^\/]*)$/', $rel );
+	}
+
+	/**
+	 * Recursive file listing relative to $root. $filter prunes directories too
+	 * (bare "wp-admin" must pass for traversal to descend, same as real WP-CLI).
+	 * Returns null on filesystem errors so callers can skip the check quietly.
+	 */
+	private function collect_files_recursive( $root, $filter ) {
+		$root   = rtrim( $root, '/\\' ) . '/';
+		$filter = $filter ?: function () {
+			return true;
+		};
+		$found  = array();
+		try {
+			$iterator = new RecursiveIteratorIterator(
+				new RecursiveCallbackFilterIterator(
+					new RecursiveDirectoryIterator( $root, RecursiveDirectoryIterator::SKIP_DOTS ),
+					function ( $current ) use ( $root, $filter ) {
+						$rel = str_replace( '\\', '/', substr( $current->getPathname(), strlen( $root ) ) );
+						return (bool) call_user_func( $filter, $rel );
+					}
+				),
+				RecursiveIteratorIterator::CHILD_FIRST
+			);
+			foreach ( $iterator as $file_info ) {
+				if ( $file_info->isFile() ) {
+					$found[] = str_replace( '\\', '/', substr( $file_info->getPathname(), strlen( $root ) ) );
+				}
+			}
+		} catch ( \Exception $e ) {
+			return null;
+		}
+		return $found;
+	}
+
+	private function fetch_core_checksums( $version, $locale ) {
+		$response = wp_remote_get(
+			'https://api.wordpress.org/core/checksums/1.0/?' . http_build_query( array( 'version' => $version, 'locale' => $locale ) ),
+			array( 'timeout' => 15 )
+		);
+		if ( is_wp_error( $response ) ) {
+			return null;
+		}
+		$body = json_decode( wp_remote_retrieve_body( $response ), true );
+		return ( is_array( $body ) && ! empty( $body['checksums'] ) && is_array( $body['checksums'] ) ) ? $body['checksums'] : null;
+	}
+
+	private function plugin_slug_from_file( $file ) {
+		$dir = dirname( $file );
+		return '.' === $dir ? basename( $file, '.php' ) : $dir;
+	}
+
+	/** Bound checksum failure lists so a fully-compromised install can't blow up the response. */
+	private function cap_file_list( $files, $limit = 50 ) {
+		if ( count( $files ) <= $limit ) {
+			return $files;
+		}
+		$capped   = array_slice( $files, 0, $limit );
+		$capped[] = sprintf( '... and %d more', count( $files ) - $limit );
+		return $capped;
 	}
 
 	private function success_result( $data ) {

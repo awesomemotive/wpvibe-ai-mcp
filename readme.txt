@@ -4,7 +4,7 @@ Tags: mcp, mcp-server, claude, chatgpt, ai-assistant
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.5.2
+Stable tag: 1.6.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -190,6 +190,24 @@ Vibe AI has multiple safety layers: draft theme isolation for file editing, file
 No. Vibe AI lets you manage your WordPress site entirely through conversation with your AI assistant. No coding required for content management. Theme editing is also conversational, your AI writes the code for your WordPress theme.
 
 == Changelog ==
+
+= 1.6.0 =
+* New: WP-CLI checksum verification. "core verify-checksums" and "plugin verify-checksums" (single plugin or --all) compare installed files against the official WordPress.org checksums and report modified or missing files, so an assistant can run a file-integrity check when investigating a possibly compromised site.
+* Improvement: core verify-checksums also reports unknown files inside the core directories (the "File should not exist" check from real WP-CLI, the half that catches injected malware) and supports --include-root, --exclude, --version, and --locale. plugin verify-checksums skips readme.txt/readme.md by default (WordPress.org regenerates readmes after release) with --strict to include them, and reports files added to a plugin folder that are not part of the official release.
+* New: Read-only WP-CLI commands assistants ask for most: core version, core check-update, db tables, db prefix, post-type list, menu location list, theme mod list, and plugin get.
+* Feature: Unified cache purge. "cache purge" detects the installed cache plugin (LiteSpeed Cache, WP Rocket, SG Optimizer, WP Super Cache, W3 Total Cache, Breeze, plus the Elementor CSS cache) and calls each plugin's own purge API, then flushes the object cache. The plugin-specific spellings assistants guess first (litespeed-purge, elementor flush-css, rocket clean, sg purge, super-cache flush, w3-total-cache flush, breeze purge) work as scoped aliases.
+* New: "config get <constant>" reads a single configuration constant (and table_prefix) for diagnostics like WP_DEBUG or DISALLOW_FILE_EDIT. Credentials and secrets (database credentials and anything matching KEY, SALT, SECRET, PASSWORD, or TOKEN) are blocked outright, and config list/set/edit remain blocked.
+* New: "option patch insert|update|delete" makes surgical changes to one key inside a nested settings array (plugin settings like Rank Math) without rewriting the whole option.
+* Hardening: Deleting an option now pauses for browser approval with a preview of the stored value, since options have no trash and a plugin's entire configuration can live in one. The AI's own temporary options (wpvibe_task_ prefix) and transients stay approval-free, and the session-bypass checkbox covers repeated cleanup.
+* Feature: Role and capability editing, the gap core REST cannot fill (the reason role-editor plugins exist): cap add/remove on roles, role create (with --clone), role delete, role reset (restore WordPress defaults), and user add-cap/remove-cap. Every change pauses for browser approval with the literal grant spelled out, administrator-equivalent capabilities are flagged in the preview, and lockout protections refuse removing core capabilities from the administrator role, deleting the administrator role, or deleting the last administrator user. role reset is the escape hatch back to WordPress defaults.
+* New: "cron event run <hook>" and "cron event delete <hook>" (both approval-gated) complete the stuck-cron debugging loop alongside cron event list and cron test.
+* New: "theme install", "theme update", and "theme delete" (delete approval-gated; refuses the active theme and the parent of an active child theme), symmetric with the existing plugin management commands.
+* Feature: search-replace is now implemented (previously a stub). It performs serialized-data-aware replacements (nested arrays and objects are unserialized, replaced, and re-serialized with correct lengths, so widget settings and theme mods survive a domain migration), works table by table in primary-key chunks, skips the guid column by default (--include-guids to opt in), supports --dry-run, --skip-tables, --skip-columns, and explicit table arguments, and reports completed vs remaining tables if it hits the time budget. Live runs pause for browser approval with per-table match counts, and the preview warns loudly when the replacement would change the site URL; --dry-run runs without approval.
+* New: Permission diagnostics. "cap list <role>" (with --show-grant) and "role list" let an assistant show exactly which capability a role is missing instead of hand-waving at a permission error.
+* New: "maintenance-mode status" reports the effective maintenance state from all three sources: the core .maintenance file (honoring the 10-minute expiry), the wp-content/maintenance.php drop-in, and known maintenance/coming-soon plugins (SeedProd, LightStart, Under Construction, CMP, Maintenance) with their enable state.
+* New: "cron test" verifies WP-Cron spawning end to end (DISABLE_WP_CRON, ALTERNATE_WP_CRON, and a live loopback spawn check), so stuck-cron debugging has a first step.
+* New: Symmetric read commands: media image-size, transient get (with --network), menu item list, user get, and theme get.
+* New: Command discovery. "help" returns the full supported-command catalog (name, tier, usage, approval requirements) generated from the security allowlist, and "help <command>" filters it, so an assistant discovers what is supported instead of burning calls guessing. "cli version" and "cli info" return honest emulator identity (plugin version, WordPress and PHP versions) instead of an error, so an assistant probing the environment gets accurate expectations rather than concluding WP-CLI is broken.
 
 = 1.5.2 =
 * Fix: The WP-CLI plugin list command now reports update availability. It exposes "update" (available/none) and "update_version" fields and honors the --update=available filter, so an assistant can reliably see which plugins have updates instead of getting blank update info.
