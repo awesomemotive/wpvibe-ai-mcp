@@ -172,6 +172,12 @@ class WPVibe_CLI {
 
 	const DEFAULT_ROLES = array( 'administrator', 'editor', 'author', 'contributor', 'subscriber' );
 
+	// Write-blocked options that are safe to READ (security audits need them).
+	const READABLE_BLOCKED_OPTIONS = array(
+		'users_can_register',
+		'default_role',
+	);
+
 	const BLOCKED_OPTIONS = array(
 		'siteurl',
 		'home',
@@ -311,7 +317,7 @@ class WPVibe_CLI {
 		'option get'              => 'option get <key>',
 		'option list'             => 'option list [--search=<pattern>] [--autoload=<on|off>]',
 		'user list'               => 'user list [--role=<role>] [--number=<n>]',
-		'post list'               => 'post list [--post_type=<type>] [--post_status=<status>] [--posts_per_page=<n>]',
+		'post list'               => 'post list [--post_type=<type>] [--post_status=<status>] [--posts_per_page=<n>] [--s=<search>] [--author=<id>] [--year=<yyyy>] [--monthnum=<1-12>]',
 		'post get'                => 'post get <id> [--fields=<fields>]',
 		'post meta get'           => 'post meta get <id> [<key>] [--all]',
 		'post meta list'          => 'post meta list <id> [--all]',
@@ -359,7 +365,7 @@ class WPVibe_CLI {
 		'option delete'           => 'option delete <key>',
 		'transient delete'        => 'transient delete <name> | --all | --expired',
 		'user delete'             => 'user delete <id|login|email> [<id>...] [--reassign=<user>]',
-		'post create'             => 'post create --post_title=<title> [--post_content=<content>] [--post_status=<status>] [--post_type=<type>]',
+		'post create'             => 'post create --post_title=<title> [--post_content=<content>] [--post_status=<status>] [--post_type=<type>] [--post_date=<Y-m-d H:i:s>]',
 		'post update'             => 'post update <id> [<id>...] [--post_title=<title>] [--post_content=<content>] [--post_status=<status>]',
 		'post delete'             => 'post delete <id> [<id>...] [--force]',
 		'post meta update'        => 'post meta update <id> <key> <value> [--force]',
@@ -431,8 +437,11 @@ class WPVibe_CLI {
 				continue;
 			}
 			if ( strpos( $command, $char ) !== false ) {
+				$hint = ( '<' === $char || '>' === $char )
+					? ' ' . __( 'To write values containing HTML or scripts, use the content editing tools instead of a CLI command.', 'vibe-ai' )
+					: '';
 				/* translators: %s: the blocked character */
-				return new WP_Error( 'shell_chars', sprintf( __( 'Command contains disallowed character: %s', 'vibe-ai' ), $char ), array( 'status' => 400 ) );
+				return new WP_Error( 'shell_chars', sprintf( __( 'Command contains disallowed character: %s', 'vibe-ai' ), $char ) . $hint, array( 'status' => 400 ) );
 			}
 		}
 
@@ -1260,6 +1269,11 @@ class WPVibe_CLI {
 			return $this->error_result( __( 'Option key required.', 'vibe-ai' ) );
 		}
 
+		if ( in_array( $positional[0], self::READABLE_BLOCKED_OPTIONS, true ) ) {
+			$value = get_option( $positional[0], null );
+			return $this->success_result( array( 'value' => $value ) );
+		}
+
 		if ( in_array( $positional[0], self::BLOCKED_OPTIONS, true ) ) {
 			return $this->error_result(
 				sprintf(
@@ -1296,13 +1310,16 @@ class WPVibe_CLI {
 		 * Only reads from the options table; no writes. Two separate queries to avoid interpolation.
 		 */
 		if ( $has_autoload ) {
-			$autoload_val = ( 'on' === $flags['autoload'] || 'yes' === $flags['autoload'] ) ? 'yes' : 'no';
-			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			// WP 6.6+ stores autoload as on/off/auto-on/auto-off/auto alongside legacy yes/no.
+			// Filter by exclusion so unknown future values default to autoloaded, matching core.
+			$wants_on = ( 'on' === $flags['autoload'] || 'yes' === $flags['autoload'] );
+			$not_on   = array( 'no', 'off', 'auto-off' );
+			$operator = $wants_on ? 'NOT IN' : 'IN';
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare
 			$rows = $wpdb->get_results(
 				$wpdb->prepare(
-					"SELECT option_name, option_value FROM {$wpdb->options} WHERE option_name LIKE %s AND autoload = %s ORDER BY option_name LIMIT 100",
-					$search,
-					$autoload_val
+					"SELECT option_name, option_value FROM {$wpdb->options} WHERE option_name LIKE %s AND autoload {$operator} ( %s, %s, %s ) ORDER BY option_name LIMIT 100",
+					array_merge( array( $search ), $not_on )
 				),
 				ARRAY_A
 			);
@@ -1339,24 +1356,42 @@ class WPVibe_CLI {
 		$results = array();
 		foreach ( $users as $user ) {
 			$results[] = array(
-				'ID'           => $user->ID,
-				'user_login'   => $user->user_login,
-				'display_name' => $user->display_name,
-				'user_email'   => $user->user_email,
-				'roles'        => implode( ',', $user->roles ),
+				'ID'              => $user->ID,
+				'user_login'      => $user->user_login,
+				'display_name'    => $user->display_name,
+				'user_email'      => $user->user_email,
+				'roles'           => implode( ',', $user->roles ),
+				'user_registered' => $user->user_registered,
 			);
 		}
 		return $this->success_result( $this->filter_fields( $results, $flags ) );
 	}
 
 	private function handle_post_list( $positional, $flags ) {
+		$post_type = $flags['post_type'] ?? 'post';
+		if ( is_string( $post_type ) && strpos( $post_type, ',' ) !== false ) {
+			$post_type = array_filter( array_map( 'trim', explode( ',', $post_type ) ) );
+		}
 		$args = array(
-			'post_type'      => $flags['post_type'] ?? 'post',
+			'post_type'      => $post_type,
 			'post_status'    => $flags['post_status'] ?? 'any',
 			'posts_per_page' => isset( $flags['posts_per_page'] ) ? min( (int) $flags['posts_per_page'], 100 ) : 20,
 			'orderby'        => $flags['orderby'] ?? 'date',
 			'order'          => $flags['order'] ?? 'DESC',
 		);
+		// Silently ignoring targeting flags is dangerous when a listing feeds a
+		// bulk operation, so honor the common ones and reject the rest.
+		if ( isset( $flags['s'] ) )        $args['s']        = (string) $flags['s'];
+		if ( isset( $flags['author'] ) )   $args['author']   = (int) $flags['author'];
+		if ( isset( $flags['year'] ) )     $args['year']     = (int) $flags['year'];
+		if ( isset( $flags['monthnum'] ) ) $args['monthnum'] = (int) $flags['monthnum'];
+		$known = array( 'post_type', 'post_status', 'posts_per_page', 'orderby', 'order', 's', 'author', 'year', 'monthnum', 'fields', 'format' );
+		foreach ( array_keys( $flags ) as $flag ) {
+			if ( ! in_array( $flag, $known, true ) ) {
+				/* translators: %s: the unsupported flag name */
+				return $this->error_result( sprintf( __( 'post list does not support --%s here. Supported filters: s, author, year, monthnum, post_type, post_status, posts_per_page, orderby, order. For richer queries use the REST API (/wp/v2/posts).', 'vibe-ai' ), $flag ) );
+			}
+		}
 		$posts   = get_posts( $args );
 		$results = array();
 		foreach ( $posts as $post ) {
@@ -2159,10 +2194,11 @@ class WPVibe_CLI {
 		// update_option returns false both when the write fails AND when the value
 		// is unchanged. Read back and compare to distinguish a real failure from a
 		// no-op. Mismatch = filter blocked it, DB rejected it, or a filter mutated
-		// the stored value.
+		// the stored value. String-form compare: JSON auto-decode yields int/bool
+		// while WP stores scalars as strings, and that type skew is not a failure.
 		update_option( $key, $value );
 		$stored = get_option( $key );
-		if ( maybe_serialize( $stored ) !== maybe_serialize( $value ) ) {
+		if ( (string) maybe_serialize( $stored ) !== (string) maybe_serialize( $value ) ) {
 			return $this->error_result(
 				sprintf(
 					/* translators: %s: option key */
@@ -2557,6 +2593,13 @@ class WPVibe_CLI {
 		if ( isset( $flags['post_parent'] ) )     $args['post_parent']    = (int) $flags['post_parent'];
 		if ( isset( $flags['menu_order'] ) )      $args['menu_order']     = (int) $flags['menu_order'];
 		if ( isset( $flags['comment_status'] ) )  $args['comment_status'] = $flags['comment_status'];
+		if ( isset( $flags['post_date'] ) ) {
+			if ( false === strtotime( $flags['post_date'] ) ) {
+				return $this->error_result( __( 'Invalid --post_date. Use a site-local date like "2025-03-01 09:00:00".', 'vibe-ai' ) );
+			}
+			// Site-local, matching real WP-CLI; wp_insert_post derives post_date_gmt.
+			$args['post_date'] = $flags['post_date'];
+		}
 
 		$cap_check = $this->check_post_caps( $args['post_type'], 'create', null, $args['post_status'] );
 		if ( is_wp_error( $cap_check ) ) {
@@ -2833,7 +2876,7 @@ class WPVibe_CLI {
 
 		update_option( $key, $patched );
 		$stored = get_option( $key );
-		if ( maybe_serialize( $stored ) !== maybe_serialize( $patched ) ) {
+		if ( (string) maybe_serialize( $stored ) !== (string) maybe_serialize( $patched ) ) {
 			/* translators: %s: option key */
 			return $this->error_result( sprintf( __( 'Could not patch option \'%s\'. The stored value does not match; a pre_update_option filter may have rejected the write.', 'vibe-ai' ), $key ) );
 		}

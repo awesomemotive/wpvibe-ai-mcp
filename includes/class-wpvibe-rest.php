@@ -385,6 +385,14 @@ class WPVibe_REST {
 			'args'                => array(),
 		) );
 
+		// POST alias: many hardened hosts block the DELETE method at the server.
+		register_rest_route( $namespace, '/draft-theme/delete', array(
+			'methods'             => 'POST',
+			'callback'            => array( $this, 'delete_draft_theme' ),
+			'permission_callback' => array( $this, 'can_edit_themes' ),
+			'args'                => array(),
+		) );
+
 		// --- WP-CLI ---
 
 		register_rest_route( $namespace, '/cli/run', array(
@@ -651,8 +659,11 @@ class WPVibe_REST {
 	 * that trips the shell-char blocklist in WPVibe_CLI::run().
 	 */
 	public function sanitize_cli_command( $value ) {
+		// No tag stripping: it silently corrupted values ("<b>x</b>" stored as "x",
+		// script blocks vanished with their contents). The executor's SHELL_CHARS
+		// check rejects < and > loudly instead, and every surface that echoes a
+		// command escapes it.
 		$value = wp_check_invalid_utf8( $value );
-		$value = wp_strip_all_tags( $value );
 		$value = preg_replace( '/[\r\n\t ]+/', ' ', $value );
 		return trim( $value );
 	}
