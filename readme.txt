@@ -4,7 +4,7 @@ Tags: mcp, mcp-server, claude, chatgpt, ai-assistant
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.6.3
+Stable tag: 1.7.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -234,6 +234,10 @@ Yes. Connected sites are unlimited on every plan, including the free plan. Conne
 No. WPVibe lets you manage your WordPress site entirely through conversation with your AI assistant. No coding required for content management. Theme editing is also conversational, your AI writes the code for your WordPress theme.
 
 == Changelog ==
+
+= 1.7.0 =
+* Improvement: Every error the plugin reports now includes structured facts about what went wrong (the cause, whether retrying can help, and whether the connected account is an administrator), so AI assistants stop guessing at remedies and stop repeating fixes that cannot work.
+* Fix: Permission denials when creating content or editing custom fields through the CLI tools now surface as a proper permission error naming the post type and capability, instead of a quiet command failure that error tracking never recorded.
 
 = 1.6.3 =
 * Fix: Administrators were blocked from editing content that belongs to plugins with their own permission schemes (WPForms forms, some LMS and e-commerce post types). Content search and edit now work for administrator accounts on those post types. Post types that explicitly forbid editing (such as order records) stay locked, and protected fields keep their existing safeguards.

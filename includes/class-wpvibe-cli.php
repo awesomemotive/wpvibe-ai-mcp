@@ -441,13 +441,13 @@ class WPVibe_CLI {
 					? ' ' . __( 'To write values containing HTML or scripts, use the content editing tools instead of a CLI command.', 'vibe-ai' )
 					: '';
 				/* translators: %s: the blocked character */
-				return new WP_Error( 'shell_chars', sprintf( __( 'Command contains disallowed character: %s', 'vibe-ai' ), $char ) . $hint, array( 'status' => 400 ) );
+				return new WP_Error( 'shell_chars', sprintf( __( 'Command contains disallowed character: %s', 'vibe-ai' ), $char ) . $hint, WPVibe_Error_Contract::data( 'security_gate', false, array( 'status' => 400 ) ) );
 			}
 		}
 
 		$tokens = $this->tokenize( $command );
 		if ( empty( $tokens ) ) {
-			return new WP_Error( 'empty_command', __( 'No command provided.', 'vibe-ai' ), array( 'status' => 400 ) );
+			return new WP_Error( 'empty_command', __( 'No command provided.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
 		}
 
 		$resolved = $this->resolve_command( $tokens );
@@ -460,11 +460,11 @@ class WPVibe_CLI {
 
 		if ( ! current_user_can( $meta['cap'] ) ) {
 			/* translators: %s: WordPress capability name */
-			return new WP_Error( 'insufficient_cap', sprintf( __( 'You do not have the required capability (%s).', 'vibe-ai' ), $meta['cap'] ), array( 'status' => 403 ) );
+			return new WP_Error( 'insufficient_cap', sprintf( __( 'You do not have the required capability (%s).', 'vibe-ai' ), $meta['cap'] ), WPVibe_Error_Contract::data( 'capability_role', false, array( 'status' => 403, 'capability' => $meta['cap'] ) ) );
 		}
 
 		if ( ! empty( $meta['check_file_mods'] ) && defined( 'DISALLOW_FILE_MODS' ) && DISALLOW_FILE_MODS ) {
-			return new WP_Error( 'file_mods_disabled', __( 'File modifications are disabled (DISALLOW_FILE_MODS).', 'vibe-ai' ), array( 'status' => 403 ) );
+			return new WP_Error( 'file_mods_disabled', __( 'File modifications are disabled (DISALLOW_FILE_MODS).', 'vibe-ai' ), WPVibe_Error_Contract::data( 'host_environment', false, array( 'status' => 403 ) ) );
 		}
 
 		$args        = $this->strip_blocked_flags( $tokens );
@@ -479,12 +479,12 @@ class WPVibe_CLI {
 			return new WP_Error(
 				'approval_required',
 				$destructive['reason'],
-				array(
+				WPVibe_Error_Contract::data( 'approval_flow', true, array(
 					'status'    => 409,
 					'operation' => $destructive['operation'],
 					'dry_run'   => $destructive['dry_run'],
 					'command'   => 'wp ' . $command_key,
-				)
+				) )
 			);
 		}
 
@@ -2053,7 +2053,7 @@ class WPVibe_CLI {
 				try {
 					$activate_result = activate_plugin( $plugin_file );
 				} catch ( \Throwable $e ) {
-					$activate_result = new WP_Error( 'activation_fatal', $e->getMessage() );
+					$activate_result = new WP_Error( 'activation_fatal', $e->getMessage(), WPVibe_Error_Contract::data( 'wp_core', false ) );
 				}
 				if ( is_wp_error( $activate_result ) ) {
 					$activation_error = $activate_result->get_error_message();
@@ -2549,7 +2549,7 @@ class WPVibe_CLI {
 				/* translators: %s: post type slug */
 				__( 'Unknown post type: %s', 'vibe-ai' ),
 				$post_type
-			) );
+			), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'post_type' => $post_type ) ) );
 		}
 		// manage_options fallback: CPTs with custom capability mappings fail the
 		// per-post meta-cap checks below even for admins, who can already reach
@@ -2565,7 +2565,7 @@ class WPVibe_CLI {
 					/* translators: %s: post type label */
 					__( 'You do not have permission to create %s.', 'vibe-ai' ),
 					$pt_obj->labels->name
-				) );
+				), WPVibe_Error_Contract::data( 'capability_cpt_mapping', false, array( 'status' => 403, 'post_type' => $post_type, 'capability' => $pt_obj->cap->create_posts ) ) );
 			}
 		} else {
 			$edit_allowed = current_user_can( 'edit_post', $post_id )
@@ -2575,7 +2575,7 @@ class WPVibe_CLI {
 					/* translators: %d: post ID */
 					__( 'You do not have permission to edit post #%d.', 'vibe-ai' ),
 					$post_id
-				) );
+				), WPVibe_Error_Contract::data( 'capability_cpt_mapping', false, array( 'status' => 403, 'post_type' => $post_type, 'capability' => 'edit_post' ) ) );
 			}
 			$delete_allowed = current_user_can( 'delete_post', $post_id )
 				|| ( $admin && 'do_not_allow' !== $pt_obj->cap->delete_posts );
@@ -2584,7 +2584,7 @@ class WPVibe_CLI {
 					/* translators: %d: post ID */
 					__( 'You do not have permission to delete post #%d.', 'vibe-ai' ),
 					$post_id
-				) );
+				), WPVibe_Error_Contract::data( 'capability_cpt_mapping', false, array( 'status' => 403, 'post_type' => $post_type, 'capability' => 'delete_post' ) ) );
 			}
 		}
 		$publish_allowed = current_user_can( $pt_obj->cap->publish_posts )
@@ -2594,7 +2594,7 @@ class WPVibe_CLI {
 				/* translators: %s: post type label */
 				__( 'You do not have permission to publish %s.', 'vibe-ai' ),
 				$pt_obj->labels->name
-			) );
+			), WPVibe_Error_Contract::data( 'capability_cpt_mapping', false, array( 'status' => 403, 'post_type' => $post_type, 'capability' => $pt_obj->cap->publish_posts ) ) );
 		}
 		return true;
 	}
@@ -2622,7 +2622,7 @@ class WPVibe_CLI {
 
 		$cap_check = $this->check_post_caps( $args['post_type'], 'create', null, $args['post_status'] );
 		if ( is_wp_error( $cap_check ) ) {
-			return $this->error_result( $cap_check->get_error_message() );
+			return $cap_check;
 		}
 
 		$id = wp_insert_post( $args, true );
@@ -2755,7 +2755,7 @@ class WPVibe_CLI {
 
 		$cap_check = $this->check_post_caps( $post->post_type, 'update', $post_id );
 		if ( is_wp_error( $cap_check ) ) {
-			return $this->error_result( $cap_check->get_error_message() );
+			return $cap_check;
 		}
 
 		$value = $positional[2];
@@ -2801,7 +2801,7 @@ class WPVibe_CLI {
 
 		$cap_check = $this->check_post_caps( $post->post_type, 'update', $post_id );
 		if ( is_wp_error( $cap_check ) ) {
-			return $this->error_result( $cap_check->get_error_message() );
+			return $cap_check;
 		}
 
 		delete_post_meta( $post_id, $key );
@@ -3309,14 +3309,14 @@ class WPVibe_CLI {
 					}
 					if ( empty( $matched ) ) {
 						/* translators: %s: table pattern */
-						return new WP_Error( 'no_tables', sprintf( __( 'No tables match "%s".', 'vibe-ai' ), $arg ) );
+						return new WP_Error( 'no_tables', sprintf( __( 'No tables match "%s".', 'vibe-ai' ), $arg ), WPVibe_Error_Contract::data( 'not_found', false ) );
 					}
 					$resolved = array_merge( $resolved, $matched );
 				} elseif ( in_array( $arg, $all, true ) ) {
 					$resolved[] = $arg;
 				} else {
 					/* translators: %s: table name */
-					return new WP_Error( 'no_table', sprintf( __( 'Table "%s" does not exist.', 'vibe-ai' ), $arg ) );
+					return new WP_Error( 'no_table', sprintf( __( 'Table "%s" does not exist.', 'vibe-ai' ), $arg ), WPVibe_Error_Contract::data( 'not_found', false ) );
 				}
 			}
 			$tables = array_values( array_unique( $resolved ) );
@@ -3344,7 +3344,7 @@ class WPVibe_CLI {
 		}
 
 		if ( empty( $tables ) ) {
-			return new WP_Error( 'no_tables', __( 'No tables in scope for search-replace.', 'vibe-ai' ) );
+			return new WP_Error( 'no_tables', __( 'No tables in scope for search-replace.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false ) );
 		}
 		return $tables;
 	}
@@ -4258,13 +4258,13 @@ class WPVibe_CLI {
 
 	private function resolve_role_or_error( $role_key ) {
 		if ( empty( $role_key ) ) {
-			return new WP_Error( 'no_role', __( 'Role required.', 'vibe-ai' ) );
+			return new WP_Error( 'no_role', __( 'Role required.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false ) );
 		}
 		$role = get_role( $role_key );
 		if ( ! $role ) {
 			$names = function_exists( 'wp_roles' ) ? implode( ', ', array_keys( wp_roles()->roles ) ) : '';
 			/* translators: 1: role slug, 2: available role slugs */
-			return new WP_Error( 'no_role', sprintf( __( 'Role \'%1$s\' not found. Available roles: %2$s', 'vibe-ai' ), $role_key, $names ) );
+			return new WP_Error( 'no_role', sprintf( __( 'Role \'%1$s\' not found. Available roles: %2$s', 'vibe-ai' ), $role_key, $names ), WPVibe_Error_Contract::data( 'not_found', false ) );
 		}
 		return $role;
 	}
@@ -4663,11 +4663,11 @@ class WPVibe_CLI {
 		$blocked = array( 'eval', 'eval-file', 'shell', 'core', 'config', 'package', 'server', 'site' );
 		if ( in_array( $base, $blocked, true ) ) {
 			/* translators: 1: command name, 2: the same command name */
-			return new WP_Error( 'command_blocked', sprintf( __( '"%1$s" commands are blocked for security. Individually supported subcommands (if any) are listed by `help %2$s`; run `help` for the full catalog.', 'vibe-ai' ), $base, $base ), array( 'status' => 403 ) );
+			return new WP_Error( 'command_blocked', sprintf( __( '"%1$s" commands are blocked for security. Individually supported subcommands (if any) are listed by `help %2$s`; run `help` for the full catalog.', 'vibe-ai' ), $base, $base ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 403 ) ) );
 		}
 
 		/* translators: %s: command name */
-		return new WP_Error( 'command_not_allowed', sprintf( __( 'Command "%s" is not in the allowlist. Run `help` for the full supported-command catalog — the capability may exist under different syntax.', 'vibe-ai' ), implode( ' ', array_slice( $positional, 0, 2 ) ) ), array( 'status' => 403 ) );
+		return new WP_Error( 'command_not_allowed', sprintf( __( 'Command "%s" is not in the allowlist. Run `help` for the full supported-command catalog — the capability may exist under different syntax.', 'vibe-ai' ), implode( ' ', array_slice( $positional, 0, 2 ) ) ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 403 ) ) );
 	}
 
 	private function strip_blocked_flags( $tokens ) {

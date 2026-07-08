@@ -75,10 +75,10 @@ class WPVibe_REST {
 	public static function validate_public_http_url( $url ) {
 		$parts = wp_parse_url( $url );
 		if ( empty( $parts['scheme'] ) || ! in_array( strtolower( $parts['scheme'] ), array( 'http', 'https' ), true ) ) {
-			return new WP_Error( 'blocked_url', __( 'Only http(s) URLs are allowed.', 'vibe-ai' ), array( 'status' => 403 ) );
+			return new WP_Error( 'blocked_url', __( 'Only http(s) URLs are allowed.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'security_gate', false, array( 'status' => 403 ) ) );
 		}
 		if ( empty( $parts['host'] ) ) {
-			return new WP_Error( 'blocked_url', __( 'URL host is missing.', 'vibe-ai' ), array( 'status' => 403 ) );
+			return new WP_Error( 'blocked_url', __( 'URL host is missing.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'security_gate', false, array( 'status' => 403 ) ) );
 		}
 
 		$host = $parts['host'];
@@ -86,7 +86,7 @@ class WPVibe_REST {
 		// If the host is already an IP literal, validate it directly.
 		if ( filter_var( $host, FILTER_VALIDATE_IP ) ) {
 			if ( ! self::ip_is_public( $host ) ) {
-				return new WP_Error( 'blocked_url', __( 'URL resolves to a non-public address.', 'vibe-ai' ), array( 'status' => 403 ) );
+				return new WP_Error( 'blocked_url', __( 'URL resolves to a non-public address.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'security_gate', false, array( 'status' => 403 ) ) );
 			}
 			return true;
 		}
@@ -94,7 +94,7 @@ class WPVibe_REST {
 		// Resolve every A + AAAA record; reject if the host can't be resolved or
 		// *any* answer is non-public. Same resolver used to pin the download.
 		if ( empty( self::resolve_public_ips( $host ) ) ) {
-			return new WP_Error( 'blocked_url', __( 'URL host could not be resolved or resolves to a non-public address.', 'vibe-ai' ), array( 'status' => 403 ) );
+			return new WP_Error( 'blocked_url', __( 'URL host could not be resolved or resolves to a non-public address.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'security_gate', false, array( 'status' => 403 ) ) );
 		}
 
 		return true;
@@ -587,7 +587,7 @@ class WPVibe_REST {
 					$post_id,
 					$post_type
 				),
-				$data
+				WPVibe_Error_Contract::data( 'capability_cpt_mapping', false, $data )
 			);
 		}
 		return new WP_Error(
@@ -597,7 +597,7 @@ class WPVibe_REST {
 				__( 'This action requires the WordPress capability "%s", which the connected account does not have. Administrators have it by default — reconnect with an account that has this capability for full access.', 'vibe-ai' ),
 				$capability
 			),
-			$data
+			WPVibe_Error_Contract::data( 'capability_role', false, $data )
 		);
 	}
 
@@ -643,7 +643,7 @@ class WPVibe_REST {
 			return new WP_Error(
 				'file_edit_disabled',
 				__( 'File editing is disabled on this site (DISALLOW_FILE_EDIT is set).', 'vibe-ai' ),
-				array( 'status' => 403 )
+				WPVibe_Error_Contract::data( 'host_environment', false, array( 'status' => 403 ) )
 			);
 		}
 
@@ -651,7 +651,7 @@ class WPVibe_REST {
 			return new WP_Error(
 				'file_mods_disabled',
 				__( 'File modifications are disabled on this site (DISALLOW_FILE_MODS is set).', 'vibe-ai' ),
-				array( 'status' => 403 )
+				WPVibe_Error_Contract::data( 'host_environment', false, array( 'status' => 403 ) )
 			);
 		}
 
@@ -744,7 +744,7 @@ class WPVibe_REST {
 				'unknown_post_type',
 				/* translators: %s: post type slug */
 				sprintf( __( 'Post type \'%s\' is not registered. Confirm register_post_type() ran and rest_api_init has fired.', 'vibe-ai' ), $post_type ),
-				array( 'status' => 404 )
+				WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) )
 			);
 		}
 
@@ -1103,7 +1103,7 @@ class WPVibe_REST {
 		$post_id  = absint( $request->get_param( 'post_id' ) ?: 0 );
 
 		if ( empty( $url ) ) {
-			return new WP_Error( 'invalid_url', __( 'Image URL is required.', 'vibe-ai' ), array( 'status' => 400 ) );
+			return new WP_Error( 'invalid_url', __( 'Image URL is required.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
 		}
 
 		// SSRF: validate scheme, host, and all resolved addresses (IPv4 + IPv6)
@@ -1163,7 +1163,7 @@ class WPVibe_REST {
 					__( 'Failed to download image: %s', 'vibe-ai' ),
 					$tmp->get_error_message()
 				),
-				array( 'status' => 500 )
+				WPVibe_Error_Contract::data( 'wp_core', true, array( 'status' => 500 ) )
 			);
 		}
 
@@ -1198,7 +1198,7 @@ class WPVibe_REST {
 					__( 'Failed to upload image: %s', 'vibe-ai' ),
 					$attachment_id->get_error_message()
 				),
-				array( 'status' => 500 )
+				WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) )
 			);
 		}
 
@@ -1261,7 +1261,7 @@ class WPVibe_REST {
 	public function navigate( $request ) {
 		$url = esc_url_raw( $request->get_param( 'url' ) );
 		if ( empty( $url ) ) {
-			return new WP_Error( 'invalid_url', __( 'URL is required.', 'vibe-ai' ), array( 'status' => 400 ) );
+			return new WP_Error( 'invalid_url', __( 'URL is required.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
 		}
 		WPVibe_Change_Tracker::mark( array(
 			'summary' => __( 'Navigate', 'vibe-ai' ),

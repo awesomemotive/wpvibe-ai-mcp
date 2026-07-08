@@ -114,7 +114,7 @@ class WPVibe_Elementor {
 				__( 'This action requires the WordPress capability "%s", which the connected account does not have. Administrators have it by default — reconnect with an account that has this capability for full access.', 'vibe-ai' ),
 				$capability
 			),
-			array( 'status' => rest_authorization_required_code(), 'capability' => $capability )
+			WPVibe_Error_Contract::data( 'capability_role', false, array( 'status' => rest_authorization_required_code(), 'capability' => $capability ) )
 		);
 	}
 
@@ -140,7 +140,7 @@ class WPVibe_Elementor {
 				/* translators: %s: post type slug */
 				__( 'Unknown post type: %s', 'vibe-ai' ),
 				$post_type
-			), array( 'status' => 400 ) );
+			), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
 		}
 		if ( 'create' === $action ) {
 			if ( ! current_user_can( $pt_obj->cap->create_posts ) ) {
@@ -148,7 +148,7 @@ class WPVibe_Elementor {
 					/* translators: %s: post type label */
 					__( 'You do not have permission to create %s.', 'vibe-ai' ),
 					$pt_obj->labels->name
-				), array( 'status' => 403 ) );
+				), WPVibe_Error_Contract::data( 'capability_role', false, array( 'status' => 403 ) ) );
 			}
 		} else {
 			if ( ! current_user_can( 'edit_post', $post_id ) ) {
@@ -156,7 +156,7 @@ class WPVibe_Elementor {
 					/* translators: %d: post ID */
 					__( 'You do not have permission to edit post #%d.', 'vibe-ai' ),
 					$post_id
-				), array( 'status' => 403 ) );
+				), WPVibe_Error_Contract::data( 'capability_cpt_mapping', false, array( 'status' => 403 ) ) );
 			}
 		}
 		if ( 'publish' === $new_status && ! current_user_can( $pt_obj->cap->publish_posts ) ) {
@@ -164,7 +164,7 @@ class WPVibe_Elementor {
 				/* translators: %s: post type label */
 				__( 'You do not have permission to publish %s.', 'vibe-ai' ),
 				$pt_obj->labels->name
-			), array( 'status' => 403 ) );
+			), WPVibe_Error_Contract::data( 'capability_role', false, array( 'status' => 403 ) ) );
 		}
 		return true;
 	}
@@ -214,14 +214,14 @@ class WPVibe_Elementor {
 
 	private function elementor_check() {
 		if ( ! class_exists( '\Elementor\Plugin' ) ) {
-			return new WP_Error( 'elementor_inactive', __( 'Elementor is not active on this site.', 'vibe-ai' ), array( 'status' => 404 ) );
+			return new WP_Error( 'elementor_inactive', __( 'Elementor is not active on this site.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 404 ) ) );
 		}
 		return true;
 	}
 
 	private function theme_builder_check() {
 		if ( ! class_exists( '\ElementorPro\Modules\ThemeBuilder\Module' ) ) {
-			return new WP_Error( 'theme_builder_inactive', __( 'Elementor Pro theme builder is not active on this site.', 'vibe-ai' ), array( 'status' => 404 ) );
+			return new WP_Error( 'theme_builder_inactive', __( 'Elementor Pro theme builder is not active on this site.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 404 ) ) );
 		}
 		return true;
 	}
@@ -304,7 +304,7 @@ class WPVibe_Elementor {
 			$kind    = 'element';
 		}
 		if ( ! $element ) {
-			return new WP_Error( 'unknown_slug', sprintf( __( 'No widget or element registered for slug "%s".', 'vibe-ai' ), $slug ), array( 'status' => 404 ) );
+			return new WP_Error( 'unknown_slug', sprintf( __( 'No widget or element registered for slug "%s".', 'vibe-ai' ), $slug ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
 		}
 
 		$ui_only_types = array( 'section', 'tab', 'heading', 'notice', 'raw_html', 'deprecated_notice', 'alert' );
@@ -392,7 +392,7 @@ class WPVibe_Elementor {
 		$data          = $request->get_param( 'data' );
 
 		if ( ! is_array( $data ) ) {
-			return new WP_Error( 'invalid_data', __( 'The `data` parameter must be an array of root Elementor elements.', 'vibe-ai' ), array( 'status' => 400 ) );
+			return new WP_Error( 'invalid_data', __( 'The `data` parameter must be an array of root Elementor elements.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
 		}
 
 		$warnings = array();
@@ -401,7 +401,7 @@ class WPVibe_Elementor {
 		if ( $id ) {
 			$post = get_post( $id );
 			if ( ! $post ) {
-				return new WP_Error( 'not_found', __( 'Post not found.', 'vibe-ai' ), array( 'status' => 404 ) );
+				return new WP_Error( 'not_found', __( 'Post not found.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
 			}
 			$cap_check = $this->check_post_caps( $post->post_type, 'update', $id, $status );
 			if ( is_wp_error( $cap_check ) ) {
@@ -423,7 +423,7 @@ class WPVibe_Elementor {
 			$document = \Elementor\Plugin::$instance->documents->get( $id, false );
 		} else {
 			if ( ! $title ) {
-				return new WP_Error( 'missing_title', __( 'A `title` is required when creating a new page.', 'vibe-ai' ), array( 'status' => 400 ) );
+				return new WP_Error( 'missing_title', __( 'A `title` is required when creating a new page.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
 			}
 			$cap_check = $this->check_post_caps( $post_type, 'create', null, $status );
 			if ( is_wp_error( $cap_check ) ) {
@@ -443,13 +443,13 @@ class WPVibe_Elementor {
 				return $document;
 			}
 			if ( ! $document ) {
-				return new WP_Error( 'document_create_failed', __( 'documents->create() returned null.', 'vibe-ai' ), array( 'status' => 500 ) );
+				return new WP_Error( 'document_create_failed', __( 'documents->create() returned null.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'wp_core', false, array( 'status' => 500 ) ) );
 			}
 			$id = $document->get_main_id();
 		}
 
 		if ( ! $document ) {
-			return new WP_Error( 'document_init_failed', __( 'Could not initialize Elementor document.', 'vibe-ai' ), array( 'status' => 500 ) );
+			return new WP_Error( 'document_init_failed', __( 'Could not initialize Elementor document.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 500 ) ) );
 		}
 
 		// Document::save handles _elementor_data write, version stamp,
@@ -504,11 +504,11 @@ class WPVibe_Elementor {
 			return new WP_Error(
 				'invalid_type',
 				sprintf( __( 'Template `type` must be one of: %s', 'vibe-ai' ), implode( ', ', $valid_types ) ),
-				array( 'status' => 400 )
+				WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) )
 			);
 		}
 		if ( ! is_array( $data ) ) {
-			return new WP_Error( 'invalid_data', __( 'The `data` parameter must be an array of root Elementor elements.', 'vibe-ai' ), array( 'status' => 400 ) );
+			return new WP_Error( 'invalid_data', __( 'The `data` parameter must be an array of root Elementor elements.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
 		}
 
 		$warnings = array();
@@ -517,7 +517,7 @@ class WPVibe_Elementor {
 		if ( $id ) {
 			$post = get_post( $id );
 			if ( ! $post || 'elementor_library' !== $post->post_type ) {
-				return new WP_Error( 'not_found', __( 'Template not found.', 'vibe-ai' ), array( 'status' => 404 ) );
+				return new WP_Error( 'not_found', __( 'Template not found.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
 			}
 			$update = array( 'ID' => $id );
 			if ( $title ) {
@@ -535,7 +535,7 @@ class WPVibe_Elementor {
 			$document = \Elementor\Plugin::$instance->documents->get( $id, false );
 		} else {
 			if ( ! $title ) {
-				return new WP_Error( 'missing_title', __( 'A `title` is required when creating a new template.', 'vibe-ai' ), array( 'status' => 400 ) );
+				return new WP_Error( 'missing_title', __( 'A `title` is required when creating a new template.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
 			}
 			$document = \Elementor\Plugin::$instance->documents->create(
 				$type,
@@ -548,13 +548,13 @@ class WPVibe_Elementor {
 				return $document;
 			}
 			if ( ! $document ) {
-				return new WP_Error( 'document_create_failed', __( 'documents->create() returned null.', 'vibe-ai' ), array( 'status' => 500 ) );
+				return new WP_Error( 'document_create_failed', __( 'documents->create() returned null.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'wp_core', false, array( 'status' => 500 ) ) );
 			}
 			$id = $document->get_main_id();
 		}
 
 		if ( ! $document ) {
-			return new WP_Error( 'document_init_failed', __( 'Could not initialize Elementor document.', 'vibe-ai' ), array( 'status' => 500 ) );
+			return new WP_Error( 'document_init_failed', __( 'Could not initialize Elementor document.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 500 ) ) );
 		}
 
 		$saved = $document->save( array( 'elements' => $data ) );

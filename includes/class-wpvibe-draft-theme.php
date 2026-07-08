@@ -32,7 +32,7 @@ class WPVibe_Draft_Theme {
 		$dest        = $theme_root . '/' . $draft_slug;
 
 		if ( ! is_dir( $source ) ) {
-			return new WP_Error( 'no_theme', __( 'Active theme directory not found.', 'vibe-ai' ), array( 'status' => 404 ) );
+			return new WP_Error( 'no_theme', __( 'Active theme directory not found.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
 		}
 
 		// Clone the theme directory.
@@ -81,7 +81,7 @@ class WPVibe_Draft_Theme {
 		$source_slug = get_option( 'wpvibe_draft_source' );
 
 		if ( ! $draft_slug || ! $source_slug ) {
-			return new WP_Error( 'no_draft', __( 'No draft theme to publish.', 'vibe-ai' ), array( 'status' => 400 ) );
+			return new WP_Error( 'no_draft', __( 'No draft theme to publish.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 400 ) ) );
 		}
 
 		$theme_root = get_theme_root();
@@ -90,7 +90,7 @@ class WPVibe_Draft_Theme {
 		$backup_dir = $theme_root . '/' . $source_slug . '-wpvibe-backup';
 
 		if ( ! is_dir( $draft_dir ) ) {
-			return new WP_Error( 'draft_missing', __( 'Draft theme directory not found.', 'vibe-ai' ), array( 'status' => 404 ) );
+			return new WP_Error( 'draft_missing', __( 'Draft theme directory not found.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
 		}
 
 		// Capture the clean original name BEFORE the live dir is overwritten; strips any accumulated draft suffix.
@@ -109,7 +109,7 @@ class WPVibe_Draft_Theme {
 						$backup_dir,
 						$cleared->get_error_message()
 					),
-					array( 'status' => 500 )
+					WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) )
 				);
 			}
 		}
@@ -127,7 +127,7 @@ class WPVibe_Draft_Theme {
 						__( 'Could not back up the live theme before publishing: %s The live theme is intact; nothing was modified. Fix the underlying filesystem issue (permissions, disk space) and retry.', 'vibe-ai' ),
 						$backup_result->get_error_message()
 					),
-					array( 'status' => 500 )
+					WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) )
 				);
 			}
 
@@ -142,7 +142,7 @@ class WPVibe_Draft_Theme {
 						$deleted_live->get_error_message(),
 						$backup_dir
 					),
-					array( 'status' => 500 )
+					WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) )
 				);
 			}
 		}
@@ -165,7 +165,7 @@ class WPVibe_Draft_Theme {
 						$backup_dir,
 						$live_dir
 					),
-					array( 'status' => 500 )
+					WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) )
 				);
 			}
 			$this->delete_directory( $backup_dir );
@@ -189,7 +189,7 @@ class WPVibe_Draft_Theme {
 							$source_slug,
 							$original_name
 						),
-						array( 'status' => 500 )
+						WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) )
 					);
 				}
 			}
@@ -234,7 +234,7 @@ class WPVibe_Draft_Theme {
 	public function preview_url() {
 		$draft_slug = get_option( 'wpvibe_draft_theme' );
 		if ( ! $draft_slug ) {
-			return new WP_Error( 'no_draft', __( 'No draft theme to preview.', 'vibe-ai' ), array( 'status' => 400 ) );
+			return new WP_Error( 'no_draft', __( 'No draft theme to preview.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 400 ) ) );
 		}
 
 		// Reuse the existing token if it's still within its 24h TTL, otherwise
@@ -264,7 +264,7 @@ class WPVibe_Draft_Theme {
 	public function delete() {
 		$draft_slug = get_option( 'wpvibe_draft_theme' );
 		if ( ! $draft_slug ) {
-			return new WP_Error( 'no_draft', __( 'No draft theme to delete.', 'vibe-ai' ), array( 'status' => 400 ) );
+			return new WP_Error( 'no_draft', __( 'No draft theme to delete.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 400 ) ) );
 		}
 
 		$draft_dir = get_theme_root() . '/' . $draft_slug;
@@ -314,7 +314,7 @@ class WPVibe_Draft_Theme {
 			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- Fallback for environments where wp_mkdir_p() fails.
 			if ( ! @mkdir( $dst, 0755, true ) && ! is_dir( $dst ) ) {
 				/* translators: %s: directory path */
-				return new WP_Error( 'copy_failed', sprintf( __( 'Could not create directory: %s', 'vibe-ai' ), $dst ), array( 'status' => 500 ) );
+				return new WP_Error( 'copy_failed', sprintf( __( 'Could not create directory: %s', 'vibe-ai' ), $dst ), WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) ) );
 			}
 		}
 
@@ -336,7 +336,7 @@ class WPVibe_Draft_Theme {
 							__( 'Failed to copy file: %s', 'vibe-ai' ),
 							$iterator->getSubPathName()
 						),
-						array( 'status' => 500 )
+						WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) )
 					);
 				}
 			}
@@ -372,14 +372,14 @@ class WPVibe_Draft_Theme {
 				// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_rmdir -- No WP alternative for rmdir().
 				if ( ! @rmdir( $item->getPathname() ) ) {
 					/* translators: %s: directory path */
-					return new WP_Error( 'rmdir_failed', sprintf( __( 'Failed to remove directory: %s', 'vibe-ai' ), $item->getPathname() ), array( 'status' => 500 ) );
+					return new WP_Error( 'rmdir_failed', sprintf( __( 'Failed to remove directory: %s', 'vibe-ai' ), $item->getPathname() ), WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) ) );
 				}
 			} else {
 				wp_delete_file( $item->getPathname() );
 				// wp_delete_file is void; verify by checking the file no longer exists.
 				if ( file_exists( $item->getPathname() ) ) {
 					/* translators: %s: file path */
-					return new WP_Error( 'delete_failed', sprintf( __( 'Failed to delete file: %s', 'vibe-ai' ), $item->getPathname() ), array( 'status' => 500 ) );
+					return new WP_Error( 'delete_failed', sprintf( __( 'Failed to delete file: %s', 'vibe-ai' ), $item->getPathname() ), WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) ) );
 				}
 			}
 		}
@@ -387,7 +387,7 @@ class WPVibe_Draft_Theme {
 		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_rmdir -- No WP alternative for rmdir().
 		if ( ! @rmdir( $dir ) ) {
 			/* translators: %s: directory path */
-			return new WP_Error( 'rmdir_failed', sprintf( __( 'Failed to remove directory: %s', 'vibe-ai' ), $dir ), array( 'status' => 500 ) );
+			return new WP_Error( 'rmdir_failed', sprintf( __( 'Failed to remove directory: %s', 'vibe-ai' ), $dir ), WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) ) );
 		}
 
 		return true;

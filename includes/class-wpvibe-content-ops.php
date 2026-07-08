@@ -86,17 +86,17 @@ class WPVibe_Content_Ops {
 	public function compute_replacement( $current, $old_content, $new_content, $replace_all = false, $whole_word = false, &$replaced = null ) {
 		$replaced = 0;
 		if ( ! is_string( $current ) ) {
-			return new WP_Error( 'not_text', __( 'Stored value is not editable as text (it is an array or object). Edit it with rest_api or wp-cli instead.', 'vibe-ai' ), array( 'status' => 422 ) );
+			return new WP_Error( 'not_text', __( 'Stored value is not editable as text (it is an array or object). Edit it with rest_api or wp-cli instead.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 422 ) ) );
 		}
 
 		$old = self::normalize_quotes( self::desanitize( $old_content ) );
 		$new = self::strip_trailing_whitespace( self::normalize_quotes( self::desanitize( $new_content ) ) );
 
 		if ( '' === $old ) {
-			return new WP_Error( 'empty_old', __( 'old_content cannot be empty.', 'vibe-ai' ), array( 'status' => 400 ) );
+			return new WP_Error( 'empty_old', __( 'old_content cannot be empty.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
 		}
 		if ( $old === $new ) {
-			return new WP_Error( 'no_change', __( 'old_content and new_content are identical — nothing to do.', 'vibe-ai' ), array( 'status' => 400 ) );
+			return new WP_Error( 'no_change', __( 'old_content and new_content are identical — nothing to do.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
 		}
 
 		// Whole-word matching uses a fully-escaped literal between \b anchors, so
@@ -105,30 +105,30 @@ class WPVibe_Content_Ops {
 			$pattern = '/\b' . preg_quote( $old, '/' ) . '\b/u';
 			$count   = preg_match_all( $pattern, $current );
 			if ( false === $count ) {
-				return new WP_Error( 'match_failed', __( 'Whole-word match failed (the text may not be valid UTF-8). Try without whole_word.', 'vibe-ai' ), array( 'status' => 422 ) );
+				return new WP_Error( 'match_failed', __( 'Whole-word match failed (the text may not be valid UTF-8). Try without whole_word.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422 ) ) );
 			}
 			if ( 0 === $count ) {
-				return new WP_Error( 'no_match', __( 'No whole-word match for old_content. Use content/search to locate the exact text, then retry.', 'vibe-ai' ), array( 'status' => 422 ) );
+				return new WP_Error( 'no_match', __( 'No whole-word match for old_content. Use content/search to locate the exact text, then retry.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422 ) ) );
 			}
 			if ( ! $replace_all && $count > 1 ) {
 				/* translators: %d: number of matching locations */
-				return new WP_Error( 'multiple_matches', sprintf( __( 'old_content matches %d whole-word locations. Add surrounding context to target one, or set replace_all=true to change all of them.', 'vibe-ai' ), $count ), array( 'status' => 422 ) );
+				return new WP_Error( 'multiple_matches', sprintf( __( 'old_content matches %d whole-word locations. Add surrounding context to target one, or set replace_all=true to change all of them.', 'vibe-ai' ), $count ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422 ) ) );
 			}
 			// Callback (not a replacement string) so $ and \ in new_content are literal.
 			$updated = preg_replace_callback( $pattern, static function () use ( $new ) { return $new; }, $current, $replace_all ? -1 : 1, $replaced );
 			if ( null === $updated ) {
-				return new WP_Error( 'replace_failed', __( 'Replacement failed (PCRE limit or invalid encoding).', 'vibe-ai' ), array( 'status' => 422 ) );
+				return new WP_Error( 'replace_failed', __( 'Replacement failed (PCRE limit or invalid encoding).', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422 ) ) );
 			}
 			return $updated;
 		}
 
 		$count = substr_count( $current, $old );
 		if ( 0 === $count ) {
-			return new WP_Error( 'no_match', __( 'old_content not found. Use content/search to locate the exact current text, then retry.', 'vibe-ai' ), array( 'status' => 422 ) );
+			return new WP_Error( 'no_match', __( 'old_content not found. Use content/search to locate the exact current text, then retry.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422 ) ) );
 		}
 		if ( ! $replace_all && $count > 1 ) {
 			/* translators: %d: number of matching locations */
-			return new WP_Error( 'multiple_matches', sprintf( __( 'old_content matches %d locations. Add surrounding context to target one, or set replace_all=true to change all of them.', 'vibe-ai' ), $count ), array( 'status' => 422 ) );
+			return new WP_Error( 'multiple_matches', sprintf( __( 'old_content matches %d locations. Add surrounding context to target one, or set replace_all=true to change all of them.', 'vibe-ai' ), $count ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422 ) ) );
 		}
 
 		$replaced = $replace_all ? $count : 1;
@@ -202,7 +202,7 @@ class WPVibe_Content_Ops {
 		// prefixes. Post columns are always raw; meta/option are auto-unserialized
 		// on read, so a serialized string here means it was stored escaped.
 		if ( in_array( $type, array( 'meta', 'option' ), true ) && is_string( $current ) && is_serialized( $current ) ) {
-			return new WP_Error( 'serialized_value', __( 'This value is PHP-serialized; a text replace would corrupt it. Edit it with rest_api or wp-cli instead.', 'vibe-ai' ), array( 'status' => 422 ) );
+			return new WP_Error( 'serialized_value', __( 'This value is PHP-serialized; a text replace would corrupt it. Edit it with rest_api or wp-cli instead.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 422 ) ) );
 		}
 
 		$replaced = 0;
@@ -255,7 +255,7 @@ class WPVibe_Content_Ops {
 	 */
 	public function search( $type, $args, $pattern, $case_sensitive = false, $max_results = 50 ) {
 		if ( '' === (string) $pattern ) {
-			return new WP_Error( 'empty_pattern', __( 'Search pattern cannot be empty.', 'vibe-ai' ), array( 'status' => 400 ) );
+			return new WP_Error( 'empty_pattern', __( 'Search pattern cannot be empty.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
 		}
 
 		$current = $this->load( $type, $args );
@@ -263,7 +263,7 @@ class WPVibe_Content_Ops {
 			return $current;
 		}
 		if ( ! is_string( $current ) ) {
-			return new WP_Error( 'not_text', __( 'Stored value is not searchable as text (it is an array or object).', 'vibe-ai' ), array( 'status' => 422 ) );
+			return new WP_Error( 'not_text', __( 'Stored value is not searchable as text (it is an array or object).', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 422 ) ) );
 		}
 
 		$result = $this->find_matches( $current, $pattern, (bool) $case_sensitive, max( 1, (int) $max_results ) );
@@ -290,10 +290,10 @@ class WPVibe_Content_Ops {
 				$field   = (string) ( $args['field'] ?? '' );
 				if ( ! in_array( $field, self::EDITABLE_POST_FIELDS, true ) ) {
 					/* translators: %s: comma-separated field list */
-					return new WP_Error( 'bad_field', sprintf( __( 'field must be one of: %s', 'vibe-ai' ), implode( ', ', self::EDITABLE_POST_FIELDS ) ), array( 'status' => 400 ) );
+					return new WP_Error( 'bad_field', sprintf( __( 'field must be one of: %s', 'vibe-ai' ), implode( ', ', self::EDITABLE_POST_FIELDS ) ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
 				}
 				if ( ! get_post( $post_id ) ) {
-					return new WP_Error( 'not_found', __( 'Post not found.', 'vibe-ai' ), array( 'status' => 404 ) );
+					return new WP_Error( 'not_found', __( 'Post not found.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
 				}
 				return (string) get_post_field( $field, $post_id, 'raw' );
 
@@ -301,10 +301,10 @@ class WPVibe_Content_Ops {
 				$post_id = (int) ( $args['post_id'] ?? 0 );
 				$key     = (string) ( $args['key'] ?? '' );
 				if ( '' === $key ) {
-					return new WP_Error( 'bad_key', __( 'meta_key is required.', 'vibe-ai' ), array( 'status' => 400 ) );
+					return new WP_Error( 'bad_key', __( 'meta_key is required.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
 				}
 				if ( ! get_post( $post_id ) ) {
-					return new WP_Error( 'not_found', __( 'Post not found.', 'vibe-ai' ), array( 'status' => 404 ) );
+					return new WP_Error( 'not_found', __( 'Post not found.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
 				}
 				// edit_post is post-level; protected/registered meta keys carry their
 				// own auth boundary (protected-meta rule + auth_callback) that direct
@@ -313,24 +313,24 @@ class WPVibe_Content_Ops {
 					return $this->meta_forbidden_error( $post_id, $key );
 				}
 				if ( ! metadata_exists( 'post', $post_id, $key ) ) {
-					return new WP_Error( 'meta_not_found', __( 'Meta key not found on this post.', 'vibe-ai' ), array( 'status' => 404 ) );
+					return new WP_Error( 'meta_not_found', __( 'Meta key not found on this post.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
 				}
 				return get_post_meta( $post_id, $key, true );
 
 			case 'option':
 				$name     = (string) ( $args['name'] ?? '' );
 				if ( '' === $name ) {
-					return new WP_Error( 'bad_option', __( 'option_name is required.', 'vibe-ai' ), array( 'status' => 400 ) );
+					return new WP_Error( 'bad_option', __( 'option_name is required.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
 				}
 				$sentinel = '__wpvibe_option_missing__';
 				$value    = get_option( $name, $sentinel );
 				if ( $sentinel === $value ) {
-					return new WP_Error( 'option_not_found', __( 'Option not found.', 'vibe-ai' ), array( 'status' => 404 ) );
+					return new WP_Error( 'option_not_found', __( 'Option not found.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
 				}
 				return $value;
 
 			default:
-				return new WP_Error( 'bad_target', __( 'target_type must be post, meta, or option.', 'vibe-ai' ), array( 'status' => 400 ) );
+				return new WP_Error( 'bad_target', __( 'target_type must be post, meta, or option.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 400 ) ) );
 		}
 	}
 
@@ -371,13 +371,13 @@ class WPVibe_Content_Ops {
 			return new WP_Error(
 				'meta_forbidden',
 				__( 'This meta key is protected (underscore-prefixed or registered with an auth callback), a boundary that applies even to Administrators. Read it with WP-CLI "post meta list", or write it through the approval-gated db query path.', 'vibe-ai' ),
-				array( 'status' => 403, 'protected' => true )
+				WPVibe_Error_Contract::data( 'meta_protected', false, array( 'status' => 403, 'protected' => true ) )
 			);
 		}
 		return new WP_Error(
 			'meta_forbidden',
 			__( 'The connected account is not allowed to edit this meta key. Accounts below Administrator can be blocked on post types that carry custom capabilities. Reconnect with an Administrator account for access.', 'vibe-ai' ),
-			array( 'status' => 403, 'protected' => false )
+			WPVibe_Error_Contract::data( 'capability_cpt_mapping', false, array( 'status' => 403, 'protected' => false ) )
 		);
 	}
 
@@ -394,7 +394,7 @@ class WPVibe_Content_Ops {
 					return $res;
 				}
 				if ( 0 === $res ) {
-					return new WP_Error( 'update_failed', __( 'Failed to update the post.', 'vibe-ai' ), array( 'status' => 500 ) );
+					return new WP_Error( 'update_failed', __( 'Failed to update the post.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'wp_core', false, array( 'status' => 500 ) ) );
 				}
 				return true;
 
@@ -408,7 +408,7 @@ class WPVibe_Content_Ops {
 				// update_metadata unslashes; slash to preserve backslashes.
 				$ok = update_post_meta( $post_id, $key, wp_slash( $updated ) );
 				if ( false === $ok && (string) get_post_meta( $post_id, $key, true ) !== (string) $updated ) {
-					return new WP_Error( 'update_failed', __( 'Failed to update the meta value.', 'vibe-ai' ), array( 'status' => 500 ) );
+					return new WP_Error( 'update_failed', __( 'Failed to update the meta value.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'wp_core', false, array( 'status' => 500 ) ) );
 				}
 				return true;
 
@@ -416,12 +416,12 @@ class WPVibe_Content_Ops {
 				// update_option does NOT unslash — store the value verbatim.
 				$ok = update_option( (string) $args['name'], $updated );
 				if ( false === $ok && (string) get_option( (string) $args['name'] ) !== (string) $updated ) {
-					return new WP_Error( 'update_failed', __( 'Failed to update the option.', 'vibe-ai' ), array( 'status' => 500 ) );
+					return new WP_Error( 'update_failed', __( 'Failed to update the option.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'wp_core', false, array( 'status' => 500 ) ) );
 				}
 				return true;
 
 			default:
-				return new WP_Error( 'bad_target', __( 'target_type must be post, meta, or option.', 'vibe-ai' ), array( 'status' => 400 ) );
+				return new WP_Error( 'bad_target', __( 'target_type must be post, meta, or option.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 400 ) ) );
 		}
 	}
 

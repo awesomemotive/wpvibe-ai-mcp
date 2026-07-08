@@ -20,12 +20,12 @@ class WPVibe_Classic_Theme {
 	 */
 	public function create( $theme_name, $description = '' ) {
 		if ( empty( $theme_name ) ) {
-			return new WP_Error( 'invalid_args', __( 'Theme name is required.', 'vibe-ai' ), array( 'status' => 400 ) );
+			return new WP_Error( 'invalid_args', __( 'Theme name is required.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
 		}
 
 		$starter_dir = WPVIBE_PLUGIN_DIR . 'starter-themes/classic';
 		if ( ! is_dir( $starter_dir ) ) {
-			return new WP_Error( 'no_starter', __( 'Starter theme files are missing from the plugin.', 'vibe-ai' ), array( 'status' => 500 ) );
+			return new WP_Error( 'no_starter', __( 'Starter theme files are missing from the plugin.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'host_environment', false, array( 'status' => 500 ) ) );
 		}
 
 		// Delete any existing draft first.
@@ -43,7 +43,7 @@ class WPVibe_Classic_Theme {
 			return new WP_Error(
 				'invalid_theme_name',
 				__( 'Theme name must start with a letter and contain only letters, numbers, hyphens, and spaces.', 'vibe-ai' ),
-				array( 'status' => 400 )
+				WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) )
 			);
 		}
 
@@ -58,14 +58,14 @@ class WPVibe_Classic_Theme {
 
 		if ( is_dir( $theme_dir ) || is_dir( $draft_dir ) ) {
 			/* translators: %s: theme slug */
-			return new WP_Error( 'exists', sprintf( __( 'Theme \'%s\' already exists.', 'vibe-ai' ), $slug ), array( 'status' => 409 ) );
+			return new WP_Error( 'exists', sprintf( __( 'Theme \'%s\' already exists.', 'vibe-ai' ), $slug ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 409 ) ) );
 		}
 
 		if ( ! wp_mkdir_p( $draft_dir ) && ! is_dir( $draft_dir ) ) {
 			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- Fallback for environments where wp_mkdir_p() fails.
 			if ( ! @mkdir( $draft_dir, 0755, true ) && ! is_dir( $draft_dir ) ) {
 				/* translators: %s: directory path */
-				return new WP_Error( 'mkdir_failed', sprintf( __( 'Could not create draft directory: %s', 'vibe-ai' ), $draft_dir ), array( 'status' => 500 ) );
+				return new WP_Error( 'mkdir_failed', sprintf( __( 'Could not create draft directory: %s', 'vibe-ai' ), $draft_dir ), WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) ) );
 			}
 		}
 
@@ -128,7 +128,7 @@ class WPVibe_Classic_Theme {
 	private function copy_starter( $src, $dst, $tokens ) {
 		$fs = wpvibe_fs();
 		if ( ! $fs ) {
-			return new WP_Error( 'fs_unavailable', __( 'Filesystem is unavailable.', 'vibe-ai' ), array( 'status' => 500 ) );
+			return new WP_Error( 'fs_unavailable', __( 'Filesystem is unavailable.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'host_environment', false, array( 'status' => 500 ) ) );
 		}
 
 		$iterator = new RecursiveIteratorIterator(
@@ -143,7 +143,7 @@ class WPVibe_Classic_Theme {
 				$target = $dst . '/' . $rel;
 				if ( ! wp_mkdir_p( $target ) && ! is_dir( $target ) ) {
 					/* translators: %s: directory path */
-					return new WP_Error( 'mkdir_failed', sprintf( __( 'Could not create directory \'%s\' in the scaffold. Check filesystem permissions on the theme root.', 'vibe-ai' ), $target ), array( 'status' => 500 ) );
+					return new WP_Error( 'mkdir_failed', sprintf( __( 'Could not create directory \'%s\' in the scaffold. Check filesystem permissions on the theme root.', 'vibe-ai' ), $target ), WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) ) );
 				}
 				continue;
 			}
@@ -151,7 +151,7 @@ class WPVibe_Classic_Theme {
 			$content = $fs->get_contents( $item->getPathname() );
 			if ( false === $content ) {
 				/* translators: %s: file path */
-				return new WP_Error( 'read_failed', sprintf( __( 'Could not read starter file: %s', 'vibe-ai' ), $rel ), array( 'status' => 500 ) );
+				return new WP_Error( 'read_failed', sprintf( __( 'Could not read starter file: %s', 'vibe-ai' ), $rel ), WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) ) );
 			}
 
 			$content  = strtr( $content, $tokens );
@@ -162,13 +162,13 @@ class WPVibe_Classic_Theme {
 			if ( ! is_dir( $dir ) ) {
 				if ( ! wp_mkdir_p( $dir ) && ! is_dir( $dir ) ) {
 					/* translators: %s: directory path */
-					return new WP_Error( 'mkdir_failed', sprintf( __( 'Could not create directory \'%s\' for scaffold file. Check filesystem permissions.', 'vibe-ai' ), $dir ), array( 'status' => 500 ) );
+					return new WP_Error( 'mkdir_failed', sprintf( __( 'Could not create directory \'%s\' for scaffold file. Check filesystem permissions.', 'vibe-ai' ), $dir ), WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) ) );
 				}
 			}
 
 			if ( ! $fs->put_contents( $dest, $content, FS_CHMOD_FILE ) ) {
 				/* translators: %s: file path */
-				return new WP_Error( 'write_failed', sprintf( __( 'Could not write theme file: %s', 'vibe-ai' ), $dest_rel ), array( 'status' => 500 ) );
+				return new WP_Error( 'write_failed', sprintf( __( 'Could not write theme file: %s', 'vibe-ai' ), $dest_rel ), WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) ) );
 			}
 		}
 

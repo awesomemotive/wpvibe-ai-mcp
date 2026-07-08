@@ -56,10 +56,10 @@ class WPVibe_Fields {
 	 */
 	public function register_field( $post_type, $key, $config ) {
 		if ( empty( $post_type ) || ! is_string( $post_type ) ) {
-			return new WP_Error( 'invalid_post_type', __( 'Post type required.', 'vibe-ai' ) );
+			return new WP_Error( 'invalid_post_type', __( 'Post type required.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false ) );
 		}
 		if ( empty( $key ) || ! is_string( $key ) ) {
-			return new WP_Error( 'invalid_key', __( 'Field key required.', 'vibe-ai' ) );
+			return new WP_Error( 'invalid_key', __( 'Field key required.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false ) );
 		}
 		$config = $this->normalize_field_config( $config );
 		if ( is_wp_error( $config ) ) {
@@ -101,7 +101,7 @@ class WPVibe_Fields {
 	 */
 	public function register_setting( $key, $config ) {
 		if ( empty( $key ) || ! is_string( $key ) ) {
-			return new WP_Error( 'invalid_key', __( 'Setting key required.', 'vibe-ai' ) );
+			return new WP_Error( 'invalid_key', __( 'Setting key required.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false ) );
 		}
 		$config = $this->normalize_setting_config( $config );
 		if ( is_wp_error( $config ) ) {
@@ -123,7 +123,7 @@ class WPVibe_Fields {
 	 */
 	public function register_group( $post_type, $group_id, $config ) {
 		if ( empty( $post_type ) || empty( $group_id ) ) {
-			return new WP_Error( 'invalid_args', __( 'Post type and group id required.', 'vibe-ai' ) );
+			return new WP_Error( 'invalid_args', __( 'Post type and group id required.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false ) );
 		}
 		$this->groups[ $post_type ][ $group_id ] = array(
 			'title'    => isset( $config['title'] ) ? (string) $config['title'] : ucfirst( $group_id ),
@@ -200,14 +200,15 @@ class WPVibe_Fields {
 
 	private function normalize_field_config( $config ) {
 		if ( ! is_array( $config ) ) {
-			return new WP_Error( 'invalid_config', __( 'Field config must be an array.', 'vibe-ai' ) );
+			return new WP_Error( 'invalid_config', __( 'Field config must be an array.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false ) );
 		}
 		$type = isset( $config['type'] ) ? $config['type'] : 'text';
 		if ( ! in_array( $type, self::TYPES, true ) ) {
 			return new WP_Error(
 				'invalid_type',
 				/* translators: %s: type provided */
-				sprintf( __( 'Unknown field type \'%s\'. Allowed: text, textarea, number, email, url, date, checkbox, color, image, gallery, wysiwyg, post_select, repeater.', 'vibe-ai' ), (string) $type )
+				sprintf( __( 'Unknown field type \'%s\'. Allowed: text, textarea, number, email, url, date, checkbox, color, image, gallery, wysiwyg, post_select, repeater.', 'vibe-ai' ), (string) $type ),
+				WPVibe_Error_Contract::data( 'invalid_input', false )
 			);
 		}
 
@@ -224,7 +225,7 @@ class WPVibe_Fields {
 
 	private function normalize_setting_config( $config ) {
 		if ( ! is_array( $config ) ) {
-			return new WP_Error( 'invalid_config', __( 'Setting config must be an array.', 'vibe-ai' ) );
+			return new WP_Error( 'invalid_config', __( 'Setting config must be an array.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false ) );
 		}
 		$type = isset( $config['type'] ) ? $config['type'] : 'text';
 		// Settings page does not support repeater, gallery, or post_select (post-context only).
@@ -233,7 +234,8 @@ class WPVibe_Fields {
 			return new WP_Error(
 				'invalid_type',
 				/* translators: %s: type provided */
-				sprintf( __( 'Setting type \'%s\' is not supported. Settings can be text, textarea, number, email, url, date, checkbox, color, image, or wysiwyg.', 'vibe-ai' ), (string) $type )
+				sprintf( __( 'Setting type \'%s\' is not supported. Settings can be text, textarea, number, email, url, date, checkbox, color, image, or wysiwyg.', 'vibe-ai' ), (string) $type ),
+				WPVibe_Error_Contract::data( 'invalid_input', false )
 			);
 		}
 		return array(

@@ -31,12 +31,12 @@ class WPVibe_File_Ops {
 	private function get_draft_dir() {
 		$draft_slug = get_option( 'wpvibe_draft_theme' );
 		if ( ! $draft_slug ) {
-			return new WP_Error( 'no_draft', __( 'No draft theme active. Create one first with create_draft_theme.', 'vibe-ai' ), array( 'status' => 400 ) );
+			return new WP_Error( 'no_draft', __( 'No draft theme active. Create one first with create_draft_theme.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 400 ) ) );
 		}
 
 		$dir = get_theme_root() . '/' . $draft_slug;
 		if ( ! is_dir( $dir ) ) {
-			return new WP_Error( 'draft_missing', __( 'Draft theme directory not found.', 'vibe-ai' ), array( 'status' => 404 ) );
+			return new WP_Error( 'draft_missing', __( 'Draft theme directory not found.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
 		}
 
 		return $dir;
@@ -56,7 +56,7 @@ class WPVibe_File_Ops {
 
 		// Block path traversal.
 		if ( strpos( $relative_path, '..' ) !== false ) {
-			return new WP_Error( 'path_traversal', __( 'Path traversal is not allowed.', 'vibe-ai' ), array( 'status' => 403 ) );
+			return new WP_Error( 'path_traversal', __( 'Path traversal is not allowed.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'security_gate', false, array( 'status' => 403 ) ) );
 		}
 
 		$full_path = realpath( $draft_dir ) . '/' . ltrim( $relative_path, '/' );
@@ -69,7 +69,7 @@ class WPVibe_File_Ops {
 		}
 		$real = realpath( $probe );
 		if ( false === $real || strpos( $real, realpath( $draft_dir ) ) !== 0 ) {
-			return new WP_Error( 'path_traversal', __( 'Resolved path is outside the draft theme.', 'vibe-ai' ), array( 'status' => 403 ) );
+			return new WP_Error( 'path_traversal', __( 'Resolved path is outside the draft theme.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'security_gate', false, array( 'status' => 403 ) ) );
 		}
 
 		return $full_path;
@@ -136,16 +136,16 @@ class WPVibe_File_Ops {
 
 		if ( ! file_exists( $full_path ) ) {
 			/* translators: %s: file path */
-			return new WP_Error( 'not_found', sprintf( __( 'File not found: %s', 'vibe-ai' ), $path ), array( 'status' => 404 ) );
+			return new WP_Error( 'not_found', sprintf( __( 'File not found: %s', 'vibe-ai' ), $path ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
 		}
 
 		$fs = wpvibe_fs();
 		if ( ! $fs ) {
-			return new WP_Error( 'fs_init', __( 'Unable to initialize WP_Filesystem.', 'vibe-ai' ), array( 'status' => 500 ) );
+			return new WP_Error( 'fs_init', __( 'Unable to initialize WP_Filesystem.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'host_environment', false, array( 'status' => 500 ) ) );
 		}
 		$content = $fs->get_contents( $full_path );
 		if ( false === $content ) {
-			return new WP_Error( 'read_failed', __( 'Failed to read file.', 'vibe-ai' ), array( 'status' => 500 ) );
+			return new WP_Error( 'read_failed', __( 'Failed to read file.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) ) );
 		}
 
 		if ( null !== $start_line || null !== $end_line ) {
@@ -190,30 +190,30 @@ class WPVibe_File_Ops {
 
 		if ( ! file_exists( $full_path ) ) {
 			/* translators: %s: file path */
-			return new WP_Error( 'not_found', sprintf( __( 'File not found: %s', 'vibe-ai' ), $path ), array( 'status' => 404 ) );
+			return new WP_Error( 'not_found', sprintf( __( 'File not found: %s', 'vibe-ai' ), $path ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
 		}
 
 		if ( ! $this->is_allowed_extension( $full_path ) ) {
-			return new WP_Error( 'forbidden_ext', __( 'File extension not allowed for editing.', 'vibe-ai' ), array( 'status' => 403 ) );
+			return new WP_Error( 'forbidden_ext', __( 'File extension not allowed for editing.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 403 ) ) );
 		}
 
 		$fs = wpvibe_fs();
 		if ( ! $fs ) {
-			return new WP_Error( 'fs_init', __( 'Unable to initialize WP_Filesystem.', 'vibe-ai' ), array( 'status' => 500 ) );
+			return new WP_Error( 'fs_init', __( 'Unable to initialize WP_Filesystem.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'host_environment', false, array( 'status' => 500 ) ) );
 		}
 		$content = $fs->get_contents( $full_path );
 		if ( false === $content ) {
-			return new WP_Error( 'read_failed', __( 'Failed to read file.', 'vibe-ai' ), array( 'status' => 500 ) );
+			return new WP_Error( 'read_failed', __( 'Failed to read file.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) ) );
 		}
 		$count = substr_count( $content, $old_content );
 
 		if ( 0 === $count ) {
-			return new WP_Error( 'no_match', __( 'old_content not found in file.', 'vibe-ai' ), array( 'status' => 422 ) );
+			return new WP_Error( 'no_match', __( 'old_content not found in file.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422 ) ) );
 		}
 
 		if ( $count > 1 ) {
 			/* translators: %d: number of matching locations */
-			return new WP_Error( 'multiple_matches', sprintf( __( 'old_content matches %d locations. Provide more context to make it unique.', 'vibe-ai' ), $count ), array( 'status' => 422 ) );
+			return new WP_Error( 'multiple_matches', sprintf( __( 'old_content matches %d locations. Provide more context to make it unique.', 'vibe-ai' ), $count ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422 ) ) );
 		}
 
 		$updated = str_replace( $old_content, $new_content, $content );
@@ -221,7 +221,7 @@ class WPVibe_File_Ops {
 		// Write to a temp file first for PHP syntax check.
 		$tmp = $full_path . '.wpvibe-tmp';
 		if ( ! $fs->put_contents( $tmp, $updated, FS_CHMOD_FILE ) ) {
-			return new WP_Error( 'write_failed', __( 'Failed to write temp file.', 'vibe-ai' ), array( 'status' => 500 ) );
+			return new WP_Error( 'write_failed', __( 'Failed to write temp file.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) ) );
 		}
 
 		$syntax = $this->validate_php_syntax( $tmp );
@@ -240,7 +240,7 @@ class WPVibe_File_Ops {
 					$full_path,
 					file_exists( $tmp ) ? "still present at '{$tmp}'" : 'cleaned up'
 				),
-				array( 'status' => 500 )
+				WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) )
 			);
 		}
 		wp_delete_file( $tmp );
@@ -271,7 +271,7 @@ class WPVibe_File_Ops {
 		}
 
 		if ( ! $this->is_allowed_extension( $full_path ) ) {
-			return new WP_Error( 'forbidden_ext', __( 'File extension not allowed.', 'vibe-ai' ), array( 'status' => 403 ) );
+			return new WP_Error( 'forbidden_ext', __( 'File extension not allowed.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 403 ) ) );
 		}
 
 		// Ensure parent directory exists. mkdir failures here cascade into
@@ -286,7 +286,7 @@ class WPVibe_File_Ops {
 						__( 'Could not create parent directory \'%s\'. Check filesystem permissions on the theme root.', 'vibe-ai' ),
 						$dir
 					),
-					array( 'status' => 500 )
+					WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) )
 				);
 			}
 		}
@@ -295,7 +295,7 @@ class WPVibe_File_Ops {
 
 		$fs = wpvibe_fs();
 		if ( ! $fs ) {
-			return new WP_Error( 'fs_init', __( 'Unable to initialize WP_Filesystem.', 'vibe-ai' ), array( 'status' => 500 ) );
+			return new WP_Error( 'fs_init', __( 'Unable to initialize WP_Filesystem.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'host_environment', false, array( 'status' => 500 ) ) );
 		}
 
 		// Write to temp for syntax check.
@@ -308,7 +308,7 @@ class WPVibe_File_Ops {
 					__( 'Could not write temporary file \'%s\'. Check filesystem permissions and free disk space.', 'vibe-ai' ),
 					$tmp
 				),
-				array( 'status' => 500 )
+				WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) )
 			);
 		}
 
@@ -328,7 +328,7 @@ class WPVibe_File_Ops {
 					$full_path,
 					file_exists( $tmp ) ? "still present at '{$tmp}'" : 'cleaned up'
 				),
-				array( 'status' => 500 )
+				WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) )
 			);
 		}
 		wp_delete_file( $tmp );
@@ -359,11 +359,11 @@ class WPVibe_File_Ops {
 
 		if ( ! file_exists( $full_path ) ) {
 			/* translators: %s: file path */
-			return new WP_Error( 'not_found', sprintf( __( 'File not found: %s', 'vibe-ai' ), $path ), array( 'status' => 404 ) );
+			return new WP_Error( 'not_found', sprintf( __( 'File not found: %s', 'vibe-ai' ), $path ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
 		}
 
 		if ( is_dir( $full_path ) ) {
-			return new WP_Error( 'is_directory', __( 'Cannot delete directories. Only files can be deleted.', 'vibe-ai' ), array( 'status' => 400 ) );
+			return new WP_Error( 'is_directory', __( 'Cannot delete directories. Only files can be deleted.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 400 ) ) );
 		}
 
 		wp_delete_file( $full_path );
@@ -456,7 +456,7 @@ class WPVibe_File_Ops {
 		}
 
 		if ( empty( $pattern ) ) {
-			return new WP_Error( 'empty_pattern', __( 'Search pattern cannot be empty.', 'vibe-ai' ), array( 'status' => 400 ) );
+			return new WP_Error( 'empty_pattern', __( 'Search pattern cannot be empty.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
 		}
 
 		$allowed_ext   = $extensions ? $extensions : self::ALLOWED_EXTENSIONS;
@@ -466,7 +466,7 @@ class WPVibe_File_Ops {
 
 		$fs = wpvibe_fs();
 		if ( ! $fs ) {
-			return new WP_Error( 'fs_init', __( 'Unable to initialize WP_Filesystem.', 'vibe-ai' ), array( 'status' => 500 ) );
+			return new WP_Error( 'fs_init', __( 'Unable to initialize WP_Filesystem.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'host_environment', false, array( 'status' => 500 ) ) );
 		}
 
 		$iterator = new RecursiveIteratorIterator(
@@ -545,16 +545,16 @@ class WPVibe_File_Ops {
 
 		if ( ! file_exists( $full_path ) ) {
 			/* translators: %s: file path */
-			return new WP_Error( 'not_found', sprintf( __( 'File not found: %s', 'vibe-ai' ), $path ), array( 'status' => 404 ) );
+			return new WP_Error( 'not_found', sprintf( __( 'File not found: %s', 'vibe-ai' ), $path ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
 		}
 
 		$fs = wpvibe_fs();
 		if ( ! $fs ) {
-			return new WP_Error( 'fs_init', __( 'Unable to initialize WP_Filesystem.', 'vibe-ai' ), array( 'status' => 500 ) );
+			return new WP_Error( 'fs_init', __( 'Unable to initialize WP_Filesystem.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'host_environment', false, array( 'status' => 500 ) ) );
 		}
 		$content = $fs->get_contents( $full_path );
 		if ( false === $content ) {
-			return new WP_Error( 'read_failed', __( 'Failed to read file.', 'vibe-ai' ), array( 'status' => 500 ) );
+			return new WP_Error( 'read_failed', __( 'Failed to read file.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) ) );
 		}
 		$lines       = explode( "\n", $content );
 		$total_lines = count( $lines );
