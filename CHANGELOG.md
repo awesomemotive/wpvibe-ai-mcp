@@ -1,6 +1,11 @@
 # Changelog
 
-All notable changes to the WPVibe WordPress plugin *(listed on WordPress.org as "Vibe AI")*. The canonical source for WordPress.org's update API is `readme.txt`; this file mirrors the same information in markdown for GitHub readers.
+All notable changes to the WPVibe WordPress plugin *(WordPress.org slug: `vibe-ai`)*. The canonical source for WordPress.org's update API is `readme.txt`; this file mirrors the same information in markdown for GitHub readers.
+
+## [1.6.2] - 2026-07-08
+
+* Improvement: The plugin now displays as WPVibe, matching the product brand at wpvibe.ai. Same plugin, nothing else changes.
+* Fix: "plugin update vibe-ai" no longer tries to replace the plugin's own files over its own connection, which failed with an unhelpful server error. It now explains that WPVibe should be updated from the wp-admin Plugins screen or via auto-updates.
 
 ## [1.6.1] - 2026-07-07
 

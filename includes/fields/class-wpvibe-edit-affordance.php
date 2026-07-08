@@ -1,7 +1,7 @@
 <?php
 /**
  * Hover-to-edit affordance for editable surfaces declared via the
- * Vibe AI field API.
+ * WPVibe field API.
  *
  * Theme authors annotate elements whose content comes from a registered
  * field by calling wpvibe_edit_attr() (post meta) or

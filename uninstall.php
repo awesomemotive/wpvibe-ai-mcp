@@ -1,6 +1,6 @@
 <?php
 /**
- * Uninstall the WPVibe plugin (listed as "Vibe AI" on WordPress.org).
+ * Uninstall the WPVibe plugin (slug "vibe-ai" on WordPress.org).
  *
  * Removes all plugin options, transients, and leftover draft/backup theme
  * directories on uninstall.

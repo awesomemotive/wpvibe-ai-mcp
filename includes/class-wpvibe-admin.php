@@ -1,6 +1,6 @@
 <?php
 /**
- * Admin page for the WPVibe plugin (listed as "Vibe AI" on WordPress.org).
+ * Admin page for the WPVibe plugin (slug "vibe-ai" on WordPress.org).
  *
  * @package WPVibe
  */
@@ -55,8 +55,8 @@ class WPVibe_Admin {
 	 */
 	public function add_menu() {
 		add_menu_page(
-			__( 'Vibe AI', 'vibe-ai' ),
-			__( 'Vibe AI', 'vibe-ai' ),
+			__( 'WPVibe', 'vibe-ai' ),
+			__( 'WPVibe', 'vibe-ai' ),
 			'manage_options',
 			'vibe-ai',
 			array( $this, 'render_page' ),

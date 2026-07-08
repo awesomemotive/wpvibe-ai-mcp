@@ -7,7 +7,7 @@
  * The <style type="text/tailwindcss"> block is the Tailwind v4 token
  * source the browser CDN reads in draft preview. Do not remove it.
  * Mode switching is automatic:
- *   - Draft mode (active theme matches the draft option): the Vibe AI
+ *   - Draft mode (active theme matches the draft option): the WPVibe
  *     plugin enqueues the CDN runtime + plugin-served presets.css.
  *   - Live mode: functions.php enqueues dist/styles.css when present.
  */

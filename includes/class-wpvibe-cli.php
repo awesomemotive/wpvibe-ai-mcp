@@ -2107,6 +2107,11 @@ class WPVibe_CLI {
 			return $this->error_result( sprintf( __( 'Plugin \'%s\' not found.', 'vibe-ai' ), $positional[0] ) );
 		}
 
+		// Self-update replaces this plugin's files while they serve the request: fatals with a 500 and never applies.
+		if ( plugin_basename( WPVIBE_PLUGIN_DIR . 'vibe-ai.php' ) === $file ) {
+			return $this->error_result( __( 'WPVibe cannot update itself over its own connection (the update would replace the plugin files serving this request). Update it from the Plugins screen in wp-admin, or enable auto-updates for it there.', 'vibe-ai' ) );
+		}
+
 		// Check for available update.
 		wp_update_plugins();
 		$update_data = get_site_transient( 'update_plugins' );

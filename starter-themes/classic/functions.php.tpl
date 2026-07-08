@@ -146,7 +146,7 @@ add_action( 'after_switch_theme', '{{FUNCTION_PREFIX}}_setup_pages' );
    Editable surfaces (Settings -> WPVibe + per-page meta).
 
    Wrapped in function_exists so the theme degrades gracefully if the
-   Vibe AI plugin is deactivated. Read with get_option / get_post_meta
+   WPVibe plugin is deactivated. Read with get_option / get_post_meta
    anywhere in templates.
    ─────────────────────────────────────────────────────────────────────────── */
 
