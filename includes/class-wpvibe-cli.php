@@ -2551,8 +2551,16 @@ class WPVibe_CLI {
 				$post_type
 			) );
 		}
+		// manage_options fallback: CPTs with custom capability mappings fail the
+		// per-post meta-cap checks below even for admins, who can already reach
+		// the same rows through the approval-gated db query path. An explicit
+		// 'do_not_allow' in the post type's caps is intentional (e.g. HPOS
+		// orders) and stays enforced for everyone.
+		$admin = current_user_can( 'manage_options' );
 		if ( 'create' === $action ) {
-			if ( ! current_user_can( $pt_obj->cap->create_posts ) ) {
+			$allowed = current_user_can( $pt_obj->cap->create_posts )
+				|| ( $admin && 'do_not_allow' !== $pt_obj->cap->create_posts );
+			if ( ! $allowed ) {
 				return new WP_Error( 'forbidden', sprintf(
 					/* translators: %s: post type label */
 					__( 'You do not have permission to create %s.', 'vibe-ai' ),
@@ -2560,14 +2568,18 @@ class WPVibe_CLI {
 				) );
 			}
 		} else {
-			if ( ! current_user_can( 'edit_post', $post_id ) ) {
+			$edit_allowed = current_user_can( 'edit_post', $post_id )
+				|| ( $admin && 'do_not_allow' !== $pt_obj->cap->edit_posts );
+			if ( ! $edit_allowed ) {
 				return new WP_Error( 'forbidden', sprintf(
 					/* translators: %d: post ID */
 					__( 'You do not have permission to edit post #%d.', 'vibe-ai' ),
 					$post_id
 				) );
 			}
-			if ( 'delete' === $action && ! current_user_can( 'delete_post', $post_id ) ) {
+			$delete_allowed = current_user_can( 'delete_post', $post_id )
+				|| ( $admin && 'do_not_allow' !== $pt_obj->cap->delete_posts );
+			if ( 'delete' === $action && ! $delete_allowed ) {
 				return new WP_Error( 'forbidden', sprintf(
 					/* translators: %d: post ID */
 					__( 'You do not have permission to delete post #%d.', 'vibe-ai' ),
@@ -2575,7 +2587,9 @@ class WPVibe_CLI {
 				) );
 			}
 		}
-		if ( 'publish' === $new_status && ! current_user_can( $pt_obj->cap->publish_posts ) ) {
+		$publish_allowed = current_user_can( $pt_obj->cap->publish_posts )
+			|| ( $admin && 'do_not_allow' !== $pt_obj->cap->publish_posts );
+		if ( 'publish' === $new_status && ! $publish_allowed ) {
 			return new WP_Error( 'forbidden_publish', sprintf(
 				/* translators: %s: post type label */
 				__( 'You do not have permission to publish %s.', 'vibe-ai' ),

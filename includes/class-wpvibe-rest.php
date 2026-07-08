@@ -570,7 +570,26 @@ class WPVibe_REST {
 	 * bare `false` (WordPress's generic "Sorry, you are not allowed to do
 	 * that" 403/401 tells the AI nothing it can act on).
 	 */
-	private function missing_capability_error( $capability ) {
+	private function missing_capability_error( $capability, $post_id = 0 ) {
+		$data      = array( 'status' => rest_authorization_required_code(), 'capability' => $capability );
+		$post_type = $post_id > 0 ? get_post_type( $post_id ) : '';
+		if ( $post_type ) {
+			// Admins pass can_edit_content's manage_options fallback, so only
+			// sub-admin accounts can reach this error and the reconnect advice
+			// is accurate for them.
+			$data['post_type'] = $post_type;
+			return new WP_Error(
+				'wpvibe_missing_capability',
+				sprintf(
+					/* translators: 1: WordPress capability name, 2: post ID, 3: post type slug */
+					__( 'The connected account failed the "%1$s" check for post #%2$d (post type "%3$s"). Post types can carry custom capabilities, so accounts below Administrator may be blocked here even when they can edit regular posts. Reconnect with an Administrator account for access.', 'vibe-ai' ),
+					$capability,
+					$post_id,
+					$post_type
+				),
+				$data
+			);
+		}
 		return new WP_Error(
 			'wpvibe_missing_capability',
 			sprintf(
@@ -578,7 +597,7 @@ class WPVibe_REST {
 				__( 'This action requires the WordPress capability "%s", which the connected account does not have. Administrators have it by default — reconnect with an account that has this capability for full access.', 'vibe-ai' ),
 				$capability
 			),
-			array( 'status' => rest_authorization_required_code(), 'capability' => $capability )
+			$data
 		);
 	}
 
@@ -688,9 +707,23 @@ class WPVibe_REST {
 		}
 		$post_id = (int) $request->get_param( 'post_id' );
 		if ( $post_id > 0 ) {
-			return current_user_can( 'edit_post', $post_id ) ? true : $this->missing_capability_error( 'edit_post' );
+			// manage_options fallback: CPT capability mappings (WPForms, LMS
+			// plugins) fail edit_post even for admins. Post types with an
+			// explicit do_not_allow edit cap stay fenced for everyone.
+			if ( current_user_can( 'edit_post', $post_id ) || $this->admin_content_override( $post_id ) ) {
+				return true;
+			}
+			return $this->missing_capability_error( 'edit_post', $post_id );
 		}
 		return current_user_can( 'edit_posts' ) ? true : $this->missing_capability_error( 'edit_posts' );
+	}
+
+	private function admin_content_override( $post_id ) {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return false;
+		}
+		$pt_obj = get_post_type_object( get_post_type( $post_id ) );
+		return $pt_obj && 'do_not_allow' !== $pt_obj->cap->edit_posts;
 	}
 
 	// ------------------------------------------------------------------
@@ -788,7 +821,24 @@ class WPVibe_REST {
 		$cli = new WPVibe_CLI();
 		$cli_status = $cli->check_availability();
 
+		// Connect-time capability preflight: the MCP reads this right after
+		// OAuth to warn about limited accounts, and error recovery hints tell
+		// the AI to check it before suggesting a reconnect.
+		$user = wp_get_current_user();
+
 		return rest_ensure_response( array(
+			'connected_user' => array(
+				'login' => $user->user_login,
+				'roles' => array_values( $user->roles ),
+				'caps'  => array(
+					'manage_options'     => current_user_can( 'manage_options' ),
+					'edit_theme_options' => current_user_can( 'edit_theme_options' ),
+					'edit_posts'         => current_user_can( 'edit_posts' ),
+					'publish_posts'      => current_user_can( 'publish_posts' ),
+					'upload_files'       => current_user_can( 'upload_files' ),
+					'activate_plugins'   => current_user_can( 'activate_plugins' ),
+				),
+			),
 			'site_name'    => get_bloginfo( 'name' ),
 			'wp_version'   => get_bloginfo( 'version' ),
 			'php_version'  => phpversion(),

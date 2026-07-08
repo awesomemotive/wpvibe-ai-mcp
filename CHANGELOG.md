@@ -2,6 +2,12 @@
 
 All notable changes to the WPVibe WordPress plugin *(WordPress.org slug: `vibe-ai`)*. The canonical source for WordPress.org's update API is `readme.txt`; this file mirrors the same information in markdown for GitHub readers.
 
+## [1.6.3] - 2026-07-08
+
+* Fix: Administrators were blocked from editing content that belongs to plugins with their own permission schemes (WPForms forms, some LMS and e-commerce post types). Content search and edit now work for administrator accounts on those post types. Post types that explicitly forbid editing (such as order records) stay locked, and protected fields keep their existing safeguards.
+* Fix: The error shown when an account lacks permission for a specific post now names the post and its type, and no longer suggests reconnecting when reconnecting would not help.
+* Improvement: Site info now reports which WordPress account is connected and its role, so your AI assistant can spot a limited account up front instead of failing mid-task.
+
 ## [1.6.2] - 2026-07-08
 
 * Improvement: The plugin now displays as WPVibe, matching the product brand at wpvibe.ai. Same plugin, nothing else changes.

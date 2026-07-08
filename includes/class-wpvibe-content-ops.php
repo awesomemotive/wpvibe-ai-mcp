@@ -309,8 +309,8 @@ class WPVibe_Content_Ops {
 				// edit_post is post-level; protected/registered meta keys carry their
 				// own auth boundary (protected-meta rule + auth_callback) that direct
 				// get_post_meta() bypasses. edit_post_meta maps both via map_meta_cap.
-				if ( ! current_user_can( 'edit_post_meta', $post_id, $key ) ) {
-					return new WP_Error( 'meta_forbidden', __( 'You are not allowed to access this meta key.', 'vibe-ai' ), array( 'status' => 403 ) );
+				if ( ! current_user_can( 'edit_post_meta', $post_id, $key ) && ! $this->admin_meta_override( $post_id, $key ) ) {
+					return $this->meta_forbidden_error( $post_id, $key );
 				}
 				if ( ! metadata_exists( 'post', $post_id, $key ) ) {
 					return new WP_Error( 'meta_not_found', __( 'Meta key not found on this post.', 'vibe-ai' ), array( 'status' => 404 ) );
@@ -334,6 +334,53 @@ class WPVibe_Content_Ops {
 		}
 	}
 
+	/**
+	 * edit_post_meta maps through edit_post, so CPT capability mappings fail it
+	 * even for admins. The override never applies to protected keys, keys
+	 * registered with an auth_callback (register_post_meta registers those
+	 * under the subtype filter, which core checks too), or post types whose
+	 * edit_posts cap is an explicit do_not_allow.
+	 */
+	private function admin_meta_override( $post_id, $key ) {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return false;
+		}
+		if ( is_protected_meta( $key, 'post' ) ) {
+			return false;
+		}
+		if ( $this->meta_has_auth_callback( $post_id, $key ) ) {
+			return false;
+		}
+		$pt_obj = get_post_type_object( get_post_type( $post_id ) );
+		if ( ! $pt_obj || 'do_not_allow' === $pt_obj->cap->edit_posts ) {
+			return false;
+		}
+		return true;
+	}
+
+	private function meta_has_auth_callback( $post_id, $key ) {
+		if ( has_filter( "auth_post_meta_{$key}" ) ) {
+			return true;
+		}
+		$post_type = get_post_type( $post_id );
+		return $post_type && has_filter( "auth_post_{$post_type}_meta_{$key}" );
+	}
+
+	private function meta_forbidden_error( $post_id, $key ) {
+		if ( is_protected_meta( $key, 'post' ) || $this->meta_has_auth_callback( $post_id, $key ) ) {
+			return new WP_Error(
+				'meta_forbidden',
+				__( 'This meta key is protected (underscore-prefixed or registered with an auth callback), a boundary that applies even to Administrators. Read it with WP-CLI "post meta list", or write it through the approval-gated db query path.', 'vibe-ai' ),
+				array( 'status' => 403, 'protected' => true )
+			);
+		}
+		return new WP_Error(
+			'meta_forbidden',
+			__( 'The connected account is not allowed to edit this meta key. Accounts below Administrator can be blocked on post types that carry custom capabilities. Reconnect with an Administrator account for access.', 'vibe-ai' ),
+			array( 'status' => 403, 'protected' => false )
+		);
+	}
+
 	/** @return true|WP_Error */
 	private function store( $type, $args, $updated ) {
 		switch ( $type ) {
@@ -355,8 +402,8 @@ class WPVibe_Content_Ops {
 				$post_id = (int) $args['post_id'];
 				$key     = (string) $args['key'];
 				// Same meta-level auth boundary as load(); edit_post alone is not it.
-				if ( ! current_user_can( 'edit_post_meta', $post_id, $key ) ) {
-					return new WP_Error( 'meta_forbidden', __( 'You are not allowed to edit this meta key.', 'vibe-ai' ), array( 'status' => 403 ) );
+				if ( ! current_user_can( 'edit_post_meta', $post_id, $key ) && ! $this->admin_meta_override( $post_id, $key ) ) {
+					return $this->meta_forbidden_error( $post_id, $key );
 				}
 				// update_metadata unslashes; slash to preserve backslashes.
 				$ok = update_post_meta( $post_id, $key, wp_slash( $updated ) );
