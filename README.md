@@ -8,11 +8,11 @@
 **WPVibe** is the open-source WordPress plugin that makes your self-hosted WordPress site accessible to AI assistants via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io). Pair the plugin with the hosted WPVibe MCP service at [wpvibe.ai](https://wpvibe.ai) and your AI — **Claude**, **ChatGPT**, **Cursor**, **Windsurf**, **OpenCode**, **Claude Code**, or any MCP-compatible client — can manage WordPress through natural conversation.
 
 > 🌐 **Website:** [wpvibe.ai](https://wpvibe.ai)
-> 📦 **Install from WordPress.org:** [wordpress.org/plugins/vibe-ai](https://wordpress.org/plugins/vibe-ai/) *(listed as "Vibe AI" per WP.org rules — same plugin)*
+> 📦 **Install from WordPress.org:** [wordpress.org/plugins/vibe-ai](https://wordpress.org/plugins/vibe-ai/)
 > 💬 **Support:** [GitHub Issues](https://github.com/awesomemotive/wpvibe-ai-mcp/issues) or [WordPress.org forum](https://wordpress.org/support/plugin/vibe-ai/)
 > 🧠 **About MCP:** [modelcontextprotocol.io](https://modelcontextprotocol.io)
 
-> **A quick note on naming:** The brand and product is **WPVibe**. The WordPress.org plugin directory has rules that prevent "WP" prefixes in plugin names, so on WordPress.org you'll see it listed as **"Vibe AI"**. Same plugin, same code, just a different name on the WP.org listing. The plugin file itself is `vibe-ai.php` because the WP.org plugin slug is `vibe-ai` and can't be changed without breaking installs. Everywhere else — this README, our website, the docs — it's **WPVibe**.
+> **A quick note on naming:** The product is **WPVibe**. The WordPress.org plugin slug is `vibe-ai` (slugs can never change after approval, and the plugin file is `vibe-ai.php` to match), so the plugin URL and file names keep that spelling. The plugin itself displays as WPVibe everywhere.
 
 > **Scope of this repository:** This is the **WordPress plugin** — the WP-side component that exposes WordPress operations as MCP-callable REST endpoints. The hosted WPVibe MCP server (gateway, OAuth, tool registration) lives at [wpvibe.ai](https://wpvibe.ai) and is not in this repo. Install both for the full experience.
 
@@ -48,8 +48,8 @@ No copy-pasting between AI chat and wp-admin. No API key juggling. One-click OAu
          ▼
 ┌──────────────────┐
 │  WPVibe plugin   │  ← This repo. Installed on your WordPress site.
-│  (Vibe AI on     │     Capability checks, sandboxing, PHP lint, denylists
-│   WordPress.org) │
+│                  │     Capability checks, sandboxing, PHP lint, denylists
+│                  │
 └────────┬─────────┘
          │ Native WordPress PHP APIs
          ▼
@@ -78,7 +78,7 @@ Full per-tool documentation: [wpvibe.ai](https://wpvibe.ai)
 
 ## Quick start
 
-1. **Install** the plugin from [WordPress.org](https://wordpress.org/plugins/vibe-ai/) *(listed as "Vibe AI")* or clone this repo into `wp-content/plugins/vibe-ai/`
+1. **Install** the plugin from [WordPress.org](https://wordpress.org/plugins/vibe-ai/) or clone this repo into `wp-content/plugins/vibe-ai/`
 2. **Activate** the plugin in wp-admin — you'll see "WPVibe" in your admin sidebar
 3. **Click the OAuth authorization link** in the WPVibe admin page
 4. **Add the WPVibe MCP server URL** to your AI client:
