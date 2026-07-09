@@ -31,7 +31,10 @@ class WPVibe_File_Ops {
 	private function get_draft_dir() {
 		$draft_slug = get_option( 'wpvibe_draft_theme' );
 		if ( ! $draft_slug ) {
-			return new WP_Error( 'no_draft', __( 'No draft theme active. Create one first with create_draft_theme.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 400 ) ) );
+			if ( class_exists( 'WPVibe_Draft_Theme' ) ) {
+				return WPVibe_Draft_Theme::no_draft_error( __( 'No draft theme active. Create one first with create_draft_theme.', 'vibe-ai' ) );
+			}
+		return new WP_Error( 'no_draft', __( 'No draft theme active. Create one first with create_draft_theme.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 400 ) ) );
 		}
 
 		$dir = get_theme_root() . '/' . $draft_slug;

@@ -2,6 +2,12 @@
 
 All notable changes to the WPVibe WordPress plugin *(WordPress.org slug: `vibe-ai`)*. The canonical source for WordPress.org's update API is `readme.txt`; this file mirrors the same information in markdown for GitHub readers.
 
+## [1.7.1] - 2026-07-09
+
+* Fix: CLI commands that carry punctuation inside a quoted value (a serialized setting, an SEO title with a pipe) are no longer rejected as unsafe. Quoted values are treated as data; the safety checks on command structure are unchanged.
+* Fix: Publishing a draft theme now works on hosts that block deleting the live theme folder, by swapping the folders instead of deleting and recopying. If anything goes wrong mid-publish, a complete backup is kept and the message says exactly where.
+* Improvement: When a draft theme action finds no draft, the message now says whether the last draft was published or deleted and when, so your AI stops trying to recreate a draft you already finished with.
+
 ## [1.7.0] - 2026-07-08
 
 * Improvement: Every error the plugin reports now includes structured facts about what went wrong (the cause, whether retrying can help, and whether the connected account is an administrator), so AI assistants stop guessing at remedies and stop repeating fixes that cannot work.

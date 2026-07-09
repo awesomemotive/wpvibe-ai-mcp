@@ -4,7 +4,7 @@ Tags: mcp, mcp-server, claude, chatgpt, ai-assistant
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.7.0
+Stable tag: 1.7.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -235,7 +235,10 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 
 == Changelog ==
 
-= 1.7.0 =
+= 1.7.1 =
+* Fix: CLI commands that carry punctuation inside a quoted value (a serialized setting, an SEO title with a pipe) are no longer rejected as unsafe. Quoted values are treated as data; the safety checks on command structure are unchanged.
+* Fix: Publishing a draft theme now works on hosts that block deleting the live theme folder, by swapping the folders instead of deleting and recopying. If anything goes wrong mid-publish, a complete backup is kept and the message says exactly where.
+* Improvement: When a draft theme action finds no draft, the message now says whether the last draft was published or deleted and when, so your AI stops trying to recreate a draft you already finished with.
 * Improvement: Every error the plugin reports now includes structured facts about what went wrong (the cause, whether retrying can help, and whether the connected account is an administrator), so AI assistants stop guessing at remedies and stop repeating fixes that cannot work.
 * Fix: Permission denials when creating content or editing custom fields through the CLI tools now surface as a proper permission error naming the post type and capability, instead of a quiet command failure that error tracking never recorded.
 

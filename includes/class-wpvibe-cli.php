@@ -432,17 +432,13 @@ class WPVibe_CLI {
 
 		// db query needs < and > for SQL comparisons — skip those chars for that command.
 		$is_db_query = ( strpos( $command, 'db query' ) === 0 );
-		foreach ( self::SHELL_CHARS as $char ) {
-			if ( $is_db_query && ( '<' === $char || '>' === $char ) ) {
-				continue;
-			}
-			if ( strpos( $command, $char ) !== false ) {
-				$hint = ( '<' === $char || '>' === $char )
-					? ' ' . __( 'To write values containing HTML or scripts, use the content editing tools instead of a CLI command.', 'vibe-ai' )
-					: '';
-				/* translators: %s: the blocked character */
-				return new WP_Error( 'shell_chars', sprintf( __( 'Command contains disallowed character: %s', 'vibe-ai' ), $char ) . $hint, WPVibe_Error_Contract::data( 'security_gate', false, array( 'status' => 400 ) ) );
-			}
+		$blocked_char = $this->find_unquoted_shell_char( $command, $is_db_query );
+		if ( null !== $blocked_char ) {
+			$hint = ( '<' === $blocked_char || '>' === $blocked_char )
+				? ' ' . __( 'To write values containing HTML or scripts, use the content editing tools instead of a CLI command.', 'vibe-ai' )
+				: '';
+			/* translators: %s: the blocked character */
+			return new WP_Error( 'shell_chars', sprintf( __( 'Command contains disallowed character: %s', 'vibe-ai' ), $blocked_char ) . $hint, WPVibe_Error_Contract::data( 'security_gate', false, array( 'status' => 400 ) ) );
 		}
 
 		$tokens = $this->tokenize( $command );
@@ -988,6 +984,17 @@ class WPVibe_CLI {
 			'operation'  => $keyword,
 			'table_prefix' => $wpdb->prefix,
 		);
+
+		// The WHERE-remainder below is interpolated into preview SQL we execute
+		// here (pre-approval). Mirror handle_db_query's stacked-statement guard
+		// so a `; second statement` cannot ride in: since the quote-aware gate
+		// stopped blocking `;` inside quoted values, this builder can no longer
+		// rely on that flat backstop. A stacked statement skips the preview
+		// (execution still applies its own guard); it is not silently run.
+		if ( preg_match( '/;\s*\S/', $sql ) ) {
+			$preview['note'] = __( 'Affected-row preview skipped: the statement could not be safely parsed for preview.', 'vibe-ai' );
+			return $preview;
+		}
 
 		// Cap counting at this many rows so we don't lock up sites with millions
 		// of rows. The subquery LIMIT bounds the scan; outer COUNT(*) returns
@@ -4605,6 +4612,50 @@ class WPVibe_CLI {
 	// ------------------------------------------------------------------
 	// Parsing & Validation
 	// ------------------------------------------------------------------
+
+	/**
+	 * Scan for shell metacharacters OUTSIDE quoted spans. Quoted argument
+	 * values are data handed to native PHP handlers (no shell ever runs), so a
+	 * pipe inside an SEO title or a semicolon inside serialized meta is
+	 * legitimate; the same characters in command STRUCTURE still get blocked.
+	 * The quote state machine MUST mirror tokenize() exactly: a string the
+	 * gate reads as quoted but the tokenizer reads as unquoted (or vice
+	 * versa) would be a gate/parser mismatch an attacker could aim at.
+	 *
+	 * @return string|null The blocked character/sequence, or null when clean.
+	 */
+	private function find_unquoted_shell_char( $input, $skip_angle_brackets ) {
+		$in_quote   = false;
+		$quote_char = '';
+		$len        = strlen( $input );
+		for ( $i = 0; $i < $len; $i++ ) {
+			$char = $input[ $i ];
+			if ( $in_quote ) {
+				if ( $char === $quote_char ) {
+					$in_quote = false;
+				}
+				continue;
+			}
+			if ( '"' === $char || "'" === $char ) {
+				$in_quote   = true;
+				$quote_char = $char;
+				continue;
+			}
+			if ( ';' === $char || '`' === $char || '|' === $char || "\n" === $char || "\r" === $char ) {
+				return $char;
+			}
+			if ( '&' === $char && $i + 1 < $len && '&' === $input[ $i + 1 ] ) {
+				return '&&';
+			}
+			if ( '$' === $char && $i + 1 < $len && '(' === $input[ $i + 1 ] ) {
+				return '$(';
+			}
+			if ( ( '<' === $char || '>' === $char ) && ! $skip_angle_brackets ) {
+				return $char;
+			}
+		}
+		return null;
+	}
 
 	private function tokenize( $input ) {
 		$tokens   = array();
