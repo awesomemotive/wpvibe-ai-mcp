@@ -37,6 +37,7 @@ class WPVibe_CLI {
 		'theme list'       => array( 'tier' => 'read', 'cap' => 'switch_themes' ),
 		'theme status'     => array( 'tier' => 'read', 'cap' => 'switch_themes' ),
 		'option get'       => array( 'tier' => 'read', 'cap' => 'manage_options' ),
+		'option pluck'     => array( 'tier' => 'read', 'cap' => 'manage_options' ),
 		'option list'      => array( 'tier' => 'read', 'cap' => 'manage_options' ),
 		'user list'        => array( 'tier' => 'read', 'cap' => 'list_users' ),
 		'post list'        => array( 'tier' => 'read', 'cap' => 'edit_posts' ),
@@ -108,6 +109,9 @@ class WPVibe_CLI {
 		'post delete'          => array( 'tier' => 'write', 'cap' => 'delete_posts', 'bulk' => array( 'label' => 'post' ) ),
 		'post meta update'     => array( 'tier' => 'write', 'cap' => 'edit_posts' ),
 		'post meta delete'     => array( 'tier' => 'write', 'cap' => 'edit_posts' ),
+		'post term set'        => array( 'tier' => 'write', 'cap' => 'edit_posts' ),
+		'post term add'        => array( 'tier' => 'write', 'cap' => 'edit_posts' ),
+		'post term remove'     => array( 'tier' => 'write', 'cap' => 'edit_posts' ),
 		'cache flush'          => array( 'tier' => 'write', 'cap' => 'manage_options' ),
 		'cache purge'          => array( 'tier' => 'write', 'cap' => 'manage_options' ),
 		// Third-party cache verbs AIs guess first — aliases of `cache purge`
@@ -216,6 +220,7 @@ class WPVibe_CLI {
 		'theme list'        => 'handle_theme_list',
 		'theme status'      => 'handle_theme_status',
 		'option get'        => 'handle_option_get',
+		'option pluck'      => 'handle_option_pluck',
 		'option list'       => 'handle_option_list',
 		'option update'     => 'handle_option_update',
 		'user list'         => 'handle_user_list',
@@ -228,6 +233,9 @@ class WPVibe_CLI {
 		'post meta list'    => 'handle_post_meta_get',
 		'post meta update'  => 'handle_post_meta_update',
 		'post meta delete'  => 'handle_post_meta_delete',
+		'post term set'     => 'handle_post_term_set',
+		'post term add'     => 'handle_post_term_add',
+		'post term remove'  => 'handle_post_term_remove',
 		'taxonomy list'     => 'handle_taxonomy_list',
 		'term list'         => 'handle_term_list',
 		'media list'        => 'handle_media_list',
@@ -311,16 +319,20 @@ class WPVibe_CLI {
 		'plugin search'           => 'plugin search <term> [--per_page=<n>] [--page=<n>]',
 		'plugin get'              => 'plugin get <slug>',
 		'plugin verify-checksums' => 'plugin verify-checksums [<slug>...] [--all] [--strict]',
-		'theme list'              => 'theme list [--status=<active|inactive>] [--fields=<fields>]',
+		'theme list'              => 'theme list [--status=<active|inactive>] [--update=available] [--fields=<fields>]',
 		'theme status'            => 'theme status <slug>',
 		'theme mod list'          => 'theme mod list',
 		'option get'              => 'option get <key>',
+		'option pluck'            => 'option pluck <option> <key-path>... (read one nested key without fetching the whole option)',
 		'option list'             => 'option list [--search=<pattern>] [--autoload=<on|off>]',
 		'user list'               => 'user list [--role=<role>] [--number=<n>]',
 		'post list'               => 'post list [--post_type=<type>] [--post_status=<status>] [--posts_per_page=<n>] [--s=<search>] [--author=<id>] [--year=<yyyy>] [--monthnum=<1-12>]',
 		'post get'                => 'post get <id> [--fields=<fields>]',
 		'post meta get'           => 'post meta get <id> [<key>] [--all]',
 		'post meta list'          => 'post meta list <id> [--all]',
+		'post term set'           => 'post term set <id> <taxonomy> <term>... [--by=slug|id] (replaces all terms in the taxonomy; terms must already exist)',
+		'post term add'           => 'post term add <id> <taxonomy> <term>... [--by=slug|id] (appends; terms must already exist)',
+		'post term remove'        => 'post term remove <id> <taxonomy> <term>... [--by=slug|id] | --all',
 		'taxonomy list'           => 'taxonomy list [--public=<bool>]',
 		'term list'               => 'term list <taxonomy> [--number=<n>] [--search=<term>]',
 		'media list'              => 'media list [--post_mime_type=<type>] [--posts_per_page=<n>]',
@@ -365,15 +377,15 @@ class WPVibe_CLI {
 		'option delete'           => 'option delete <key>',
 		'transient delete'        => 'transient delete <name> | --all | --expired',
 		'user delete'             => 'user delete <id|login|email> [<id>...] [--reassign=<user>]',
-		'post create'             => 'post create --post_title=<title> [--post_content=<content>] [--post_status=<status>] [--post_type=<type>] [--post_date=<Y-m-d H:i:s>]',
-		'post update'             => 'post update <id> [<id>...] [--post_title=<title>] [--post_content=<content>] [--post_status=<status>]',
+		'post create'             => 'post create --post_title=<title> [--post_content=<content>] [--post_content_base64=<b64>] [--post_status=<status>] [--post_type=<type>] [--post_date=<Y-m-d H:i:s>] (use base64 when content mixes single AND double quotes — plain --post_content silently drops colliding quotes)',
+		'post update'             => 'post update <id> [<id>...] [--post_title=<title>] [--post_content=<content>] [--post_content_base64=<b64>] [--post_status=<status>] (use base64 when content mixes single AND double quotes)',
 		'post delete'             => 'post delete <id> [<id>...] [--force]',
 		'post meta update'        => 'post meta update <id> <key> <value> [--force]',
 		'post meta delete'        => 'post meta delete <id> <key> [--force]',
 		'cache flush'             => 'cache flush',
-		'cache purge'             => 'cache purge (detects the installed cache plugin and purges it, plus the object cache)',
+		'cache purge'             => 'cache purge [--url=<url>[,<url>...]] [--skip=<target>[,...]] (detects the installed cache plugin and purges it, plus the object cache; --url purges just those URLs on engines with a URL API, others flush fully; --skip omits named targets, e.g. cloudflare,object)',
 		'litespeed-purge'         => 'litespeed-purge [all] (alias of cache purge, scoped to LiteSpeed Cache)',
-		'elementor flush-css'     => 'elementor flush-css (alias of cache purge, scoped to the Elementor CSS cache)',
+		'elementor flush-css'     => 'elementor flush-css [--regenerate] (purges the Elementor CSS cache; --regenerate rebuilds all CSS files immediately)',
 		'elementor flush_css'     => 'elementor flush_css (alias of cache purge, scoped to the Elementor CSS cache)',
 		'rocket clean'            => 'rocket clean (alias of cache purge, scoped to WP Rocket)',
 		'sg purge'                => 'sg purge (alias of cache purge, scoped to SG Optimizer)',
@@ -549,27 +561,9 @@ class WPVibe_CLI {
 	 * PRICING.md / the destructive-actions plan for the full rationale.
 	 */
 	private function classify_destructive( $command_key, $meta, $tokens, $key_length ) {
-		// Separate positional args + flags so we can inspect both.
-		$positional = array();
-		$flags      = array();
-		$skip       = 0;
-		foreach ( $tokens as $token ) {
-			if ( strpos( $token, '--' ) === 0 ) {
-				$stripped = substr( $token, 2 );
-				if ( strpos( $stripped, '=' ) !== false ) {
-					list( $k, $v ) = explode( '=', $stripped, 2 );
-					$flags[ str_replace( '-', '_', $k ) ] = $v;
-				} else {
-					$flags[ str_replace( '-', '_', $stripped ) ] = true;
-				}
-			} else {
-				if ( $skip < $key_length ) {
-					$skip++;
-					continue;
-				}
-				$positional[] = $token;
-			}
-		}
+		// MUST parse exactly like dispatch() — the approval gate previews what
+		// the handler will execute, so both use the one split_tokens().
+		list( $positional, $flags ) = $this->split_tokens( $tokens, $key_length );
 
 		// Gate on irreversibility, not count. Reversible ops run freely at any
 		// scale — a trash (post delete) is restorable, and post update keeps a
@@ -696,7 +690,7 @@ class WPVibe_CLI {
 				'dry_run'   => array(
 					'command' => 'wp transient delete --' . $scope,
 					'note'    => 'all' === $scope
-						? __( 'Every wp_options row whose name starts with _transient_ or _site_transient_ is deleted.', 'vibe-ai' )
+						? __( 'Every wp_options row whose name starts with _transient_ is deleted. Site transients (_site_transient_ rows) are left untouched.', 'vibe-ai' )
 						: __( 'Every transient whose expiration timestamp is in the past is deleted.', 'vibe-ai' ),
 				),
 			);
@@ -739,7 +733,9 @@ class WPVibe_CLI {
 
 	private function build_dry_run( $command_key, $positional, $flags ) {
 		if ( 'user delete' === $command_key ) {
-			$user = ! empty( $positional[0] ) ? get_user_by( is_numeric( $positional[0] ) ? 'id' : 'login', $positional[0] ) : null;
+			// Must resolve identically to the execution path (id|login|email via
+			// resolve_user), or the preview says "will fail" and then deletes.
+			$user = ! empty( $positional[0] ) ? $this->resolve_user( $positional[0] ) : null;
 			if ( ! $user ) {
 				return array( 'target' => $positional[0] ?? '?', 'note' => __( 'User not found — execution will fail.', 'vibe-ai' ) );
 			}
@@ -964,7 +960,7 @@ class WPVibe_CLI {
 		}
 		$str                     = is_scalar( $value ) ? (string) $value : (string) wp_json_encode( $value );
 		$dry['value_type']       = strtolower( gettype( $value ) );
-		$dry['value_size_chars'] = strlen( $str );
+		$dry['value_size_chars'] = mb_strlen( $str );
 		$dry['value_preview']    = mb_substr( $str, 0, 200 ) . ( strlen( $str ) > 200 ? '… [truncated]' : '' );
 		if ( in_array( $key, self::BLOCKED_OPTIONS, true ) ) {
 			$dry['warning'] = __( 'This option is permanently protected by WPVibe; execution will refuse even after approval.', 'vibe-ai' );
@@ -1090,23 +1086,21 @@ class WPVibe_CLI {
 	// Dispatch
 	// ------------------------------------------------------------------
 
-	private function dispatch( $tokens, $key_length, $command_key, $confirm_write = false ) {
-		if ( ! isset( self::HANDLERS[ $command_key ] ) ) {
-			/* translators: %s: command key */
-			return $this->error_result( sprintf( __( 'No handler for: %s', 'vibe-ai' ), $command_key ) );
-		}
-
-		// Separate positional args and flags after the command key.
+	/**
+	 * Split tokens after the command key into positional args and flags.
+	 * Hyphenated flag names normalize to underscored (per-page → per_page).
+	 * Shared by dispatch() and classify_destructive() — the approval preview
+	 * must see exactly the args the handler will receive.
+	 */
+	private function split_tokens( $tokens, $key_length ) {
 		$positional = array();
 		$flags      = array();
 		$skip       = 0;
-
 		foreach ( $tokens as $token ) {
 			if ( strpos( $token, '--' ) === 0 ) {
 				$stripped = substr( $token, 2 );
 				if ( strpos( $stripped, '=' ) !== false ) {
 					list( $k, $v ) = explode( '=', $stripped, 2 );
-					// Normalize hyphenated flags to underscored (e.g., per-page → per_page).
 					$flags[ str_replace( '-', '_', $k ) ] = $v;
 				} else {
 					$flags[ str_replace( '-', '_', $stripped ) ] = true;
@@ -1119,6 +1113,16 @@ class WPVibe_CLI {
 				$positional[] = $token;
 			}
 		}
+		return array( $positional, $flags );
+	}
+
+	private function dispatch( $tokens, $key_length, $command_key, $confirm_write = false ) {
+		if ( ! isset( self::HANDLERS[ $command_key ] ) ) {
+			/* translators: %s: command key */
+			return $this->error_result( sprintf( __( 'No handler for: %s', 'vibe-ai' ), $command_key ) );
+		}
+
+		list( $positional, $flags ) = $this->split_tokens( $tokens, $key_length );
 
 		$this->current_command = $command_key;
 		$handler               = self::HANDLERS[ $command_key ];
@@ -1235,6 +1239,18 @@ class WPVibe_CLI {
 	}
 
 	private function handle_theme_list( $positional, $flags ) {
+		// Update availability mirrors handle_plugin_list: refresh from WP.org
+		// only when the caller asks for update info or the cache is empty.
+		// Theme update responses are arrays keyed by stylesheet (plugins: objects).
+		$wants_updates = isset( $flags['update'] )
+			|| ( ! empty( $flags['fields'] ) && preg_match( '/\bupdate(_version)?\b/', $flags['fields'] ) );
+		$update_cache = get_site_transient( 'update_themes' );
+		if ( $wants_updates || ! is_object( $update_cache ) || empty( $update_cache->checked ) ) {
+			wp_update_themes();
+			$update_cache = get_site_transient( 'update_themes' );
+		}
+		$responses = ( is_object( $update_cache ) && ! empty( $update_cache->response ) ) ? $update_cache->response : array();
+
 		$themes      = wp_get_themes();
 		$active_slug = get_stylesheet();
 		$results     = array();
@@ -1243,11 +1259,17 @@ class WPVibe_CLI {
 			if ( isset( $flags['status'] ) && $flags['status'] !== $status ) {
 				continue;
 			}
+			$has_update = isset( $responses[ $slug ]['new_version'] );
+			if ( isset( $flags['update'] ) && 'available' === $flags['update'] && ! $has_update ) {
+				continue;
+			}
 			$results[] = array(
-				'name'    => $theme->get( 'Name' ),
-				'status'  => $status,
-				'version' => $theme->get( 'Version' ),
-				'slug'    => $slug,
+				'name'           => $theme->get( 'Name' ),
+				'status'         => $status,
+				'version'        => $theme->get( 'Version' ),
+				'update'         => $has_update ? 'available' : 'none',
+				'update_version' => $has_update ? $responses[ $slug ]['new_version'] : '',
+				'slug'           => $slug,
 			);
 		}
 		return $this->success_result( $this->filter_fields( $results, $flags ) );
@@ -1303,12 +1325,58 @@ class WPVibe_CLI {
 		);
 	}
 
+	private function handle_option_pluck( $positional, $flags ) {
+		if ( count( $positional ) < 2 ) {
+			return $this->error_result( __( 'Usage: option pluck <option> <key-path>...', 'vibe-ai' ) );
+		}
+
+		$key = $positional[0];
+		if ( ! in_array( $key, self::READABLE_BLOCKED_OPTIONS, true ) && in_array( $key, self::BLOCKED_OPTIONS, true ) ) {
+			return $this->error_result(
+				sprintf(
+					/* translators: %s: option key */
+					__( 'Option \'%s\' is blocked for security.', 'vibe-ai' ),
+					$key
+				)
+			);
+		}
+
+		$value = get_option( $key, null );
+		if ( null === $value ) {
+			/* translators: %s: option key */
+			return $this->error_result( sprintf( __( 'Option \'%s\' not found.', 'vibe-ai' ), $key ) );
+		}
+
+		$node  = $value;
+		$trail = '';
+		foreach ( array_slice( $positional, 1 ) as $segment ) {
+			$seg_key = is_numeric( $segment ) ? (int) $segment : $segment;
+			$trail   = '' === $trail ? (string) $segment : $trail . '.' . $segment;
+			if ( is_object( $node ) && property_exists( $node, (string) $seg_key ) ) {
+				$node = $node->{$seg_key};
+			} elseif ( is_array( $node ) && array_key_exists( $seg_key, $node ) ) {
+				$node = $node[ $seg_key ];
+			} else {
+				/* translators: %s: key path */
+				return $this->error_result( sprintf( __( 'No data exists at key path \'%s\'.', 'vibe-ai' ), $trail ) );
+			}
+		}
+
+		return array(
+			'exit_code' => 0,
+			'stdout'    => is_scalar( $node ) ? (string) $node : wp_json_encode( $node, JSON_PRETTY_PRINT ),
+			'stderr'    => '',
+		);
+	}
+
 	private function handle_option_list( $positional, $flags ) {
 		global $wpdb;
 
-		$search = isset( $flags['search'] ) ? $flags['search'] : '%';
-		// Convert WP-CLI wildcard syntax (* and ?) to SQL LIKE syntax (% and _).
-		$search = str_replace( array( '*', '?' ), array( '%', '_' ), $search );
+		// esc_like first so literal %/_ in the input stay literal, THEN convert
+		// WP-CLI wildcard syntax (* and ?) to SQL LIKE syntax (% and _).
+		$search = isset( $flags['search'] )
+			? str_replace( array( '*', '?' ), array( '%', '_' ), $wpdb->esc_like( $flags['search'] ) )
+			: '%';
 
 		$has_autoload = isset( $flags['autoload'] );
 
@@ -1347,7 +1415,7 @@ class WPVibe_CLI {
 				continue;
 			}
 			if ( strlen( $row['option_value'] ) > 200 ) {
-				$row['option_value'] = substr( $row['option_value'], 0, 200 ) . '...[truncated]';
+				$row['option_value'] = mb_substr( $row['option_value'], 0, 200 ) . '...[truncated]';
 			}
 			$results[] = $row;
 		}
@@ -1377,7 +1445,7 @@ class WPVibe_CLI {
 	private function handle_post_list( $positional, $flags ) {
 		$post_type = $flags['post_type'] ?? 'post';
 		if ( is_string( $post_type ) && strpos( $post_type, ',' ) !== false ) {
-			$post_type = array_filter( array_map( 'trim', explode( ',', $post_type ) ) );
+			$post_type = array_filter( wp_parse_list( $post_type ) );
 		}
 		$args = array(
 			'post_type'      => $post_type,
@@ -1428,12 +1496,12 @@ class WPVibe_CLI {
 
 		$content = $post->post_content;
 		if ( ! $has_explicit_fields && strlen( $content ) > 500 ) {
-			$content = substr( $content, 0, 500 ) . "\n[truncated — use --fields=post_content for full content]";
+			$content = mb_substr( $content, 0, 500 ) . "\n[truncated — use --fields=post_content for full content]";
 		}
 
 		$content_filtered = $post->post_content_filtered;
 		if ( ! $has_explicit_fields && strlen( $content_filtered ) > 500 ) {
-			$content_filtered = substr( $content_filtered, 0, 500 ) . "\n[truncated — use --fields=post_content_filtered for full content]";
+			$content_filtered = mb_substr( $content_filtered, 0, 500 ) . "\n[truncated — use --fields=post_content_filtered for full content]";
 		}
 
 		$data = array(
@@ -1602,7 +1670,7 @@ class WPVibe_CLI {
 		foreach ( $comments as $comment ) {
 			$content = $comment->comment_content;
 			if ( strlen( $content ) > 200 ) {
-				$content = substr( $content, 0, 200 ) . '...[truncated]';
+				$content = mb_substr( $content, 0, 200 ) . '...[truncated]';
 			}
 			$results[] = array(
 				'comment_ID'      => $comment->comment_ID,
@@ -1646,7 +1714,9 @@ class WPVibe_CLI {
 
 	private function handle_widget_list( $positional, $flags ) {
 		global $wp_registered_sidebars;
-		$sidebars = get_option( 'sidebars_widgets', array() );
+		// Not the raw option: core strips the legacy array_version key and
+		// applies the sidebars_widgets filter (what the theme actually renders).
+		$sidebars = wp_get_sidebars_widgets();
 		$results  = array();
 		foreach ( $sidebars as $sidebar_id => $widgets ) {
 			if ( 'wp_inactive_widgets' === $sidebar_id ) continue;
@@ -1727,6 +1797,13 @@ class WPVibe_CLI {
 		// Replace {prefix} placeholder with actual table prefix.
 		$sql = str_replace( '{prefix}', $wpdb->prefix, $sql );
 
+		// MySQL executable comments (/*!...*/) run at the server despite being
+		// stripped by the validator below, so they could smuggle a blocked
+		// keyword past it. No legitimate query here needs them; reject outright.
+		if ( false !== strpos( $sql, '/*!' ) ) {
+			return $this->error_result( __( 'Executable MySQL comments (/*! ... */) are not allowed.', 'vibe-ai' ) );
+		}
+
 		// Validate: SELECT only.
 		// Strip SQL comments to prevent keyword bypass.
 		$stripped = preg_replace( '/--.*$/m', '', $sql );
@@ -1734,11 +1811,13 @@ class WPVibe_CLI {
 		$normalized = preg_replace( '/\s+/', ' ', strtoupper( trim( $stripped ) ) );
 
 		$is_select = ( strpos( $normalized, 'SELECT' ) === 0 );
+		// EXPLAIN is read-only only for SELECT plans (EXPLAIN ANALYZE executes the statement).
+		$is_schema_read = (bool) preg_match( '/^(DESCRIBE|DESC|SHOW|EXPLAIN SELECT)\b/', $normalized );
 
 		// SELECT-only path (the common case for auto-execute).
-		if ( ! $is_select && ! $this->skip_destructive ) {
+		if ( ! $is_select && ! $is_schema_read && ! $this->skip_destructive ) {
 			// classify_destructive should have caught this; defense-in-depth.
-			return $this->error_result( __( 'Mutating SQL requires explicit approval. Only SELECT queries auto-execute.', 'vibe-ai' ) );
+			return $this->error_result( __( 'Mutating SQL requires explicit approval. Only SELECT and schema reads (DESCRIBE, SHOW) auto-execute.', 'vibe-ai' ) );
 		}
 
 		if ( $is_select ) {
@@ -1760,7 +1839,7 @@ class WPVibe_CLI {
 			return $this->error_result( __( 'Multiple SQL statements are not allowed.', 'vibe-ai' ) );
 		}
 
-		if ( $is_select ) {
+		if ( $is_select || $is_schema_read ) {
 			if ( preg_match( '/\bINTO\s+(OUTFILE|DUMPFILE|@)/i', $normalized ) ) {
 				return $this->error_result( __( 'SELECT INTO is not allowed.', 'vibe-ai' ) );
 			}
@@ -1769,18 +1848,20 @@ class WPVibe_CLI {
 				return $this->error_result( __( 'FOR UPDATE/SHARE is not allowed.', 'vibe-ai' ) );
 			}
 
-			// Enforce LIMIT. --limit flag overrides default (capped at 1000).
-			$default_limit = 100;
-			if ( ! empty( $flags['limit'] ) && is_numeric( $flags['limit'] ) ) {
-				$default_limit = min( (int) $flags['limit'], 1000 );
-			}
 			$sql = rtrim( $sql, '; ' );
-			if ( preg_match( '/\bLIMIT\s+(\d+)/i', $sql, $m ) ) {
-				$sql = preg_replace_callback( '/\bLIMIT\s+(\d+)/i', function ( $m ) {
-					return 'LIMIT ' . min( (int) $m[1], 1000 );
-				}, $sql );
-			} else {
-				$sql .= ' LIMIT ' . $default_limit;
+			// Enforce LIMIT on SELECT; DESCRIBE/SHOW don't accept LIMIT and return bounded schema rows.
+			if ( $is_select ) {
+				$default_limit = 100;
+				if ( ! empty( $flags['limit'] ) && is_numeric( $flags['limit'] ) ) {
+					$default_limit = min( (int) $flags['limit'], 1000 );
+				}
+				if ( preg_match( '/\bLIMIT\s+(\d+)/i', $sql, $m ) ) {
+					$sql = preg_replace_callback( '/\bLIMIT\s+(\d+)/i', function ( $m ) {
+						return 'LIMIT ' . min( (int) $m[1], 1000 );
+					}, $sql );
+				} else {
+					$sql .= ' LIMIT ' . $default_limit;
+				}
 			}
 
 			// Execute SELECT.
@@ -2330,16 +2411,19 @@ class WPVibe_CLI {
 
 	private function handle_transient_list( $positional, $flags ) {
 		global $wpdb;
-		$search = isset( $flags['search'] ) ? $flags['search'] : '%';
-		$search = str_replace( array( '*', '?' ), array( '%', '_' ), $search );
-		$pattern = '_transient_' . ltrim( $search, '_' );
+		// esc_like keeps literal %/_ literal (incl. the prefix's own underscores);
+		// * and ? convert to SQL wildcards after.
+		$search = isset( $flags['search'] )
+			? str_replace( array( '*', '?' ), array( '%', '_' ), $wpdb->esc_like( ltrim( $flags['search'], '_' ) ) )
+			: '%';
+		$pattern = $wpdb->esc_like( '_transient_' ) . $search;
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		$rows = $wpdb->get_results(
 			$wpdb->prepare(
 				"SELECT option_name FROM {$wpdb->options} WHERE option_name LIKE %s AND option_name NOT LIKE %s ORDER BY option_name LIMIT 200",
 				$pattern,
-				'_transient_timeout_%'
+				$wpdb->esc_like( '_transient_timeout_' ) . '%'
 			),
 			ARRAY_A
 		);
@@ -2365,7 +2449,7 @@ class WPVibe_CLI {
 		$expired = $wpdb->get_col(
 			$wpdb->prepare(
 				"SELECT option_name FROM {$wpdb->options} WHERE option_name LIKE %s AND option_value < %d",
-				'_transient_timeout_%',
+				$wpdb->esc_like( '_transient_timeout_' ) . '%',
 				$now
 			)
 		);
@@ -2383,7 +2467,7 @@ class WPVibe_CLI {
 		global $wpdb;
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		$names = $wpdb->get_col(
-			$wpdb->prepare( "SELECT option_name FROM {$wpdb->options} WHERE option_name LIKE %s AND option_name NOT LIKE %s", '_transient_%', '_transient_timeout_%' )
+			$wpdb->prepare( "SELECT option_name FROM {$wpdb->options} WHERE option_name LIKE %s AND option_name NOT LIKE %s", $wpdb->esc_like( '_transient_' ) . '%', $wpdb->esc_like( '_transient_timeout_' ) . '%' )
 		);
 		$count = 0;
 		foreach ( $names as $option_name ) {
@@ -2402,9 +2486,7 @@ class WPVibe_CLI {
 
 		$reassign = null;
 		if ( ! empty( $flags['reassign'] ) ) {
-			$ra = is_numeric( $flags['reassign'] )
-				? get_user_by( 'id', (int) $flags['reassign'] )
-				: get_user_by( 'login', $flags['reassign'] );
+			$ra = $this->resolve_user( $flags['reassign'] );
 			if ( ! $ra ) {
 				/* translators: %s: user identifier */
 				return $this->error_result( sprintf( __( 'Reassign target \'%s\' not found.', 'vibe-ai' ), $flags['reassign'] ) );
@@ -2424,9 +2506,7 @@ class WPVibe_CLI {
 		$results = array();
 		$ok      = 0;
 		foreach ( $idents as $ident ) {
-			$user = is_numeric( $ident )
-				? get_user_by( 'id', (int) $ident )
-				: ( is_email( $ident ) ? get_user_by( 'email', $ident ) : get_user_by( 'login', $ident ) );
+			$user = $this->resolve_user( $ident );
 			if ( ! $user ) {
 				$results[] = array( 'target' => $ident, 'status' => 'error', 'error' => 'not found' );
 				continue;
@@ -2615,6 +2695,13 @@ class WPVibe_CLI {
 			'post_excerpt'  => $flags['post_excerpt'] ?? '',
 			'post_author'   => get_current_user_id(),
 		);
+		if ( isset( $flags['post_content_base64'] ) ) {
+			$decoded = $this->decode_content_base64( $flags['post_content_base64'] );
+			if ( is_wp_error( $decoded ) ) {
+				return $this->error_result( $decoded->get_error_message() );
+			}
+			$args['post_content'] = $decoded;
+		}
 		if ( isset( $flags['post_name'] ) )      $args['post_name']      = $flags['post_name'];
 		if ( isset( $flags['post_parent'] ) )     $args['post_parent']    = (int) $flags['post_parent'];
 		if ( isset( $flags['menu_order'] ) )      $args['menu_order']     = (int) $flags['menu_order'];
@@ -2625,6 +2712,10 @@ class WPVibe_CLI {
 			}
 			// Site-local, matching real WP-CLI; wp_insert_post derives post_date_gmt.
 			$args['post_date'] = $flags['post_date'];
+		}
+
+		if ( 'wpcode' === $args['post_type'] ) {
+			return $this->wpcode_write_refusal();
 		}
 
 		$cap_check = $this->check_post_caps( $args['post_type'], 'create', null, $args['post_status'] );
@@ -2664,8 +2755,18 @@ class WPVibe_CLI {
 				$fields[ $field ] = $flags[ $field ];
 			}
 		}
+		if ( isset( $flags['post_content_base64'] ) ) {
+			$decoded = $this->decode_content_base64( $flags['post_content_base64'] );
+			if ( is_wp_error( $decoded ) ) {
+				return $this->error_result( $decoded->get_error_message() );
+			}
+			$fields['post_content'] = $decoded;
+		}
 		if ( empty( $fields ) ) {
 			return $this->error_result( __( 'No fields to update. Use flags like --post_title, --post_content, --post_status.', 'vibe-ai' ) );
+		}
+		if ( isset( $fields['post_type'] ) && 'wpcode' === $fields['post_type'] ) {
+			return $this->wpcode_write_refusal();
 		}
 
 		$results = array();
@@ -2674,6 +2775,10 @@ class WPVibe_CLI {
 			$post = get_post( $post_id );
 			if ( ! $post ) {
 				$results[] = array( 'id' => $post_id, 'status' => 'error', 'error' => 'not found' );
+				continue;
+			}
+			if ( 'wpcode' === $post->post_type ) {
+				$results[] = array( 'id' => $post_id, 'status' => 'error', 'error' => 'WPCode snippet — use the code_snippet tool' );
 				continue;
 			}
 			$cap_check = $this->check_post_caps( $post->post_type, 'update', $post_id, $fields['post_status'] ?? null );
@@ -2747,6 +2852,9 @@ class WPVibe_CLI {
 			/* translators: %s: post ID */
 			return $this->error_result( sprintf( __( 'Post %s not found.', 'vibe-ai' ), $positional[0] ) );
 		}
+		if ( 'wpcode' === $post->post_type ) {
+			return $this->wpcode_write_refusal();
+		}
 
 		$key = $positional[1];
 		// Block protected meta keys (all '_'-prefixed, plus registered protected) unless --force.
@@ -2794,6 +2902,9 @@ class WPVibe_CLI {
 			/* translators: %s: post ID */
 			return $this->error_result( sprintf( __( 'Post %s not found.', 'vibe-ai' ), $positional[0] ) );
 		}
+		if ( 'wpcode' === $post->post_type ) {
+			return $this->wpcode_write_refusal();
+		}
 
 		$key = $positional[1];
 		if ( empty( $flags['force'] ) && is_protected_meta( $key, 'post' ) ) {
@@ -2820,6 +2931,130 @@ class WPVibe_CLI {
 
 		/* translators: 1: meta key, 2: post ID */
 		return $this->success_result( array( 'message' => sprintf( __( 'Deleted meta \'%1$s\' from post #%2$d.', 'vibe-ai' ), $key, $post_id ) ) );
+	}
+
+	private function handle_post_term_set( $positional, $flags ) {
+		return $this->post_term_write( 'set', $positional, $flags );
+	}
+
+	private function handle_post_term_add( $positional, $flags ) {
+		return $this->post_term_write( 'add', $positional, $flags );
+	}
+
+	private function handle_post_term_remove( $positional, $flags ) {
+		return $this->post_term_write( 'remove', $positional, $flags );
+	}
+
+	/**
+	 * Shared worker for post term set/add/remove. Terms are resolved before
+	 * writing (never auto-created): wp_set_object_terms() would silently create
+	 * missing slugs and treat numeric strings as term IDs — both footguns.
+	 */
+	private function post_term_write( $mode, $positional, $flags ) {
+		if ( count( $positional ) < 2 ) {
+			/* translators: %s: subcommand (set/add/remove) */
+			return $this->error_result( sprintf( __( 'Usage: post term %s <id> <taxonomy> <term>... [--by=slug|id]', 'vibe-ai' ), $mode ) );
+		}
+
+		$post_id = (int) $positional[0];
+		$post    = get_post( $post_id );
+		if ( ! $post ) {
+			/* translators: %s: post ID */
+			return $this->error_result( sprintf( __( 'Post %s not found.', 'vibe-ai' ), $positional[0] ) );
+		}
+		if ( 'wpcode' === $post->post_type ) {
+			return $this->wpcode_write_refusal();
+		}
+
+		$taxonomy = $positional[1];
+		$tax      = get_taxonomy( $taxonomy );
+		if ( ! $tax ) {
+			/* translators: %s: taxonomy slug */
+			return $this->error_result( sprintf( __( 'Taxonomy \'%s\' does not exist. Run `taxonomy list` to see registered taxonomies.', 'vibe-ai' ), $taxonomy ) );
+		}
+		if ( ! is_object_in_taxonomy( $post->post_type, $taxonomy ) ) {
+			/* translators: 1: taxonomy slug, 2: post type */
+			return $this->error_result( sprintf( __( 'Taxonomy \'%1$s\' is not registered for post type \'%2$s\'.', 'vibe-ai' ), $taxonomy, $post->post_type ) );
+		}
+
+		$cap_check = $this->check_post_caps( $post->post_type, 'update', $post_id );
+		if ( is_wp_error( $cap_check ) ) {
+			return $cap_check;
+		}
+		if ( ! current_user_can( $tax->cap->assign_terms ) ) {
+			/* translators: %s: WordPress capability name */
+			return new WP_Error( 'insufficient_cap', sprintf( __( 'You do not have the required capability (%s) to assign terms in this taxonomy.', 'vibe-ai' ), $tax->cap->assign_terms ), WPVibe_Error_Contract::data( 'capability_role', false, array( 'status' => 403, 'capability' => $tax->cap->assign_terms ) ) );
+		}
+
+		if ( 'remove' === $mode && ! empty( $flags['all'] ) ) {
+			$result = wp_set_object_terms( $post_id, array(), $taxonomy );
+			if ( is_wp_error( $result ) ) {
+				return $this->error_result( $result->get_error_message() );
+			}
+			WPVibe_Change_Tracker::mark( array(
+				'summary'      => "Post terms cleared: #{$post_id} ({$taxonomy})",
+				'action_label' => 'Refresh',
+			) );
+			/* translators: 1: taxonomy slug, 2: post ID */
+			return $this->success_result( array( 'message' => sprintf( __( 'Removed all \'%1$s\' terms from post #%2$d.', 'vibe-ai' ), $taxonomy, $post_id ) ) );
+		}
+
+		$inputs = array_slice( $positional, 2 );
+		if ( empty( $inputs ) ) {
+			/* translators: %s: subcommand (set/add/remove) */
+			return $this->error_result( sprintf( __( 'At least one term is required. Usage: post term %s <id> <taxonomy> <term>... [--by=slug|id]', 'vibe-ai' ), $mode ) );
+		}
+
+		$by = isset( $flags['by'] ) ? $flags['by'] : 'slug';
+		if ( ! in_array( $by, array( 'slug', 'id' ), true ) ) {
+			return $this->error_result( __( 'Invalid --by value. Use --by=slug (default) or --by=id.', 'vibe-ai' ) );
+		}
+
+		$term_ids = array();
+		$missing  = array();
+		foreach ( $inputs as $input ) {
+			$term = 'id' === $by
+				? get_term_by( 'id', (int) $input, $taxonomy )
+				: get_term_by( 'slug', $input, $taxonomy );
+			if ( $term ) {
+				$term_ids[] = (int) $term->term_id;
+			} else {
+				$missing[] = $input;
+			}
+		}
+		if ( ! empty( $missing ) ) {
+			return $this->error_result(
+				sprintf(
+					/* translators: 1: taxonomy slug, 2: missing terms, 3: taxonomy slug */
+					__( 'Term(s) not found in taxonomy \'%1$s\': %2$s. Run `term list %3$s` to see existing slugs, or create the term first via rest_api (POST /wp/v2/<rest_base>).', 'vibe-ai' ),
+					$taxonomy,
+					implode( ', ', $missing ),
+					$taxonomy
+				)
+			);
+		}
+
+		if ( 'remove' === $mode ) {
+			$result = wp_remove_object_terms( $post_id, $term_ids, $taxonomy );
+		} else {
+			$result = wp_set_object_terms( $post_id, $term_ids, $taxonomy, 'add' === $mode );
+		}
+		if ( is_wp_error( $result ) ) {
+			return $this->error_result( $result->get_error_message() );
+		}
+
+		WPVibe_Change_Tracker::mark( array(
+			'summary'      => "Post terms {$mode}: #{$post_id} ({$taxonomy})",
+			'action_label' => 'Refresh',
+		) );
+
+		$verbs   = array( 'set' => __( 'set', 'vibe-ai' ), 'add' => __( 'added', 'vibe-ai' ), 'remove' => __( 'removed', 'vibe-ai' ) );
+		$current = wp_get_object_terms( $post_id, $taxonomy, array( 'fields' => 'slugs' ) );
+		return $this->success_result( array(
+			/* translators: 1: past-tense verb, 2: taxonomy slug, 3: post ID */
+			'message' => sprintf( __( 'Terms %1$s in \'%2$s\' for post #%3$d.', 'vibe-ai' ), $verbs[ $mode ], $taxonomy, $post_id ),
+			'terms'   => is_wp_error( $current ) ? array() : array_values( $current ),
+		) );
 	}
 
 	private function handle_config_get( $positional, $flags ) {
@@ -2974,14 +3209,26 @@ class WPVibe_CLI {
 	 * Detector table for the unified cache purge: each entry knows whether its
 	 * plugin is present and how to call its own purge API ("own the brains,
 	 * rent the muscle" — we orchestrate, never reimplement).
+	 *
+	 * Closures return true on success, false on generic failure, or a string
+	 * (a failure reason shown to the caller). `purge_url` is optional; engines
+	 * without it fall back to their flush-all `purge` in URL mode.
+	 *
+	 * Array order is the purge order and is load-bearing: origin caches first,
+	 * Cloudflare (the CDN) last, so the CDN cannot re-cache stale origin HTML
+	 * mid-sweep.
 	 */
 	private function cache_purge_targets() {
 		return array(
 			'litespeed'      => array(
-				'name'   => 'LiteSpeed Cache',
-				'active' => defined( 'LSCWP_V' ) || is_plugin_active( 'litespeed-cache/litespeed-cache.php' ),
-				'purge'  => function () {
+				'name'      => 'LiteSpeed Cache',
+				'active'    => defined( 'LSCWP_V' ) || is_plugin_active( 'litespeed-cache/litespeed-cache.php' ),
+				'purge'     => function () {
 					do_action( 'litespeed_purge_all' );
+					return true;
+				},
+				'purge_url' => function ( $url ) {
+					do_action( 'litespeed_purge_url', $url );
 					return true;
 				},
 			),
@@ -2997,33 +3244,67 @@ class WPVibe_CLI {
 				},
 			),
 			'wp-rocket'      => array(
-				'name'   => 'WP Rocket',
-				'active' => function_exists( 'rocket_clean_domain' ),
-				'purge'  => function () {
+				'name'      => 'WP Rocket',
+				'active'    => function_exists( 'rocket_clean_domain' ),
+				'purge'     => function () {
 					rocket_clean_domain();
+					return true;
+				},
+				'purge_url' => function ( $url ) {
+					if ( ! function_exists( 'rocket_clean_files' ) ) {
+						return false;
+					}
+					rocket_clean_files( array( $url ) );
 					return true;
 				},
 			),
 			'sg-optimizer'   => array(
-				'name'   => 'SG Optimizer (Speed Optimizer)',
-				'active' => function_exists( 'sg_cachepress_purge_cache' ),
-				'purge'  => function () {
+				'name'      => 'SG Optimizer (Speed Optimizer)',
+				'active'    => function_exists( 'sg_cachepress_purge_cache' ),
+				'purge'     => function () {
 					return false !== sg_cachepress_purge_cache();
+				},
+				'purge_url' => function ( $url ) {
+					// Same function as flush-all; URL-scoped when passed a URL.
+					return false !== sg_cachepress_purge_cache( $url );
 				},
 			),
 			'wp-super-cache' => array(
-				'name'   => 'WP Super Cache',
-				'active' => function_exists( 'wp_cache_clear_cache' ),
-				'purge'  => function () {
+				'name'      => 'WP Super Cache',
+				'active'    => function_exists( 'wp_cache_clear_cache' ),
+				'purge'     => function () {
 					wp_cache_clear_cache();
 					return true;
 				},
+				'purge_url' => function ( $url ) {
+					if ( ! function_exists( 'wpsc_delete_url_cache' ) ) {
+						return false;
+					}
+					// wpsc_delete_url_cache() cannot purge the homepage (returns
+					// false for the root path) — full flush is the safe stand-in.
+					$path = (string) wp_parse_url( $url, PHP_URL_PATH );
+					if ( '' === trim( $path, '/' ) ) {
+						wp_cache_clear_cache();
+						return true;
+					}
+					if ( false !== strpos( $url, '?' ) ) {
+						return __( 'WP Super Cache cannot purge URLs with query strings.', 'vibe-ai' );
+					}
+					return false !== wpsc_delete_url_cache( $url );
+				},
 			),
 			'w3-total-cache' => array(
-				'name'   => 'W3 Total Cache',
-				'active' => function_exists( 'w3tc_flush_all' ),
-				'purge'  => function () {
+				'name'      => 'W3 Total Cache',
+				'active'    => function_exists( 'w3tc_flush_all' ),
+				'purge'     => function () {
 					w3tc_flush_all();
+					return true;
+				},
+				'purge_url' => function ( $url ) {
+					if ( ! function_exists( 'w3tc_flush_url' ) ) {
+						return false;
+					}
+					w3tc_flush_url( $url );
 					return true;
 				},
 			),
@@ -3032,6 +3313,39 @@ class WPVibe_CLI {
 				'active' => class_exists( 'Breeze_PurgeCache' ) || is_plugin_active( 'breeze/breeze.php' ),
 				'purge'  => function () {
 					do_action( 'breeze_clear_all_cache' );
+					return true;
+				},
+			),
+			'cloudflare'     => array(
+				'name'   => 'Cloudflare',
+				'active' => class_exists( '\CF\WordPress\Hooks' ) || is_plugin_active( 'cloudflare/cloudflare.php' ),
+				'purge'  => function () {
+					if ( ! class_exists( '\CF\WordPress\Hooks' ) ) {
+						return false;
+					}
+					$hooks = new \CF\WordPress\Hooks();
+					if ( ! method_exists( $hooks, 'purgeCacheEverything' ) ) {
+						return false;
+					}
+					// purgeCacheEverything() returns void and silently no-ops unless
+					// the plugin's Automatic Cache Management or APO toggle is on
+					// (off by default) — reporting success there would be a lie.
+					$gates     = array( 'isPluginSpecificCacheEnabled', 'isAutomaticPlatformOptimizationEnabled' );
+					$checkable = false;
+					$enabled   = false;
+					foreach ( $gates as $gate ) {
+						if ( is_callable( array( $hooks, $gate ) ) ) {
+							$checkable = true;
+							if ( $hooks->{$gate}() ) {
+								$enabled = true;
+								break;
+							}
+						}
+					}
+					if ( $checkable && ! $enabled ) {
+						return __( 'the Cloudflare plugin is installed but its Automatic Cache Management setting is off, so it refuses purge requests. Enable it in Settings > Cloudflare, or purge from the Cloudflare dashboard.', 'vibe-ai' );
+					}
+					$hooks->purgeCacheEverything();
 					return true;
 				},
 			),
@@ -3049,11 +3363,34 @@ class WPVibe_CLI {
 		'breeze purge'         => 'breeze',
 	);
 
+	/** Flush-all across every detected engine + the object cache. Public for the draft-theme publish path. */
+	public function purge_all_caches() {
+		return $this->handle_cache_purge( array(), array() );
+	}
+
+	/** Success is `true` exactly; a string is a failure reason, false is generic failure. */
+	private function run_purge_closure( $closure, ...$args ) {
+		$ok = call_user_func( $closure, ...$args );
+		if ( true === $ok ) {
+			return true;
+		}
+		return is_string( $ok ) ? $ok : __( 'purge API unavailable', 'vibe-ai' );
+	}
+
 	private function handle_cache_purge( $positional, $flags ) {
 		if ( ! function_exists( 'is_plugin_active' ) ) {
 			require_once ABSPATH . 'wp-admin/includes/plugin.php';
 		}
 		$targets = $this->cache_purge_targets();
+
+		$urls = array();
+		if ( ! empty( $flags['url'] ) && is_string( $flags['url'] ) ) {
+			$urls = array_values( array_filter( wp_parse_list( $flags['url'] ) ) );
+		}
+		$skip = array();
+		if ( ! empty( $flags['skip'] ) && is_string( $flags['skip'] ) ) {
+			$skip = array_values( array_filter( wp_parse_list( $flags['skip'] ) ) );
+		}
 
 		// Third-party alias spellings purge only the plugin they name.
 		$alias = self::CACHE_PURGE_ALIASES[ $this->current_command ] ?? null;
@@ -3069,46 +3406,124 @@ class WPVibe_CLI {
 				);
 			}
 			try {
-				$ok = call_user_func( $target['purge'] );
+				if ( $urls && ! empty( $target['purge_url'] ) ) {
+					foreach ( $urls as $url ) {
+						$ok = $this->run_purge_closure( $target['purge_url'], $url );
+						if ( true !== $ok ) {
+							/* translators: 1: cache plugin name, 2: URL, 3: reason */
+							return $this->error_result( sprintf( __( 'Purging %1$s for %2$s failed: %3$s', 'vibe-ai' ), $target['name'], $url, $ok ) );
+						}
+					}
+					WPVibe_Change_Tracker::mark( array( 'summary' => "Cache purged: {$target['name']}", 'action_label' => 'View Site', 'url' => home_url( '/' ) ) );
+					return $this->success_result( array(
+						/* translators: 1: cache plugin name, 2: URL count */
+						'message' => sprintf( __( '%1$s cache purged for %2$d URL(s).', 'vibe-ai' ), $target['name'], count( $urls ) ),
+						'urls'    => $urls,
+					) );
+				}
+				$ok = $this->run_purge_closure( $target['purge'] );
 			} catch ( \Throwable $e ) {
 				/* translators: 1: cache plugin name, 2: error message */
 				return $this->error_result( sprintf( __( 'Purging %1$s failed: %2$s', 'vibe-ai' ), $target['name'], $e->getMessage() ) );
 			}
-			if ( ! $ok ) {
-				/* translators: %s: cache plugin name */
-				return $this->error_result( sprintf( __( 'Purging %s failed (its purge API was unavailable).', 'vibe-ai' ), $target['name'] ) );
+			if ( true !== $ok ) {
+				/* translators: 1: cache plugin name, 2: reason */
+				return $this->error_result( sprintf( __( 'Purging %1$s failed: %2$s', 'vibe-ai' ), $target['name'], $ok ) );
+			}
+			if ( 'elementor' === $alias && ! empty( $flags['regenerate'] ) ) {
+				if ( ! class_exists( '\Elementor\Plugin' ) || ! isset( \Elementor\Plugin::$instance->files_manager ) ) {
+					return $this->error_result( __( 'Elementor CSS cache purged, but Elementor is not loaded so CSS could not be regenerated.', 'vibe-ai' ) );
+				}
+				try {
+					\Elementor\Plugin::$instance->files_manager->generate_css();
+				} catch ( \Throwable $e ) {
+					/* translators: %s: error message */
+					return $this->error_result( sprintf( __( 'Elementor CSS cache purged, but regeneration failed: %s', 'vibe-ai' ), $e->getMessage() ) );
+				}
+				WPVibe_Change_Tracker::mark( array( 'summary' => 'Elementor CSS purged and regenerated', 'action_label' => 'View Site', 'url' => home_url( '/' ) ) );
+				return $this->success_result( array( 'message' => __( 'Elementor CSS cache purged and regenerated.', 'vibe-ai' ) ) );
 			}
 			WPVibe_Change_Tracker::mark( array( 'summary' => "Cache purged: {$target['name']}", 'action_label' => 'View Site', 'url' => home_url( '/' ) ) );
 			/* translators: %s: cache plugin name */
 			return $this->success_result( array( 'message' => sprintf( __( '%s cache purged.', 'vibe-ai' ), $target['name'] ) ) );
 		}
 
-		// `cache purge`: purge every detected cache plugin + the object cache.
-		$purged = array();
-		$failed = array();
-		foreach ( $targets as $target ) {
+		// `cache purge`: sweep every detected cache plugin (+ the object cache
+		// unless --skip=object). With --url=, page caches purge just those URLs;
+		// engines with no URL API fall back to their full flush (over-purging is
+		// safe, staleness is not). Elementor CSS and the object cache are not
+		// page caches and are left alone in URL mode.
+		$purged  = array();
+		$failed  = array();
+		$skipped = array();
+		foreach ( $targets as $id => $target ) {
 			if ( ! $target['active'] ) {
 				continue;
 			}
+			if ( in_array( $id, $skip, true ) ) {
+				$skipped[] = $target['name'];
+				continue;
+			}
+			if ( $urls && 'elementor' === $id ) {
+				continue;
+			}
 			try {
-				$ok = call_user_func( $target['purge'] );
+				if ( $urls ) {
+					if ( ! empty( $target['purge_url'] ) ) {
+						$ok = true;
+						foreach ( $urls as $url ) {
+							$ok = $this->run_purge_closure( $target['purge_url'], $url );
+							if ( true !== $ok ) {
+								break;
+							}
+						}
+						if ( true === $ok ) {
+							$purged[] = $target['name'];
+						} else {
+							$failed[] = array( 'name' => $target['name'], 'error' => $ok );
+						}
+						continue;
+					}
+					$ok = $this->run_purge_closure( $target['purge'] );
+					if ( true === $ok ) {
+						$purged[] = $target['name'] . ' (no URL purge API; flushed fully)';
+					} else {
+						$failed[] = array( 'name' => $target['name'], 'error' => $ok );
+					}
+					continue;
+				}
+				$ok = $this->run_purge_closure( $target['purge'] );
 			} catch ( \Throwable $e ) {
 				$failed[] = array( 'name' => $target['name'], 'error' => $e->getMessage() );
 				continue;
 			}
-			if ( $ok ) {
+			if ( true === $ok ) {
 				$purged[] = $target['name'];
 			} else {
-				$failed[] = array( 'name' => $target['name'], 'error' => __( 'purge API unavailable', 'vibe-ai' ) );
+				$failed[] = array( 'name' => $target['name'], 'error' => $ok );
 			}
 		}
-		$object_cache_flushed = (bool) wp_cache_flush();
+		$object_cache_flushed = false;
+		if ( ! $urls && ! in_array( 'object', $skip, true ) ) {
+			$object_cache_flushed = (bool) wp_cache_flush();
+		}
 
-		if ( $purged ) {
+		if ( $urls ) {
+			if ( $purged ) {
+				/* translators: 1: plugin names, 2: URL count */
+				$message = sprintf( __( 'Purged %1$s for %2$d URL(s).', 'vibe-ai' ), implode( ', ', $purged ), count( $urls ) );
+			} else {
+				$message = __( 'No page-cache plugin detected; nothing to purge for those URLs.', 'vibe-ai' );
+			}
+		} elseif ( $purged ) {
 			/* translators: %s: plugin names */
-			$message = sprintf( __( 'Purged: %s. Object cache flushed.', 'vibe-ai' ), implode( ', ', $purged ) );
-		} else {
+			$message = $object_cache_flushed
+				? sprintf( __( 'Purged: %s. Object cache flushed.', 'vibe-ai' ), implode( ', ', $purged ) )
+				: sprintf( __( 'Purged: %s.', 'vibe-ai' ), implode( ', ', $purged ) );
+		} elseif ( $object_cache_flushed ) {
 			$message = __( 'No known cache plugin detected; flushed the WordPress object cache.', 'vibe-ai' );
+		} else {
+			$message = __( 'Nothing purged (no cache plugin detected, object cache skipped).', 'vibe-ai' );
 		}
 
 		WPVibe_Change_Tracker::mark( array( 'summary' => 'Caches purged', 'action_label' => 'View Site', 'url' => home_url( '/' ) ) );
@@ -3118,6 +3533,12 @@ class WPVibe_CLI {
 			'purged'               => $purged,
 			'object_cache_flushed' => $object_cache_flushed,
 		);
+		if ( $urls ) {
+			$data['urls'] = $urls;
+		}
+		if ( $skipped ) {
+			$data['skipped'] = $skipped;
+		}
 		if ( $failed ) {
 			$data['failed'] = $failed;
 		}
@@ -3192,8 +3613,8 @@ class WPVibe_CLI {
 			return $this->error_result( $tables->get_error_message() );
 		}
 
-		$skip_columns    = array_filter( array_map( 'trim', explode( ',', (string) ( $flags['skip_columns'] ?? '' ) ) ) );
-		$include_columns = array_filter( array_map( 'trim', explode( ',', (string) ( $flags['include_columns'] ?? '' ) ) ) );
+		$skip_columns    = array_filter( wp_parse_list( (string) ( $flags['skip_columns'] ?? '' ) ) );
+		$include_columns = array_filter( wp_parse_list( (string) ( $flags['include_columns'] ?? '' ) ) );
 		$guid_skipped    = false;
 		if ( empty( $flags['include_guids'] ) && ! in_array( 'guid', $include_columns, true ) ) {
 			// WP best practice: GUIDs are permanent identifiers, not URLs.
@@ -3338,7 +3759,7 @@ class WPVibe_CLI {
 			}
 		}
 
-		$skip_tables = array_filter( array_map( 'trim', explode( ',', (string) ( $flags['skip_tables'] ?? '' ) ) ) );
+		$skip_tables = array_filter( wp_parse_list( (string) ( $flags['skip_tables'] ?? '' ) ) );
 		if ( $skip_tables ) {
 			$tables = array_values( array_filter( $tables, function ( $t ) use ( $skip_tables ) {
 				foreach ( $skip_tables as $skip ) {
@@ -3592,11 +4013,15 @@ class WPVibe_CLI {
 		return '`' . str_replace( '`', '``', $ident ) . '`';
 	}
 
-	/** Quote a value for use in WHERE against a primary key; integers pass bare. */
+	/**
+	 * Quote a value for use in WHERE against a primary key. Deliberately
+	 * diverges from upstream WP-CLI (which passes numeric-looking values as
+	 * bare literals): on a string PK, `pk = 0123` compares numerically and
+	 * matches '123' too — the row loop then reads one row's content and
+	 * writes it into another. Quoted constants cast once on int columns and
+	 * still use the index, so always quoting costs nothing.
+	 */
 	private function esc_sql_value( $value ) {
-		if ( preg_match( '/^[+-]?[0-9]{1,20}$/', (string) $value ) ) {
-			return (string) $value;
-		}
 		return "'" . esc_sql( (string) $value ) . "'";
 	}
 
@@ -4852,7 +5277,7 @@ class WPVibe_CLI {
 		$version      = ! empty( $flags['version'] ) ? $flags['version'] : $wp_version;
 		$locale       = ! empty( $flags['locale'] ) ? $flags['locale'] : get_locale();
 		$include_root = ! empty( $flags['include_root'] );
-		$exclude      = ! empty( $flags['exclude'] ) ? array_map( 'trim', explode( ',', $flags['exclude'] ) ) : array();
+		$exclude      = ! empty( $flags['exclude'] ) ? array_filter( wp_parse_list( $flags['exclude'] ) ) : array();
 
 		$checksums = $this->fetch_core_checksums( $version, $locale );
 		if ( ! $checksums && 'en_US' !== $locale ) {
@@ -5058,7 +5483,7 @@ class WPVibe_CLI {
 	 * Returns null on filesystem errors so callers can skip the check quietly.
 	 */
 	private function collect_files_recursive( $root, $filter ) {
-		$root   = rtrim( $root, '/\\' ) . '/';
+		$root   = trailingslashit( $root );
 		$filter = $filter ?: function () {
 			return true;
 		};
@@ -5068,7 +5493,7 @@ class WPVibe_CLI {
 				new RecursiveCallbackFilterIterator(
 					new RecursiveDirectoryIterator( $root, RecursiveDirectoryIterator::SKIP_DOTS ),
 					function ( $current ) use ( $root, $filter ) {
-						$rel = str_replace( '\\', '/', substr( $current->getPathname(), strlen( $root ) ) );
+						$rel = wp_normalize_path( substr( $current->getPathname(), strlen( $root ) ) );
 						return (bool) call_user_func( $filter, $rel );
 					}
 				),
@@ -5076,7 +5501,7 @@ class WPVibe_CLI {
 			);
 			foreach ( $iterator as $file_info ) {
 				if ( $file_info->isFile() ) {
-					$found[] = str_replace( '\\', '/', substr( $file_info->getPathname(), strlen( $root ) ) );
+					$found[] = wp_normalize_path( substr( $file_info->getPathname(), strlen( $root ) ) );
 				}
 			}
 		} catch ( \Exception $e ) {
@@ -5085,6 +5510,8 @@ class WPVibe_CLI {
 		return $found;
 	}
 
+	// Not core's get_core_checksums(): same endpoint, but core uses a 3s timeout
+	// outside cron, which fails on exactly the slow shared hosts this runs on.
 	private function fetch_core_checksums( $version, $locale ) {
 		$response = wp_remote_get(
 			'https://api.wordpress.org/core/checksums/1.0/?' . http_build_query( array( 'version' => $version, 'locale' => $locale ) ),
@@ -5120,7 +5547,12 @@ class WPVibe_CLI {
 		);
 	}
 
-	/** Positive integer IDs from positional args, deduped, order-preserved. */
+	/**
+	 * Positive integer IDs from positional args, deduped, order-preserved.
+	 * Not wp_parse_id_list(): its absint() turns "-5"/garbage into
+	 * real-looking IDs, and these feed post delete — invalid tokens must
+	 * drop, not mutate.
+	 */
 	private function positional_ids( $positional ) {
 		$ids = array();
 		foreach ( (array) $positional as $p ) {
@@ -5152,6 +5584,30 @@ class WPVibe_CLI {
 		) );
 	}
 
+	/**
+	 * Decode --post_content_base64. Exists because plain --post_content is a
+	 * silent corrupter when content mixes both quote types (the tokenizer
+	 * strips the colliding quotes with exit_code 0); base64 side-steps quoting
+	 * entirely and its alphabet can't trip the shell-char gate.
+	 */
+	private function decode_content_base64( $value ) {
+		$decoded = base64_decode( (string) $value, true );
+		if ( false === $decoded ) {
+			return new WP_Error( 'bad_base64', __( 'Invalid base64 in --post_content_base64. Encode the exact content bytes as standard base64 (no URL-safe alphabet, no line breaks).', 'vibe-ai' ) );
+		}
+		// wp_insert_post/wp_update_post unslash; slash so backslashes survive.
+		return wp_slash( $decoded );
+	}
+
+	/**
+	 * WPCode snippet posts are writable only through the code_snippet approval
+	 * flow (code + type + location reviewed together, written inactive) — a CLI
+	 * write here would bypass that panel, and post_status could flip activation.
+	 */
+	private function wpcode_write_refusal() {
+		return $this->error_result( __( 'WPCode snippets cannot be written through WP-CLI emulation. Use the code_snippet tool instead — it routes the code through the approval panel, writes the snippet disabled, and leaves activation to the human in wp-admin.', 'vibe-ai' ) );
+	}
+
 	private function error_result( $message, $exit_code = 1 ) {
 		return array(
 			'exit_code' => $exit_code,
@@ -5164,7 +5620,7 @@ class WPVibe_CLI {
 		if ( empty( $flags['fields'] ) || empty( $results ) ) {
 			return $results;
 		}
-		$fields = array_map( 'trim', explode( ',', $flags['fields'] ) );
+		$fields = array_filter( wp_parse_list( $flags['fields'] ) );
 		return array_map( function ( $row ) use ( $fields ) {
 			return array_intersect_key( $row, array_flip( $fields ) );
 		}, $results );

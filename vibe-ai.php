@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WPVibe – Connect Your Site to Claude, ChatGPT & AI Assistants
  * Description: Connect any AI assistant to your WordPress site. Manage content, edit themes, and automate site tasks with Claude, ChatGPT, Cursor & more via MCP.
- * Version: 1.7.1
+ * Version: 1.8.0
  * Author: SeedProd
  * Author URI: https://wpvibe.ai
  * License: GPL-2.0-or-later
@@ -14,7 +14,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WPVIBE_VERSION', '1.7.1' );
+define( 'WPVIBE_VERSION', '1.8.0' );
 define( 'WPVIBE_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'WPVIBE_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 
@@ -27,6 +27,7 @@ require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-content-ops.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-draft-theme.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-preview.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-cli.php';
+require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-code-snippet.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-change-tracker.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-live-reload.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-classic-theme.php';
@@ -34,6 +35,7 @@ require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-admin.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-ping.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-review-notice.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-audit-log.php';
+require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-builder-login.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-timing.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/fields/class-wpvibe-fields.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/fields/class-wpvibe-field-renderers.php';
@@ -103,6 +105,7 @@ function wpvibe_init() {
 	WPVibe_Preview::instance();
 	WPVibe_Live_Reload::instance();
 	WPVibe_Audit_Log::maybe_install();
+	WPVibe_Builder_Login::instance();
 	WPVibe_Timing::instance();
 	WPVibe_Fields::instance();
 	WPVibe_Edit_Affordance::instance();

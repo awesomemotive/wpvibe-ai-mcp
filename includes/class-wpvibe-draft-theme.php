@@ -219,6 +219,16 @@ class WPVibe_Draft_Theme {
 		// Ensure the original theme is active.
 		switch_theme( $source_slug );
 
+		// Publish replaced live templates in place; switch_theme's action only
+		// reaches engines that hook it (LiteSpeed, WP Rocket). Flush the rest
+		// too, or visitors keep the old theme's cached HTML.
+		if ( class_exists( 'WPVibe_CLI' ) ) {
+			try {
+				( new WPVibe_CLI() )->purge_all_caches();
+			} catch ( \Throwable $e ) { // phpcs:ignore Generic.CodeAnalysis.EmptyStatement.DetectedCatch -- a cache-engine failure must never fail a completed publish.
+			}
+		}
+
 		// Cleanup.
 		$this->delete_directory( $draft_dir );
 		delete_option( 'wpvibe_draft_theme' );

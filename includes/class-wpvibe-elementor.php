@@ -56,6 +56,16 @@ class WPVibe_Elementor {
 			),
 		) );
 
+		register_rest_route( $ns, '/elementor/style-schema', array(
+			'methods'             => 'GET',
+			'callback'            => array( $this, 'get_style_schema' ),
+			'permission_callback' => array( $this, 'can_edit_posts' ),
+			'args'                => array(
+				'names'  => array( 'type' => 'string', 'required' => false, 'sanitize_callback' => 'sanitize_text_field' ),
+				'prefix' => array( 'type' => 'string', 'required' => false, 'sanitize_callback' => 'sanitize_text_field' ),
+			),
+		) );
+
 		register_rest_route( $ns, '/elementor/save-page', array(
 			'methods'             => 'POST',
 			'callback'            => array( $this, 'save_page' ),
@@ -66,6 +76,7 @@ class WPVibe_Elementor {
 				'post_type'     => array( 'type' => 'string',  'default'  => 'page', 'sanitize_callback' => 'sanitize_key' ),
 				'status'        => array( 'type' => 'string',  'default'  => 'publish', 'sanitize_callback' => 'sanitize_key' ),
 				'template_type' => array( 'type' => 'string',  'default'  => 'wp-page', 'sanitize_callback' => 'sanitize_key' ),
+				'page_template' => array( 'type' => 'string',  'required' => false, 'sanitize_callback' => 'sanitize_text_field' ),
 				'data'          => array( 'type' => 'array',   'required' => true ),
 			),
 		) );
@@ -199,6 +210,34 @@ class WPVibe_Elementor {
 	 * Run $fn; on exception push a warning onto $warnings. Returns $fn's value or null on failure.
 	 * Used so the response always tells the AI WHICH non-fatal sub-step failed instead of swallowing it.
 	 */
+	/**
+	 * Document::save with fatal containment. Elementor's save pipeline compiles
+	 * atomic CSS inline (after_save hook); malformed v4 props (e.g. a bare number
+	 * where a {$$type:"number"} transformable is required) throw a PHP Error there,
+	 * AFTER the post row exists — without cleanup every failed save orphans a
+	 * broken page. $created_id > 0 means this request created the post and it
+	 * should be removed on failure.
+	 */
+	private function save_document( $document, array $data, int $created_id ) {
+		try {
+			return $document->save( array( 'elements' => $data ) );
+		} catch ( \Throwable $e ) {
+			if ( $created_id > 0 ) {
+				wp_delete_post( $created_id, true );
+			}
+			return new WP_Error(
+				'elementor_save_fatal',
+				sprintf(
+					/* translators: 1: exception message */
+					__( 'Elementor threw a fatal during save (usually while compiling CSS from the element data): %s. Common cause on Elementor 4.x: an atomic style/settings value missing its {"$$type": ...} transformable wrapper (numbers inside the flex prop, for example, must be {"$$type":"number","value":N}). %s', 'vibe-ai' ),
+					$e->getMessage(),
+					$created_id > 0 ? __( 'The partially created page has been deleted; fix the data and retry.', 'vibe-ai' ) : __( 'The existing page kept its previous saved data.', 'vibe-ai' )
+				),
+				WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) )
+			);
+		}
+	}
+
 	private function try_step( array &$warnings, callable $fn, string $code, string $context = '' ) {
 		try {
 			return $fn();
@@ -263,19 +302,22 @@ class WPVibe_Elementor {
 				'categories' => $widget->get_categories(),
 				'is_pro'     => 0 === strpos( get_class( $widget ), 'ElementorPro\\' ),
 				'kind'       => 'widget',
+				'atomic'     => $this->is_atomic( $widget ),
 			);
 		}
 
 		foreach ( \Elementor\Plugin::$instance->elements_manager->get_element_types() as $slug => $element ) {
-			if ( ! in_array( $slug, array( 'container', 'section', 'column' ), true ) ) {
+			$atomic = $this->is_atomic( $element );
+			if ( ! $atomic && ! in_array( $slug, array( 'container', 'section', 'column' ), true ) ) {
 				continue;
 			}
 			$out[] = array(
 				'slug'       => $slug,
 				'title'      => $element->get_title(),
-				'categories' => array( 'structural' ),
+				'categories' => $atomic ? array( 'v4-elements', 'structural' ) : array( 'structural' ),
 				'is_pro'     => false,
 				'kind'       => 'element',
+				'atomic'     => $atomic,
 			);
 		}
 
@@ -314,6 +356,22 @@ class WPVibe_Elementor {
 
 		$names = '' !== $names_param ? array_filter( array_map( 'trim', explode( ',', $names_param ) ) ) : array();
 		$mode  = ! empty( $names ) ? 'targeted' : ( '' !== $prefix_param ? 'prefix' : 'discovery' );
+
+		if ( $this->is_atomic( $element ) ) {
+			$props = $this->serialize_prop_schema( $element::get_props_schema(), $mode, $names, $prefix_param );
+			return rest_ensure_response( array(
+				'slug'              => $slug,
+				'kind'              => $kind,
+				'title'             => $element->get_title(),
+				'is_pro'            => 0 === strpos( get_class( $element ), 'ElementorPro\\' ),
+				'atomic'            => true,
+				'elementor_version' => defined( 'ELEMENTOR_VERSION' ) ? ELEMENTOR_VERSION : null,
+				'mode'              => $mode,
+				'count'             => count( $props ),
+				'props'             => $props,
+				'note'              => 'Atomic (v4) element. Settings values are transformable: {"$$type":"<type>","value":...} where <type> is each prop\'s type key. Visual styling does NOT go in settings — it goes in the element\'s `styles` local classes (see /elementor/style-schema for valid style props) referenced from the `classes` setting. See the elementor skill.',
+			) );
+		}
 
 		$controls = array();
 		foreach ( $element->get_controls() as $control ) {
@@ -375,6 +433,104 @@ class WPVibe_Elementor {
 	}
 
 	// ------------------------------------------------------------------
+	// GET /elementor/style-schema
+	// ------------------------------------------------------------------
+
+	public function get_style_schema( $request ) {
+		$check = $this->elementor_check();
+		if ( is_wp_error( $check ) ) {
+			return $check;
+		}
+
+		if ( ! class_exists( '\Elementor\Modules\AtomicWidgets\Styles\Style_Schema' ) ) {
+			return new WP_Error( 'atomic_unavailable', __( 'This Elementor version has no atomic style schema (requires Elementor 4.x).', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 404 ) ) );
+		}
+
+		$names_param  = (string) $request->get_param( 'names' );
+		$prefix_param = (string) $request->get_param( 'prefix' );
+		$names        = '' !== $names_param ? array_filter( array_map( 'trim', explode( ',', $names_param ) ) ) : array();
+		$mode         = ! empty( $names ) ? 'targeted' : ( '' !== $prefix_param ? 'prefix' : 'discovery' );
+
+		$props = $this->serialize_prop_schema( \Elementor\Modules\AtomicWidgets\Styles\Style_Schema::get(), $mode, $names, $prefix_param );
+
+		return rest_ensure_response( array(
+			'elementor_version' => defined( 'ELEMENTOR_VERSION' ) ? ELEMENTOR_VERSION : null,
+			'mode'              => $mode,
+			'count'             => count( $props ),
+			'props'             => $props,
+			'note'              => 'Props allowed inside a style variant\'s `props` (local element styles and global classes). Values are transformable: {"$$type":"<type>","value":...}. Variants carry meta {breakpoint: desktop|tablet|mobile|..., state: null|hover|focus|active}.',
+		) );
+	}
+
+	// ------------------------------------------------------------------
+	// Atomic (v4) prop schema serialization
+	// ------------------------------------------------------------------
+
+	private function is_atomic( $element ) {
+		return method_exists( $element, 'get_props_schema' );
+	}
+
+	private function serialize_prop_schema( array $schema, $mode, array $names, $prefix ) {
+		$out = array();
+
+		foreach ( $schema as $name => $prop ) {
+			if ( 'targeted' === $mode && ! in_array( $name, $names, true ) ) {
+				continue;
+			}
+			if ( 'prefix' === $mode && 0 !== strpos( $name, $prefix ) ) {
+				continue;
+			}
+
+			$entry = array(
+				'name' => $name,
+				'type' => $prop::get_key(),
+			);
+
+			// Unions wrap the real prop types (e.g. string|dynamic); surface the members.
+			if ( method_exists( $prop, 'get_prop_types' ) ) {
+				$members            = $prop->get_prop_types();
+				$entry['types']     = array_keys( $members );
+				$primary            = reset( $members );
+				if ( $primary ) {
+					$prop = $primary;
+				}
+			}
+
+			if ( 'discovery' !== $mode ) {
+				$serialized = $prop->jsonSerialize();
+				if ( isset( $serialized['kind'] ) ) {
+					$entry['kind'] = $serialized['kind'];
+				}
+				if ( isset( $serialized['default'] ) && null !== $serialized['default'] ) {
+					$entry['default'] = $serialized['default'];
+				}
+				$settings = isset( $serialized['settings'] ) ? (array) $serialized['settings'] : array();
+				if ( ! empty( $settings['enum'] ) ) {
+					$entry['options'] = array_values( $settings['enum'] );
+				}
+				if ( ! empty( $settings['required'] ) ) {
+					$entry['required'] = true;
+				}
+				$meta = isset( $serialized['meta'] ) ? (array) $serialized['meta'] : array();
+				if ( ! empty( $meta['description'] ) ) {
+					$entry['description'] = $meta['description'];
+				}
+				if ( method_exists( $prop, 'get_shape' ) ) {
+					$shape = array();
+					foreach ( $prop->get_shape() as $key => $sub ) {
+						$shape[ $key ] = $sub::get_key();
+					}
+					$entry['shape'] = $shape;
+				}
+			}
+
+			$out[] = $entry;
+		}
+
+		return $out;
+	}
+
+	// ------------------------------------------------------------------
 	// POST /elementor/save-page
 	// ------------------------------------------------------------------
 
@@ -389,6 +545,7 @@ class WPVibe_Elementor {
 		$post_type     = $request->get_param( 'post_type' );
 		$status        = $request->get_param( 'status' );
 		$template_type = $request->get_param( 'template_type' );
+		$page_template = $request->get_param( 'page_template' );
 		$data          = $request->get_param( 'data' );
 
 		if ( ! is_array( $data ) ) {
@@ -454,9 +611,26 @@ class WPVibe_Elementor {
 
 		// Document::save handles _elementor_data write, version stamp,
 		// _elementor_element_cache invalidation, and CSS regen.
-		$saved = $document->save( array( 'elements' => $data ) );
+		$saved = $this->save_document( $document, $data, empty( $request['id'] ) ? $id : 0 );
 		if ( is_wp_error( $saved ) ) {
 			return $saved;
+		}
+
+		// Direct meta write, not Document::save(['settings'=>...]) — save_settings()
+		// replaces _elementor_page_settings wholesale, wiping existing page settings on update.
+		if ( $page_template ) {
+			update_post_meta( $id, '_wp_page_template', $page_template );
+			$known = array_unique( array_merge(
+				array( 'default', 'elementor_header_footer', 'elementor_canvas' ),
+				array_keys( wp_get_theme()->get_page_templates( get_post( $id ) ) )
+			) );
+			if ( ! in_array( $page_template, $known, true ) ) {
+				$warnings[] = array(
+					'code'    => 'unknown_page_template',
+					'message' => sprintf( __( 'Page template "%s" is not registered by the active theme or Elementor; WordPress will render the default template instead.', 'vibe-ai' ), $page_template ),
+					'context' => 'known: ' . implode( ', ', $known ),
+				);
+			}
 		}
 
 		// Explicit per-post CSS regen — Document::save sometimes loses the CSS
@@ -557,7 +731,7 @@ class WPVibe_Elementor {
 			return new WP_Error( 'document_init_failed', __( 'Could not initialize Elementor document.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 500 ) ) );
 		}
 
-		$saved = $document->save( array( 'elements' => $data ) );
+		$saved = $this->save_document( $document, $data, empty( $request['id'] ) ? $id : 0 );
 		if ( is_wp_error( $saved ) ) {
 			return $saved;
 		}

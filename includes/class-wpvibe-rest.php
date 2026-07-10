@@ -456,11 +456,74 @@ class WPVibe_REST {
 			),
 		) );
 
+		// --- Code snippet (WPCode bridge) ---
+
+		// Called by the Worker only after browser-side approval of the exact
+		// code + type + location. `code` carries exact bytes — no sanitizer;
+		// the Worker asserts stored bytes equal approved bytes. There is
+		// deliberately no `active` arg: activation is human-only, in wp-admin.
+		register_rest_route( $namespace, '/code-snippet', array(
+			'methods'             => 'POST',
+			'callback'            => array( $this, 'code_snippet' ),
+			'permission_callback' => array( $this, 'can_edit_code_snippets' ),
+			'args'                => array(
+				'action' => array(
+					'type'              => 'string',
+					'default'           => 'create',
+					'sanitize_callback' => 'sanitize_key',
+				),
+				'id' => array(
+					'type'              => 'integer',
+					'required'          => false,
+					'sanitize_callback' => 'absint',
+				),
+				'code' => array(
+					'type'     => 'string',
+					'required' => true,
+				),
+				'title' => array(
+					'type'              => 'string',
+					'required'          => true,
+					'sanitize_callback' => 'sanitize_text_field',
+				),
+				'code_type' => array(
+					'type'              => 'string',
+					'required'          => true,
+					'sanitize_callback' => 'sanitize_key',
+				),
+				'location' => array(
+					'type'              => 'string',
+					'required'          => true,
+					'sanitize_callback' => 'sanitize_key',
+				),
+				'insert_method' => array(
+					'type'              => 'string',
+					'default'           => 'auto',
+					'sanitize_callback' => 'sanitize_key',
+				),
+			),
+		) );
+
 		register_rest_route( $namespace, '/cli/status', array(
 			'methods'             => 'GET',
 			'callback'            => array( $this, 'cli_status' ),
 			'permission_callback' => array( $this, 'can_manage_themes' ),
 			'args'                => array(),
+		) );
+
+		// --- SeedProd builder login (compile automation) ---
+
+		register_rest_route( $namespace, '/builder-login', array(
+			'methods'             => 'POST',
+			'callback'            => array( WPVibe_Builder_Login::instance(), 'mint' ),
+			'permission_callback' => array( $this, 'can_builder_login' ),
+			'args'                => array(
+				'page_id' => array(
+					'type'              => 'integer',
+					'required'          => true,
+					'sanitize_callback' => 'absint',
+				),
+			),
 		) );
 
 		// --- Rendered HTML ---
@@ -688,6 +751,33 @@ class WPVibe_REST {
 	}
 
 	/**
+	 * Code snippet writes — WPCode's own snippet capability. The route is
+	 * registered even without WPCode so the failure reads as a clear
+	 * wpcode_missing instead of a confusing rest_no_route; nothing can be
+	 * written (let alone execute) until the human installs WPCode.
+	 */
+	public function can_edit_code_snippets() {
+		if ( ! class_exists( 'WPCode_Snippet' ) ) {
+			return new WP_Error(
+				'wpcode_missing',
+				__( 'The WPCode plugin is required for code snippets and is not installed or not active on this site.', 'vibe-ai' ),
+				WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 501 ) )
+			);
+		}
+		return current_user_can( 'wpcode_edit_snippets' ) ? true : $this->missing_capability_error( 'wpcode_edit_snippets' );
+	}
+
+	/**
+	 * Builder login mint — the capability SeedProd itself gates the builder
+	 * screen on, so the minted session can never reach further than the
+	 * connected account already could.
+	 */
+	public function can_builder_login() {
+		$capability = WPVibe_Builder_Login::required_capability();
+		return current_user_can( $capability ) ? true : $this->missing_capability_error( $capability );
+	}
+
+	/**
 	 * WP-CLI — baseline manage_options check.
 	 * Per-command capability checks happen in the handler.
 	 */
@@ -792,7 +882,7 @@ class WPVibe_REST {
 	 * MCP to compare WPVIBE_VERSION strings — flags are forward-compatible.
 	 */
 	public static function feature_flags() {
-		return array( 'content_edit', 'content_search' );
+		return array( 'content_edit', 'content_search', 'code_snippet' );
 	}
 
 	public function get_site_info() {
@@ -1000,6 +1090,10 @@ class WPVibe_REST {
 
 		$cli = new WPVibe_CLI();
 		return $cli->run( $command, $confirm_write );
+	}
+
+	public function code_snippet( $request ) {
+		return WPVibe_Code_Snippet::handle( $request );
 	}
 
 	/**
