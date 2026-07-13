@@ -2,6 +2,10 @@
 
 All notable changes to the WPVibe WordPress plugin *(WordPress.org slug: `vibe-ai`)*. The canonical source for WordPress.org's update API is `readme.txt`; this file mirrors the same information in markdown for GitHub readers.
 
+## [1.8.1] - 2026-07-13
+
+* Fix: SeedProd landing pages now render on your site automatically after WPVibe builds or updates them. The automatic render step added in 1.8.0 only recognized SeedProd theme templates and coming-soon or maintenance pages, so regular landing pages still asked you to open the SeedProd builder and click Save yourself.
+
 ## [1.8.0] - 2026-07-10
 
 * New: SeedProd pages and theme templates that WPVibe builds now render on your site automatically, without you opening each one in the SeedProd builder and clicking Save yourself. WPVibe triggers the builder's own save step for you through a single-use sign-in link that expires in two minutes and is scoped to that one page, so nothing else on your site is exposed.

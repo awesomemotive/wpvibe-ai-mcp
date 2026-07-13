@@ -63,6 +63,18 @@ class WPVibe_Builder_Login {
 	}
 
 	/**
+	 * Landing pages save as post_type `page` flagged by `_seedprod_page`;
+	 * only theme templates and mode pages use the `seedprod` CPT.
+	 */
+	public static function is_seedprod_page( $post_id ) {
+		$type = get_post_type( $post_id );
+		if ( 'seedprod' === $type ) {
+			return true;
+		}
+		return 'page' === $type && (bool) get_post_meta( (int) $post_id, '_seedprod_page', true );
+	}
+
+	/**
 	 * REST handler: mint a login URL for one SeedProd page.
 	 * Route + permission callback live in WPVibe_REST.
 	 */
@@ -76,7 +88,7 @@ class WPVibe_Builder_Login {
 		}
 
 		$post_id = (int) $request->get_param( 'page_id' );
-		if ( $post_id <= 0 || 'seedprod' !== get_post_type( $post_id ) ) {
+		if ( $post_id <= 0 || ! self::is_seedprod_page( $post_id ) ) {
 			return new WP_Error(
 				'not_seedprod_page',
 				__( 'That id is not a SeedProd page, so a builder login cannot be minted for it.', 'vibe-ai' ),
