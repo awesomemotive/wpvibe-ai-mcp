@@ -2,6 +2,10 @@
 
 All notable changes to the WPVibe WordPress plugin *(WordPress.org slug: `vibe-ai`)*. The canonical source for WordPress.org's update API is `readme.txt`; this file mirrors the same information in markdown for GitHub readers.
 
+## [1.8.2] - 2026-07-14
+
+* Fix: uninstalling a plugin, updating a plugin, or deleting a theme through WPVibe no longer crashes the site with a 500 error. These commands ran WordPress's own delete and upgrade functions without first loading wp-admin's filesystem bootstrap, which wp-admin pre-loads but WPVibe's REST context does not. All file-modifying commands now load it up front. ([#2](https://github.com/awesomemotive/wpvibe-ai-mcp/issues/2))
+
 ## [1.8.1] - 2026-07-13
 
 * Fix: SeedProd landing pages now render on your site automatically after WPVibe builds or updates them. The automatic render step added in 1.8.0 only recognized SeedProd theme templates and coming-soon or maintenance pages, so regular landing pages still asked you to open the SeedProd builder and click Save yourself.
