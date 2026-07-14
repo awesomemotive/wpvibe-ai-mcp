@@ -2,6 +2,12 @@
 
 All notable changes to the WPVibe WordPress plugin *(WordPress.org slug: `vibe-ai`)*. The canonical source for WordPress.org's update API is `readme.txt`; this file mirrors the same information in markdown for GitHub readers.
 
+## [1.9.0] - 2026-07-14
+
+* New: WPVibe dashboard widget. Your wp-admin Dashboard now shows whether the site is connected, the last few changes your AI made, and a short list of cookbook recipes matched to the plugins you actually run, each with a copy-ready prompt. Not connected yet? The widget gives you the one-line prompt that connects your site.
+* New: recipe suggestions are filtered on your own site against your installed plugins. The widget fetches one small public recipe list from wpvibe.ai (nothing about your site is sent, same pattern as the WordPress Events and News widget) and picks locally.
+* Improvement: recent AI-made changes are now kept in a small activity log (last 10 entries) so the dashboard can show them; the full record remains in the Approval Log.
+
 ## [1.8.1] - 2026-07-13
 
 * Fix: SeedProd landing pages now render on your site automatically after WPVibe builds or updates them. The automatic render step added in 1.8.0 only recognized SeedProd theme templates and coming-soon or maintenance pages, so regular landing pages still asked you to open the SeedProd builder and click Save yourself.

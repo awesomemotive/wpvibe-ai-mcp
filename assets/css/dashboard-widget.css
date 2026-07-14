@@ -1,0 +1,136 @@
+/* WPVibe dashboard widget — inherits the admin color scheme; only layout and hierarchy here. */
+
+.wpvibe-widget-pitch {
+	margin-top: 0;
+}
+
+.wpvibe-widget-status {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin: 0 0 8px;
+	font-weight: 600;
+}
+
+.wpvibe-widget-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: #00a32a;
+	flex: none;
+}
+
+.wpvibe-widget-heading {
+	margin: 12px 0 4px;
+	padding-top: 8px;
+	border-top: 1px solid rgba(0, 0, 0, 0.08);
+	font-size: 11px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.4px;
+	color: inherit;
+	opacity: 0.75;
+}
+
+.wpvibe-widget-activity,
+.wpvibe-widget-recipes {
+	margin: 0;
+}
+
+.wpvibe-widget-activity li,
+.wpvibe-widget-recipes li {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 8px;
+	margin: 0;
+	padding: 3px 0;
+}
+
+.wpvibe-widget-activity-summary {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.wpvibe-widget-activity-time {
+	flex: none;
+	opacity: 0.65;
+	font-size: 11px;
+}
+
+.wpvibe-widget-recipe-title {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+}
+
+.wpvibe-widget-recipes a {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	text-decoration: none;
+}
+
+.wpvibe-widget-badge {
+	flex: none;
+	font-size: 10px;
+	font-weight: 600;
+	line-height: 1;
+	padding: 3px 7px 4px;
+	border-radius: 999px;
+	background: rgba(34, 113, 177, 0.07);
+	border: 1px solid rgba(34, 113, 177, 0.35);
+	color: #2271b1;
+}
+
+.wpvibe-widget-note {
+	color: inherit;
+	opacity: 0.7;
+	margin: 0 0 4px;
+}
+
+.wpvibe-widget-micro {
+	font-size: 11px;
+	opacity: 0.75;
+	margin: 6px 0 0;
+}
+
+.wpvibe-widget-copy.button.button-small {
+	flex: none;
+	font-size: 11px;
+	min-height: 24px;
+	line-height: 22px;
+	padding: 0 8px;
+}
+
+.wpvibe-widget-copy.is-copied {
+	color: #00a32a;
+	border-color: #00a32a;
+}
+
+.wpvibe-widget-copy-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin: 8px 0;
+	flex-wrap: wrap;
+}
+
+.wpvibe-widget-copy-row code {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	max-width: 100%;
+}
+
+.wpvibe-widget-copy-hint {
+	opacity: 0.75;
+}
+
+.wpvibe-widget-footer {
+	margin: 12px 0 0;
+	padding-top: 8px;
+	border-top: 1px solid rgba(0, 0, 0, 0.08);
+}

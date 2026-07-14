@@ -4,7 +4,7 @@ Tags: mcp, mcp-server, claude, chatgpt, ai-assistant
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.8.1
+Stable tag: 1.9.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -234,6 +234,11 @@ Yes. Connected sites are unlimited on every plan, including the free plan. Conne
 No. WPVibe lets you manage your WordPress site entirely through conversation with your AI assistant. No coding required for content management. Theme editing is also conversational, your AI writes the code for your WordPress theme.
 
 == Changelog ==
+
+= 1.9.0 =
+* New: WPVibe dashboard widget. Your wp-admin Dashboard now shows whether the site is connected, the last few changes your AI made, and a short list of cookbook recipes matched to the plugins you actually run, each with a copy-ready prompt. Not connected yet? The widget gives you the one-line prompt that connects your site.
+* New: recipe suggestions are filtered on your own site against your installed plugins. The widget fetches one small public recipe list from wpvibe.ai (nothing about your site is sent, same pattern as the WordPress Events and News widget) and picks locally.
+* Improvement: recent AI-made changes are now kept in a small activity log (last 10 entries) so the dashboard can show them; the full record remains in the Approval Log.
 
 = 1.8.1 =
 * Fix: SeedProd landing pages now render on your site automatically after WPVibe builds or updates them. The automatic render step added in 1.8.0 only recognized SeedProd theme templates and coming-soon or maintenance pages, so regular landing pages still asked you to open the SeedProd builder and click Save yourself.

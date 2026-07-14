@@ -20,6 +20,7 @@ delete_option( 'wpvibe_installed_at' );
 delete_option( 'wpvibe_review_eligible_since' );
 delete_option( 'wpvibe_review_notice_status' );
 delete_option( 'wpvibe_audit_log_schema' );
+delete_option( 'wpvibe_recent_activity' );
 
 // Drop the audit log table created by class-wpvibe-audit-log.php.
 global $wpdb;
@@ -30,6 +31,8 @@ $wpdb->query( "DROP TABLE IF EXISTS {$audit_table}" );
 // Remove transients.
 delete_transient( 'wpvibe_last_change' );
 delete_transient( 'wpvibe_activation_redirect' );
+delete_transient( 'wpvibe_widget_feed' );
+delete_transient( 'wpvibe_widget_feed_error' );
 
 // Remove any leftover draft / backup theme directories on disk.
 if ( function_exists( 'get_theme_root' ) ) {
