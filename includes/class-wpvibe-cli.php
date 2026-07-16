@@ -475,6 +475,15 @@ class WPVibe_CLI {
 			return new WP_Error( 'file_mods_disabled', __( 'File modifications are disabled (DISALLOW_FILE_MODS).', 'vibe-ai' ), WPVibe_Error_Contract::data( 'host_environment', false, array( 'status' => 403 ) ) );
 		}
 
+		// File-modifying commands call core upgrader/delete functions
+		// (delete_plugins(), delete_theme(), WP_Upgrader::fs_connect()) that
+		// assume wp-admin's filesystem bootstrap is already loaded. wp-admin
+		// pre-loads it; the REST context these commands run in does not.
+		if ( ! empty( $meta['check_file_mods'] ) ) {
+			require_once ABSPATH . 'wp-admin/includes/file.php';
+			require_once ABSPATH . 'wp-admin/includes/misc.php';
+		}
+
 		$args        = $this->strip_blocked_flags( $tokens );
 		$command_key = implode( ' ', array_slice( $this->get_positional( $tokens ), 0, $key_length ) );
 
