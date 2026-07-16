@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WPVibe – Connect Your Site to Claude, ChatGPT & AI Assistants
  * Description: Connect any AI assistant to your WordPress site. Manage content, edit themes, and automate site tasks with Claude, ChatGPT, Cursor & more via MCP.
- * Version: 1.9.0
+ * Version: 1.9.1
  * Author: SeedProd
  * Author URI: https://wpvibe.ai
  * License: GPL-2.0-or-later
@@ -14,7 +14,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WPVIBE_VERSION', '1.9.0' );
+define( 'WPVIBE_VERSION', '1.9.1' );
 define( 'WPVIBE_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'WPVIBE_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 
@@ -95,6 +95,9 @@ function wpvibe_check_php_syntax( $source, $label = '' ) {
 	}
 	return true;
 }
+
+// Registered at file scope so it precedes the first determine_current_user run.
+add_filter( 'application_password_is_api_request', array( 'WPVibe_REST', 'application_password_is_api_request' ) );
 
 /**
  * Bootstrap the plugin.

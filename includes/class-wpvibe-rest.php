@@ -25,6 +25,36 @@ class WPVibe_REST {
 	}
 
 	/**
+	 * Let Application Passwords authenticate REST requests before REST_REQUEST exists.
+	 *
+	 * Core only marks a request as an API request at parse_request, so plugins that
+	 * resolve the current user on init run app-password requests as user 0 there.
+	 * Site Kit freezes its per-user Google auth storage at init -999 that way and
+	 * then fails every data request with missing_required_scopes. Marking
+	 * REST-prefixed paths as API requests lets the same credentials resolve first.
+	 *
+	 * @param bool $is_api_request Whether core already considers this an API request.
+	 * @return bool
+	 */
+	public static function application_password_is_api_request( $is_api_request ) {
+		if ( $is_api_request ) {
+			return $is_api_request;
+		}
+		$request_uri = isset( $_SERVER['REQUEST_URI'] ) ? wp_unslash( $_SERVER['REQUEST_URI'] ) : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+		$path        = wp_parse_url( $request_uri, PHP_URL_PATH );
+		if ( ! is_string( $path ) || '' === $path ) {
+			return false;
+		}
+		// Plain-permalink REST only routes through the front controller; direct scripts (admin-ajax.php) never carry rest_route.
+		if ( isset( $_GET['rest_route'] ) && ( false === strpos( $path, '.php' ) || 'index.php' === basename( $path ) ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			return true;
+		}
+		$home_path = (string) wp_parse_url( home_url(), PHP_URL_PATH );
+		$prefix    = rtrim( $home_path, '/' ) . '/' . rest_get_url_prefix();
+		return $path === $prefix || 0 === strpos( $path, $prefix . '/' );
+	}
+
+	/**
 	 * Resolve a sideload filename that ends in a real image extension.
 	 *
 	 * A title like "CleanShot 2026-06-29 at 14.45.58@2x" makes pathinfo() read

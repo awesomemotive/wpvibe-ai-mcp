@@ -370,7 +370,7 @@ class WPVibe_CLI {
 		'plugin activate'         => 'plugin activate <slug>',
 		'plugin deactivate'       => 'plugin deactivate <slug>',
 		'plugin install'          => 'plugin install <slug> [--version=<version>] [--activate]',
-		'plugin update'           => 'plugin update <slug>',
+		'plugin update'           => 'plugin update <slug>... | --all [--exclude=<slugs>] [--dry-run]',
 		'plugin uninstall'        => 'plugin uninstall <slug> [<slug>...]',
 		'option update'           => 'option update <key> <value>',
 		'option add'              => 'option add <key> <value> [--autoload=<yes|no>]',
@@ -473,6 +473,12 @@ class WPVibe_CLI {
 
 		if ( ! empty( $meta['check_file_mods'] ) && defined( 'DISALLOW_FILE_MODS' ) && DISALLOW_FILE_MODS ) {
 			return new WP_Error( 'file_mods_disabled', __( 'File modifications are disabled (DISALLOW_FILE_MODS).', 'vibe-ai' ), WPVibe_Error_Contract::data( 'host_environment', false, array( 'status' => 403 ) ) );
+		}
+
+		// Core's upgrader/delete functions assume wp-admin's filesystem bootstrap, which wp-admin pre-loads but the REST context does not.
+		if ( ! empty( $meta['check_file_mods'] ) ) {
+			require_once ABSPATH . 'wp-admin/includes/file.php';
+			require_once ABSPATH . 'wp-admin/includes/misc.php';
 		}
 
 		$args        = $this->strip_blocked_flags( $tokens );
@@ -2186,51 +2192,123 @@ class WPVibe_CLI {
 	}
 
 	private function handle_plugin_update( $positional, $flags, $confirm_write = false ) {
-		if ( empty( $positional[0] ) ) {
-			return $this->error_result( __( 'Plugin slug required.', 'vibe-ai' ) );
-		}
-		$file = $this->resolve_plugin_file( $positional[0] );
-		if ( ! $file ) {
-			/* translators: %s: plugin slug */
-			return $this->error_result( sprintf( __( 'Plugin \'%s\' not found.', 'vibe-ai' ), $positional[0] ) );
-		}
+		$update_all = ! empty( $flags['all'] );
+		$dry_run    = ! empty( $flags['dry_run'] );
 
-		// Self-update replaces this plugin's files while they serve the request: fatals with a 500 and never applies.
-		if ( plugin_basename( WPVIBE_PLUGIN_DIR . 'vibe-ai.php' ) === $file ) {
-			return $this->error_result( __( 'WPVibe cannot update itself over its own connection (the update would replace the plugin files serving this request). Update it from the Plugins screen in wp-admin, or enable auto-updates for it there.', 'vibe-ai' ) );
+		if ( empty( $positional ) && ! $update_all ) {
+			return $this->error_result( __( 'Plugin slug required. Usage: plugin update <slug>... | --all [--exclude=<slugs>] [--dry-run]', 'vibe-ai' ) );
 		}
-
-		// Check for available update.
-		wp_update_plugins();
-		$update_data = get_site_transient( 'update_plugins' );
-		if ( ! isset( $update_data->response[ $file ] ) ) {
-			return $this->error_result( __( 'No update available for this plugin.', 'vibe-ai' ) );
-		}
-		$update = $update_data->response[ $file ];
 
 		if ( ! function_exists( 'get_plugins' ) ) {
 			require_once ABSPATH . 'wp-admin/includes/plugin.php';
 		}
-		$all = get_plugins();
+		$all       = get_plugins();
+		$self_file = plugin_basename( WPVIBE_PLUGIN_DIR . 'vibe-ai.php' );
+		$single    = ! $update_all && 1 === count( $positional );
+
+		if ( $single ) {
+			$file = $this->resolve_plugin_file( $positional[0] );
+			if ( ! $file ) {
+				/* translators: %s: plugin slug */
+				return $this->error_result( sprintf( __( 'Plugin \'%s\' not found.', 'vibe-ai' ), $positional[0] ) );
+			}
+
+			// Self-update replaces this plugin's files while they serve the request: fatals with a 500 and never applies.
+			if ( $self_file === $file ) {
+				return $this->error_result( __( 'WPVibe cannot update itself over its own connection (the update would replace the plugin files serving this request). Update it from the Plugins screen in wp-admin, or enable auto-updates for it there.', 'vibe-ai' ) );
+			}
+		}
+
+		wp_update_plugins();
+		$update_data = get_site_transient( 'update_plugins' );
+		$available   = ( is_object( $update_data ) && ! empty( $update_data->response ) ) ? $update_data->response : array();
+
+		$self_skip_reason = __( 'WPVibe cannot update itself over its own connection. Update it from the Plugins screen in wp-admin.', 'vibe-ai' );
+		$targets          = array();
+		$skipped          = array();
+
+		if ( $single ) {
+			if ( ! isset( $available[ $file ] ) ) {
+				return $this->error_result( __( 'No update available for this plugin.', 'vibe-ai' ) );
+			}
+			$targets[ $file ] = $available[ $file ];
+		} elseif ( $update_all ) {
+			$exclude = array_filter( array_map( 'trim', explode( ',', (string) ( $flags['exclude'] ?? '' ) ) ) );
+			foreach ( $available as $file => $update ) {
+				if ( ! isset( $all[ $file ] ) ) {
+					continue;
+				}
+				$slug = ( ! empty( $update->slug ) ) ? $update->slug : dirname( $file );
+				if ( in_array( $slug, $exclude, true ) || in_array( dirname( $file ), $exclude, true ) ) {
+					$skipped[] = array( 'name' => $slug, 'status' => 'skipped', 'reason' => 'excluded' );
+					continue;
+				}
+				if ( $self_file === $file ) {
+					$skipped[] = array( 'name' => $slug, 'status' => 'skipped', 'reason' => $self_skip_reason );
+					continue;
+				}
+				$targets[ $file ] = $update;
+			}
+		} else {
+			foreach ( $positional as $slug ) {
+				$file = $this->resolve_plugin_file( $slug );
+				if ( ! $file ) {
+					$skipped[] = array( 'name' => $slug, 'status' => 'error', 'reason' => 'not found' );
+				} elseif ( $self_file === $file ) {
+					$skipped[] = array( 'name' => $slug, 'status' => 'skipped', 'reason' => $self_skip_reason );
+				} elseif ( ! isset( $available[ $file ] ) ) {
+					$skipped[] = array( 'name' => $slug, 'status' => 'skipped', 'reason' => 'no update available' );
+				} else {
+					$targets[ $file ] = $available[ $file ];
+				}
+			}
+		}
+
+		$preview = array();
+		foreach ( $targets as $file => $update ) {
+			$preview[] = array(
+				'name'            => $all[ $file ]['Name'],
+				'current_version' => $all[ $file ]['Version'],
+				'new_version'     => $update->new_version,
+				'slug'            => ( ! empty( $update->slug ) ) ? $update->slug : dirname( $file ),
+			);
+		}
+
+		if ( $dry_run ) {
+			return $this->success_result( array( 'dry_run' => true, 'updates_available' => $preview, 'skipped' => $skipped ) );
+		}
+
+		if ( empty( $targets ) ) {
+			return $this->success_result( array( 'message' => __( 'No plugin updates available.', 'vibe-ai' ), 'skipped' => $skipped ) );
+		}
 
 		// Phase 1: Return info and require confirmation.
 		if ( ! $confirm_write ) {
+			if ( $single ) {
+				return array(
+					'exit_code'             => 0,
+					'stdout'                => wp_json_encode( $preview[0], JSON_PRETTY_PRINT ),
+					'stderr'                => '',
+					'requires_confirmation' => true,
+					'message'               => sprintf(
+						/* translators: 1: plugin name, 2: current version, 3: new version */
+						__( 'Ready to update %1$s from %2$s to %3$s. Call again with confirm_write=true to proceed.', 'vibe-ai' ),
+						$preview[0]['name'],
+						$preview[0]['current_version'],
+						$preview[0]['new_version']
+					),
+				);
+			}
 			return array(
 				'exit_code'             => 0,
-				'stdout'                => wp_json_encode( array(
-					'name'            => $all[ $file ]['Name'],
-					'current_version' => $all[ $file ]['Version'],
-					'new_version'     => $update->new_version,
-					'slug'            => $update->slug,
-				), JSON_PRETTY_PRINT ),
+				'stdout'                => wp_json_encode( array( 'updates' => $preview, 'skipped' => $skipped ), JSON_PRETTY_PRINT ),
 				'stderr'                => '',
 				'requires_confirmation' => true,
 				'message'               => sprintf(
-					/* translators: 1: plugin name, 2: current version, 3: new version */
-					__( 'Ready to update %1$s from %2$s to %3$s. Call again with confirm_write=true to proceed.', 'vibe-ai' ),
-					$all[ $file ]['Name'],
-					$all[ $file ]['Version'],
-					$update->new_version
+					/* translators: 1: number of plugins, 2: comma-separated plugin names */
+					__( 'Ready to update %1$d plugins: %2$s. Call again with confirm_write=true to proceed.', 'vibe-ai' ),
+					count( $preview ),
+					implode( ', ', array_column( $preview, 'name' ) )
 				),
 			);
 		}
@@ -2239,26 +2317,76 @@ class WPVibe_CLI {
 		require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
 		$skin     = new Automatic_Upgrader_Skin();
 		$upgrader = new Plugin_Upgrader( $skin );
-		$result   = $upgrader->upgrade( $file );
 
-		if ( is_wp_error( $result ) ) {
-			return $this->error_result( $result->get_error_message() );
+		if ( $single ) {
+			$result = $upgrader->upgrade( array_keys( $targets )[0] );
+
+			if ( is_wp_error( $result ) ) {
+				return $this->error_result( $result->get_error_message() );
+			}
+
+			WPVibe_Change_Tracker::mark( array(
+				'summary'      => "Plugin updated: {$positional[0]}",
+				'action_label' => 'Manage Plugins',
+				'admin_url'    => admin_url( 'plugins.php' ),
+			) );
+
+			return $this->success_result( array(
+				'message' => sprintf(
+					/* translators: 1: plugin name, 2: new version */
+					__( 'Updated %1$s to v%2$s.', 'vibe-ai' ),
+					$preview[0]['name'],
+					$preview[0]['new_version']
+				),
+			) );
 		}
 
-		WPVibe_Change_Tracker::mark( array(
-			'summary'      => "Plugin updated: {$positional[0]}",
-			'action_label' => 'Manage Plugins',
-			'admin_url'    => admin_url( 'plugins.php' ),
-		) );
+		// Same path as wp-admin's bulk update (maintenance mode around the run).
+		$bulk    = $upgrader->bulk_upgrade( array_keys( $targets ) );
+		$results = array();
+		$updated = array();
+		foreach ( $targets as $file => $update ) {
+			$row = array(
+				'name'        => $all[ $file ]['Name'],
+				'old_version' => $all[ $file ]['Version'],
+				'new_version' => $update->new_version,
+			);
+			$result = is_array( $bulk ) && isset( $bulk[ $file ] ) ? $bulk[ $file ] : null;
+			if ( is_wp_error( $result ) ) {
+				$row['status'] = 'error: ' . $result->get_error_message();
+			} elseif ( empty( $result ) ) {
+				$row['status'] = 'error: update failed';
+			} else {
+				$row['status'] = 'updated';
+				$updated[]     = ( ! empty( $update->slug ) ) ? $update->slug : dirname( $file );
+			}
+			$results[] = $row;
+		}
 
-		return $this->success_result( array(
-			'message' => sprintf(
-				/* translators: 1: plugin name, 2: new version */
-				__( 'Updated %1$s to v%2$s.', 'vibe-ai' ),
-				$all[ $file ]['Name'],
-				$update->new_version
-			),
-		) );
+		if ( $updated ) {
+			WPVibe_Change_Tracker::mark( array(
+				'summary'      => 'Plugins updated: ' . implode( ', ', $updated ),
+				'action_label' => 'Manage Plugins',
+				'admin_url'    => admin_url( 'plugins.php' ),
+			) );
+		}
+
+		$payload = array(
+			/* translators: 1: updated count, 2: total count */
+			'message' => sprintf( __( 'Updated %1$d of %2$d plugins.', 'vibe-ai' ), count( $updated ), count( $targets ) ),
+			'results' => $results,
+		);
+		if ( $skipped ) {
+			$payload['skipped'] = $skipped;
+		}
+		if ( count( $updated ) === count( $targets ) ) {
+			return $this->success_result( $payload );
+		}
+		return array(
+			'exit_code' => 1,
+			'stdout'    => wp_json_encode( $payload, JSON_PRETTY_PRINT ),
+			'stderr'    => __( 'Some plugin updates failed.', 'vibe-ai' ),
+		);
 	}
 
 	private function handle_option_update( $positional, $flags ) {

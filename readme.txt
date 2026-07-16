@@ -4,7 +4,7 @@ Tags: mcp, mcp-server, claude, chatgpt, ai-assistant
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.9.0
+Stable tag: 1.9.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -234,6 +234,11 @@ Yes. Connected sites are unlimited on every plan, including the free plan. Conne
 No. WPVibe lets you manage your WordPress site entirely through conversation with your AI assistant. No coding required for content management. Theme editing is also conversational, your AI writes the code for your WordPress theme.
 
 == Changelog ==
+
+= 1.9.1 =
+* Fix: uninstalling a plugin, updating a plugin, or deleting a theme through WPVibe no longer fails with a 500 error. These commands ran WordPress's own delete and upgrade functions without first loading wp-admin's filesystem bootstrap, which wp-admin pre-loads but WPVibe's REST context does not. All file-modifying commands now load it up front.
+* New: update several plugins at once. `plugin update` now accepts multiple slugs or `--all` (with `--exclude` and `--dry-run`), previews the full list before you confirm, and reports a per-plugin result. WPVibe itself is skipped automatically, since it cannot replace its own files over its own connection.
+* Fix: Google Site Kit (and other plugins that read the logged-in user early) now see the correct user on WPVibe requests. WordPress resolves Application Password logins later than plugins that initialize on init, so Site Kit read an empty Google authorization and rejected every Analytics, Search Console, and PageSpeed request with missing_required_scopes. WPVibe now tells WordPress that REST requests are API requests from the start, so the login resolves before those plugins load.
 
 = 1.9.0 =
 * New: WPVibe dashboard widget. Your wp-admin Dashboard now shows whether the site is connected, the last few changes your AI made, and a short list of cookbook recipes matched to the plugins you actually run, each with a copy-ready prompt. Not connected yet? The widget gives you the one-line prompt that connects your site.

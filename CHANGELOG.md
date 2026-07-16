@@ -2,6 +2,12 @@
 
 All notable changes to the WPVibe WordPress plugin *(WordPress.org slug: `vibe-ai`)*. The canonical source for WordPress.org's update API is `readme.txt`; this file mirrors the same information in markdown for GitHub readers.
 
+## [1.9.1] - 2026-07-16
+
+* Fix: uninstalling a plugin, updating a plugin, or deleting a theme through WPVibe no longer fails with a 500 error. These commands ran WordPress's own delete and upgrade functions without first loading wp-admin's filesystem bootstrap, which wp-admin pre-loads but WPVibe's REST context does not. All file-modifying commands now load it up front. Reported and diagnosed by Nicholas Kimuli ([#2](https://github.com/awesomemotive/wpvibe-ai-mcp/issues/2), [#3](https://github.com/awesomemotive/wpvibe-ai-mcp/pull/3)).
+* New: update several plugins at once. `plugin update` now accepts multiple slugs or `--all` (with `--exclude` and `--dry-run`), previews the full list before you confirm, and reports a per-plugin result. WPVibe itself is skipped automatically, since it cannot replace its own files over its own connection.
+* Fix: Google Site Kit (and other plugins that read the logged-in user early) now see the correct user on WPVibe requests. WordPress resolves Application Password logins later than plugins that initialize on init, so Site Kit read an empty Google authorization and rejected every Analytics, Search Console, and PageSpeed request with missing_required_scopes. WPVibe now tells WordPress that REST requests are API requests from the start, so the login resolves before those plugins load.
+
 ## [1.9.0] - 2026-07-14
 
 * New: WPVibe dashboard widget. Your wp-admin Dashboard now shows whether the site is connected, the last few changes your AI made, and a short list of cookbook recipes matched to the plugins you actually run, each with a copy-ready prompt. Not connected yet? The widget gives you the one-line prompt that connects your site.
