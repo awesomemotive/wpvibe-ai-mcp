@@ -11,9 +11,11 @@ defined( 'ABSPATH' ) || exit;
 
 class WPVibe_Change_Tracker {
 
-	const TRANSIENT_KEY = 'wpvibe_last_change';
-	const TTL           = 600; // 10 minutes
-	const MAX_ENTRIES   = 50;
+	const TRANSIENT_KEY   = 'wpvibe_last_change';
+	const TTL             = 600; // 10 minutes
+	const MAX_ENTRIES     = 50;
+	const ACTIVITY_OPTION = 'wpvibe_recent_activity';
+	const ACTIVITY_MAX    = 10;
 
 	/**
 	 * Record a change.
@@ -73,6 +75,35 @@ class WPVibe_Change_Tracker {
 		}
 
 		set_transient( self::TRANSIENT_KEY, $changes, self::TTL );
+
+		self::record_activity( $entry );
+	}
+
+	/**
+	 * Persistent sibling of the live-reload ring buffer, feeding the dashboard
+	 * widget's "Recent activity" list. The audit log is not that feed: it
+	 * records destructive ops only, so it reads empty for healthy sites.
+	 */
+	private static function record_activity( $entry ) {
+		if ( '' === $entry['summary'] ) {
+			return;
+		}
+
+		$activity = get_option( self::ACTIVITY_OPTION, array() );
+		if ( ! is_array( $activity ) ) {
+			$activity = array();
+		}
+
+		$activity[] = array(
+			'ts'      => time(),
+			'summary' => $entry['summary'],
+			'url'     => '' !== $entry['action']['admin_url'] ? $entry['action']['admin_url'] : $entry['action']['url'],
+		);
+		if ( count( $activity ) > self::ACTIVITY_MAX ) {
+			$activity = array_slice( $activity, -self::ACTIVITY_MAX );
+		}
+
+		update_option( self::ACTIVITY_OPTION, $activity, false );
 	}
 
 	/**
