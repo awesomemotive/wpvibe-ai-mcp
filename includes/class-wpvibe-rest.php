@@ -912,7 +912,7 @@ class WPVibe_REST {
 	 * MCP to compare WPVIBE_VERSION strings — flags are forward-compatible.
 	 */
 	public static function feature_flags() {
-		return array( 'content_edit', 'content_search', 'code_snippet' );
+		return array( 'content_edit', 'content_search', 'code_snippet', 'beaver_save' );
 	}
 
 	public function get_site_info() {

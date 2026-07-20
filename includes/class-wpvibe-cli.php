@@ -108,6 +108,7 @@ class WPVibe_CLI {
 		'post update'          => array( 'tier' => 'write', 'cap' => 'edit_posts' ),
 		'post delete'          => array( 'tier' => 'write', 'cap' => 'delete_posts', 'bulk' => array( 'label' => 'post' ) ),
 		'post meta update'     => array( 'tier' => 'write', 'cap' => 'edit_posts' ),
+		'post meta add'        => array( 'tier' => 'write', 'cap' => 'edit_posts' ),
 		'post meta delete'     => array( 'tier' => 'write', 'cap' => 'edit_posts' ),
 		'post term set'        => array( 'tier' => 'write', 'cap' => 'edit_posts' ),
 		'post term add'        => array( 'tier' => 'write', 'cap' => 'edit_posts' ),
@@ -232,6 +233,7 @@ class WPVibe_CLI {
 		'post meta get'     => 'handle_post_meta_get',
 		'post meta list'    => 'handle_post_meta_get',
 		'post meta update'  => 'handle_post_meta_update',
+		'post meta add'     => 'handle_post_meta_add',
 		'post meta delete'  => 'handle_post_meta_delete',
 		'post term set'     => 'handle_post_term_set',
 		'post term add'     => 'handle_post_term_add',
@@ -380,8 +382,9 @@ class WPVibe_CLI {
 		'post create'             => 'post create --post_title=<title> [--post_content=<content>] [--post_content_base64=<b64>] [--post_status=<status>] [--post_type=<type>] [--post_date=<Y-m-d H:i:s>] (use base64 when content mixes single AND double quotes — plain --post_content silently drops colliding quotes)',
 		'post update'             => 'post update <id> [<id>...] [--post_title=<title>] [--post_content=<content>] [--post_content_base64=<b64>] [--post_status=<status>] (use base64 when content mixes single AND double quotes)',
 		'post delete'             => 'post delete <id> [<id>...] [--force]',
-		'post meta update'        => 'post meta update <id> <key> <value> [--force]',
-		'post meta delete'        => 'post meta delete <id> <key> [--force]',
+		'post meta update'        => 'post meta update <id> <key> <value> [--force] (replaces all rows of the key)',
+		'post meta add'           => 'post meta add <id> <key> <value> [--force] (appends a row; use for multi-value metas)',
+		'post meta delete'        => 'post meta delete <id> <key> [<value>] [--force] (with <value>: removes only the matching row)',
 		'cache flush'             => 'cache flush',
 		'cache purge'             => 'cache purge [--url=<url>[,<url>...]] [--skip=<target>[,...]] (detects the installed cache plugin and purges it, plus the object cache; --url purges just those URLs on engines with a URL API, others flush fully; --skip omits named targets, e.g. cloudflare,object)',
 		'litespeed-purge'         => 'litespeed-purge [all] (alias of cache purge, scoped to LiteSpeed Cache)',
@@ -3019,6 +3022,54 @@ class WPVibe_CLI {
 		return $this->success_result( array( 'message' => sprintf( __( 'Updated meta \'%1$s\' on post #%2$d.', 'vibe-ai' ), $key, $post_id ) ) );
 	}
 
+	private function handle_post_meta_add( $positional, $flags ) {
+		if ( count( $positional ) < 3 ) {
+			return $this->error_result( __( 'Usage: post meta add <post_id> <key> <value>', 'vibe-ai' ) );
+		}
+
+		$post_id = (int) $positional[0];
+		$post    = get_post( $post_id );
+		if ( ! $post ) {
+			/* translators: %s: post ID */
+			return $this->error_result( sprintf( __( 'Post %s not found.', 'vibe-ai' ), $positional[0] ) );
+		}
+		if ( 'wpcode' === $post->post_type ) {
+			return $this->wpcode_write_refusal();
+		}
+
+		$key = $positional[1];
+		if ( empty( $flags['force'] ) && is_protected_meta( $key, 'post' ) ) {
+			return $this->error_result(
+				sprintf(
+					/* translators: %s: meta key */
+					__( 'Meta key \'%s\' is a protected/internal key. Use --force to override.', 'vibe-ai' ),
+					$key
+				)
+			);
+		}
+
+		$cap_check = $this->check_post_caps( $post->post_type, 'update', $post_id );
+		if ( is_wp_error( $cap_check ) ) {
+			return $cap_check;
+		}
+
+		$value   = $positional[2];
+		$decoded = json_decode( $value, true );
+		if ( null !== $decoded ) {
+			$value = $decoded;
+		}
+
+		add_post_meta( $post_id, $key, $value );
+
+		WPVibe_Change_Tracker::mark( array(
+			'summary'      => "Post meta added: #{$post_id} → {$key}",
+			'action_label' => 'Refresh',
+		) );
+
+		/* translators: 1: meta key, 2: post ID */
+		return $this->success_result( array( 'message' => sprintf( __( 'Added meta \'%1$s\' on post #%2$d.', 'vibe-ai' ), $key, $post_id ) ) );
+	}
+
 	private function handle_post_meta_delete( $positional, $flags ) {
 		if ( count( $positional ) < 2 ) {
 			return $this->error_result( __( 'Usage: post meta delete <post_id> <key>', 'vibe-ai' ) );
@@ -3050,7 +3101,9 @@ class WPVibe_CLI {
 			return $cap_check;
 		}
 
-		delete_post_meta( $post_id, $key );
+		// Optional third positional = meta value: delete only the matching row of a multi-value meta.
+		$value = isset( $positional[2] ) ? $positional[2] : '';
+		delete_post_meta( $post_id, $key, $value );
 
 		WPVibe_Change_Tracker::mark( array(
 			'summary'      => "Post meta deleted: #{$post_id} → {$key}",
