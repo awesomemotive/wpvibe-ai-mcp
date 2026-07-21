@@ -33,17 +33,7 @@ class WPVibe_Post_Sidebar {
 	}
 
 	private function __construct() {
-		add_filter( 'extra_theme_headers', array( $this, 'register_theme_header' ) );
-		add_action( 'add_meta_boxes',      array( $this, 'maybe_register_meta_box' ) );
-	}
-
-	/**
-	 * Register the "WPVibe" theme header so wp_get_theme()->get('WPVibe')
-	 * surfaces whatever the theme's style.css declares.
-	 */
-	public function register_theme_header( $headers ) {
-		$headers['WPVibe'] = 'WPVibe';
-		return $headers;
+		add_action( 'add_meta_boxes', array( $this, 'maybe_register_meta_box' ) );
 	}
 
 	/**

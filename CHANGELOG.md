@@ -2,6 +2,10 @@
 
 All notable changes to the WPVibe WordPress plugin *(WordPress.org slug: `vibe-ai`)*. The canonical source for WordPress.org's update API is `readme.txt`; this file mirrors the same information in markdown for GitHub readers.
 
+## [1.10.1] - 2026-07-21
+
+* Fix: `site_info` now reports `wpvibe_authored: true` for themes that declare the `WPVibe: yes` header in style.css. The `extra_theme_headers` filter that lets `wp_get_theme()` surface the custom header was registered by an admin-only class, so REST requests (which are never `is_admin()`) never saw the header and every theme reported `wpvibe_authored: false`. The filter now registers at plugin file scope on every request.
+
 ## [1.10.0] - 2026-07-20
 
 * New: Beaver Builder support. Your AI can now build and edit real Beaver Builder pages, landing pages, and layouts. The result is a native Beaver Builder layout: open it in the builder and every row, column, and module is there and individually editable, exactly as if you built it by hand. Works with both the free Beaver Builder (Lite) and the paid plugin.
