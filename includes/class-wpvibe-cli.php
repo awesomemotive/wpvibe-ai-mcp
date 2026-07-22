@@ -666,16 +666,36 @@ class WPVibe_CLI {
 			return null;
 		}
 
+		// Enabling white label hides every WPVibe surface in wp-admin, including
+		// the Approval Log. A prompt-injected assistant must not be able to
+		// conceal the plugin (and its own audit trail) without a human signing
+		// off. Disabling stays approval-free so recovery via AI is easy.
+		if ( in_array( $command_key, array( 'option update', 'option add' ), true )
+			&& class_exists( 'WPVibe_White_Label' )
+			&& WPVibe_White_Label::OPTION === ( $positional[0] ?? '' )
+			&& WPVibe_White_Label::truthy( $positional[1] ?? '' ) ) {
+			return array(
+				'operation' => 'white_label_enable',
+				'reason'    => __( 'Hides every WPVibe surface in this WordPress dashboard for ALL users: admin menu, dashboard widget, Plugins list entry, editor sidebar, and the Approval Log. The site stays fully manageable through AI, and WordPress auto-updates are switched on for the plugin so it stays current while hidden. It unhides automatically if the site is disconnected for 30 days.', 'vibe-ai' ),
+				'dry_run'   => array(
+					'command' => 'wp option update ' . WPVibe_White_Label::OPTION . ' 1',
+					'note'    => __( 'To undo later: set the option to 0 (no approval needed) or delete it via WP-CLI.', 'vibe-ai' ),
+				),
+			);
+		}
+
 		// Options have no trash: deleting one permanently destroys whatever
 		// configuration lived in it. AI temp state (wpvibe_task_*) and
 		// transient rows stay approval-free so the hygiene cleanup loop
 		// doesn't drown the user; one bypass approval covers option delete:*.
 		if ( 'option delete' === $command_key ) {
 			$key = $positional[0] ?? '';
+			// Deleting the white-label option UNhides the plugin — that's recovery, not destruction.
 			if ( '' === $key
 				|| 0 === strpos( $key, 'wpvibe_task_' )
 				|| 0 === strpos( $key, '_transient_' )
-				|| 0 === strpos( $key, '_site_transient_' ) ) {
+				|| 0 === strpos( $key, '_site_transient_' )
+				|| ( class_exists( 'WPVibe_White_Label' ) && WPVibe_White_Label::OPTION === $key ) ) {
 				return null;
 			}
 			return array(

@@ -24,15 +24,29 @@ class WPVibe_Content_Ops {
 	// curly quotes / sanitized tokens that edit_file gets MCP-side.
 	// ------------------------------------------------------------------
 
-	/** Curly quotes → straight ASCII (UTF-8 byte sequences). */
-	private static function normalize_quotes( $str ) {
-		return strtr( $str, array(
-			"\xE2\x80\x98" => "'",
-			"\xE2\x80\x99" => "'",
-			"\xE2\x80\x9C" => '"',
-			"\xE2\x80\x9D" => '"',
+	const LEFT_SINGLE  = "\xE2\x80\x98";
+	const RIGHT_SINGLE = "\xE2\x80\x99";
+	const LEFT_DOUBLE  = "\xE2\x80\x9C";
+	const RIGHT_DOUBLE = "\xE2\x80\x9D";
+
+	/**
+	 * preg_quote()d literal where every quote character, straight or curly,
+	 * matches all of its equivalents — texturized prose stores curly quotes
+	 * while the model usually sends straight ones, and vice versa.
+	 */
+	private static function quote_lenient_pattern( $str ) {
+		$single = "(?:'|" . self::LEFT_SINGLE . '|' . self::RIGHT_SINGLE . ')';
+		$double = '(?:"|' . self::LEFT_DOUBLE . '|' . self::RIGHT_DOUBLE . ')';
+		return strtr( preg_quote( $str, '/' ), array(
+			"'"                => $single,
+			'"'                => $double,
+			self::LEFT_SINGLE  => $single,
+			self::RIGHT_SINGLE => $single,
+			self::LEFT_DOUBLE  => $double,
+			self::RIGHT_DOUBLE => $double,
 		) );
 	}
+
 
 	/** Reverse the XML-token sanitization Claude's API applies to its own output. */
 	private static function desanitize( $str ) {
@@ -71,9 +85,12 @@ class WPVibe_Content_Ops {
 	 * Apply the match-once str_replace. Returns the updated string or a WP_Error
 	 * (empty_old / no_change / no_match / multiple_matches / not_text).
 	 *
-	 * old/new are normalized the same way edit_file normalizes them MCP-side;
-	 * $current (the raw DB value) is matched verbatim — we never rewrite the
-	 * stored value's own quote style, only the span being replaced.
+	 * old/new are desanitized the same way edit_file desanitizes them MCP-side.
+	 * Matching is byte-exact first, then quote-lenient (straight and curly
+	 * quotes match interchangeably) — texturized prose stores curly quotes the
+	 * model rarely reproduces byte-for-byte. new_content is written verbatim;
+	 * wptexturize re-curls straight quotes at render time, so display
+	 * typography stays consistent without rewriting what was sent.
 	 *
 	 * @param mixed  $current     Current stored value.
 	 * @param string $old_content Exact text to find.
@@ -89,8 +106,8 @@ class WPVibe_Content_Ops {
 			return new WP_Error( 'not_text', __( 'Stored value is not editable as text (it is an array or object). Edit it with rest_api or wp-cli instead.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 422 ) ) );
 		}
 
-		$old = self::normalize_quotes( self::desanitize( $old_content ) );
-		$new = self::strip_trailing_whitespace( self::normalize_quotes( self::desanitize( $new_content ) ) );
+		$old = self::desanitize( $old_content );
+		$new = self::strip_trailing_whitespace( self::desanitize( $new_content ) );
 
 		if ( '' === $old ) {
 			return new WP_Error( 'empty_old', __( 'old_content cannot be empty.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
@@ -99,10 +116,15 @@ class WPVibe_Content_Ops {
 			return new WP_Error( 'no_change', __( 'old_content and new_content are identical — nothing to do.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
 		}
 
+		// Callback (not a replacement string) so $ and \ in new_content are literal.
+		$insert_cb = static function () use ( $new ) {
+			return $new;
+		};
+
 		// Whole-word matching uses a fully-escaped literal between \b anchors, so
 		// there are no user-controlled quantifiers/alternation: ReDoS-safe.
 		if ( $whole_word ) {
-			$pattern = '/\b' . preg_quote( $old, '/' ) . '\b/u';
+			$pattern = '/\b' . self::quote_lenient_pattern( $old ) . '\b/u';
 			$count   = preg_match_all( $pattern, $current );
 			if ( false === $count ) {
 				return new WP_Error( 'match_failed', __( 'Whole-word match failed (the text may not be valid UTF-8). Try without whole_word.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422 ) ) );
@@ -114,15 +136,35 @@ class WPVibe_Content_Ops {
 				/* translators: %d: number of matching locations */
 				return new WP_Error( 'multiple_matches', sprintf( __( 'old_content matches %d whole-word locations. Add surrounding context to target one, or set replace_all=true to change all of them.', 'vibe-ai' ), $count ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422 ) ) );
 			}
-			// Callback (not a replacement string) so $ and \ in new_content are literal.
-			$updated = preg_replace_callback( $pattern, static function () use ( $new ) { return $new; }, $current, $replace_all ? -1 : 1, $replaced );
+			$updated = preg_replace_callback( $pattern, $insert_cb, $current, $replace_all ? -1 : 1, $replaced );
 			if ( null === $updated ) {
 				return new WP_Error( 'replace_failed', __( 'Replacement failed (PCRE limit or invalid encoding).', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422 ) ) );
 			}
 			return $updated;
 		}
 
-		$count = substr_count( $current, $old );
+		// Byte-exact first: with mixed quote styles in the value, an exact
+		// single match wins before leniency can call it ambiguous.
+		$exact = substr_count( $current, $old );
+		if ( ! $replace_all && 1 === $exact ) {
+			$replaced = 1;
+			return str_replace( $old, $new, $current );
+		}
+		if ( ! $replace_all && $exact > 1 ) {
+			/* translators: %d: number of matching locations */
+			return new WP_Error( 'multiple_matches', sprintf( __( 'old_content matches %d locations. Add surrounding context to target one, or set replace_all=true to change all of them.', 'vibe-ai' ), $exact ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422 ) ) );
+		}
+
+		$pattern = '/' . self::quote_lenient_pattern( $old ) . '/u';
+		$count   = preg_match_all( $pattern, $current );
+		if ( false === $count ) {
+			// Stored value is not valid UTF-8; only byte-exact matching is possible.
+			if ( 0 === $exact ) {
+				return new WP_Error( 'no_match', __( 'old_content not found. Use content/search to locate the exact current text, then retry.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422 ) ) );
+			}
+			$replaced = $exact;
+			return str_replace( $old, $new, $current );
+		}
 		if ( 0 === $count ) {
 			return new WP_Error( 'no_match', __( 'old_content not found. Use content/search to locate the exact current text, then retry.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422 ) ) );
 		}
@@ -131,8 +173,11 @@ class WPVibe_Content_Ops {
 			return new WP_Error( 'multiple_matches', sprintf( __( 'old_content matches %d locations. Add surrounding context to target one, or set replace_all=true to change all of them.', 'vibe-ai' ), $count ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422 ) ) );
 		}
 
-		$replaced = $replace_all ? $count : 1;
-		return str_replace( $old, $new, $current );
+		$updated = preg_replace_callback( $pattern, $insert_cb, $current, $replace_all ? -1 : 1, $replaced );
+		if ( null === $updated ) {
+			return new WP_Error( 'replace_failed', __( 'Replacement failed (PCRE limit or invalid encoding).', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422 ) ) );
+		}
+		return $updated;
 	}
 
 	/**

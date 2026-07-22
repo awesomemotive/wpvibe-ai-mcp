@@ -66,9 +66,12 @@ class WPVibe_Settings {
 			return;
 		}
 
+		// White label keeps this page (clients edit real site content here) but
+		// drops the branding from the menu label and title.
+		$hidden = WPVibe_White_Label::is_hidden();
 		add_options_page(
-			__( 'WPVibe Settings', 'vibe-ai' ),
-			__( 'WPVibe', 'vibe-ai' ),
+			$hidden ? __( 'Site Settings', 'vibe-ai' ) : __( 'WPVibe Settings', 'vibe-ai' ),
+			$hidden ? __( 'Site Settings', 'vibe-ai' ) : __( 'WPVibe', 'vibe-ai' ),
 			'manage_options',
 			self::PAGE_SLUG,
 			array( $this, 'render_page' )
@@ -81,7 +84,7 @@ class WPVibe_Settings {
 		}
 		?>
 		<div class="wrap">
-			<h1><?php esc_html_e( 'WPVibe Settings', 'vibe-ai' ); ?></h1>
+			<h1><?php WPVibe_White_Label::is_hidden() ? esc_html_e( 'Site Settings', 'vibe-ai' ) : esc_html_e( 'WPVibe Settings', 'vibe-ai' ); ?></h1>
 			<?php // WP core auto-renders settings_errors() above the heading for pages under Settings; calling it here too caused a duplicate "Settings saved" notice. ?>
 			<form action="options.php" method="post">
 				<?php

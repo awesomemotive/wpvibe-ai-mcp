@@ -21,6 +21,13 @@ delete_option( 'wpvibe_review_eligible_since' );
 delete_option( 'wpvibe_review_notice_status' );
 delete_option( 'wpvibe_audit_log_schema' );
 delete_option( 'wpvibe_recent_activity' );
+delete_option( 'wpvibe_hide_from_admins' );
+
+// Drop our auto-update enrollment (white label adds it) now that the plugin is gone.
+$wpvibe_auto = get_option( 'auto_update_plugins' );
+if ( is_array( $wpvibe_auto ) && in_array( 'vibe-ai/vibe-ai.php', $wpvibe_auto, true ) ) {
+	update_option( 'auto_update_plugins', array_values( array_diff( $wpvibe_auto, array( 'vibe-ai/vibe-ai.php' ) ) ) );
+}
 
 // Drop the audit log table created by class-wpvibe-audit-log.php.
 global $wpdb;

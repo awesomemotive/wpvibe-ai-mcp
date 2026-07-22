@@ -22,6 +22,7 @@ class WPVibe_Admin {
 		add_action( 'admin_menu', array( $this, 'add_menu' ) );
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_assets' ) );
 		add_action( 'admin_init', array( $this, 'maybe_redirect_after_activation' ) );
+		add_action( 'admin_post_wpvibe_white_label', array( $this, 'handle_white_label_save' ) );
 		register_activation_hook( WPVIBE_PLUGIN_DIR . 'vibe-ai.php', array( $this, 'on_activate' ) );
 	}
 
@@ -41,6 +42,10 @@ class WPVibe_Admin {
 		}
 		delete_transient( 'wpvibe_activation_redirect' );
 
+		if ( WPVibe_White_Label::is_hidden() ) {
+			return;
+		}
+
 		// Don't redirect on bulk activate or network admin.
 		if ( wp_doing_ajax() || is_network_admin() || isset( $_GET['activate-multi'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification
 			return;
@@ -51,9 +56,31 @@ class WPVibe_Admin {
 	}
 
 	/**
+	 * Enable white label mode from the admin page. Enable-only: once hidden
+	 * this page no longer exists, so disabling happens via the AI or WP-CLI.
+	 */
+	public function handle_white_label_save() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'You do not have permission to do this.', 'vibe-ai' ), 403 );
+		}
+		check_admin_referer( 'wpvibe_white_label' );
+
+		if ( ! WPVibe_White_Label::site_is_connected() ) {
+			wp_die( esc_html__( 'White label mode requires an active WPVibe connection. Connect the site first.', 'vibe-ai' ), 400 );
+		}
+
+		update_option( WPVibe_White_Label::OPTION, 1 );
+		wp_safe_redirect( admin_url() );
+		exit;
+	}
+
+	/**
 	 * Register top-level admin menu.
 	 */
 	public function add_menu() {
+		if ( WPVibe_White_Label::is_hidden() ) {
+			return;
+		}
 		add_menu_page(
 			__( 'WPVibe', 'vibe-ai' ),
 			__( 'WPVibe', 'vibe-ai' ),
@@ -134,8 +161,7 @@ class WPVibe_Admin {
 	 * Connected = received an authenticated WPVibe request within the last 30 days.
 	 */
 	private function is_connected() {
-		$last_active = (int) get_option( 'wpvibe_last_active', 0 );
-		return $last_active > 0 && ( time() - $last_active ) < 30 * DAY_IN_SECONDS;
+		return WPVibe_White_Label::site_is_connected();
 	}
 
 	/**
@@ -260,6 +286,28 @@ class WPVibe_Admin {
 							<?php endif; ?>
 						</div>
 					</div>
+				</div>
+
+				<!-- White label -->
+				<div class="wpvibe-white-label">
+					<strong><?php esc_html_e( 'White label', 'vibe-ai' ); ?></strong>
+					<p><?php esc_html_e( 'Hide WPVibe everywhere in this WordPress dashboard: the admin menu, dashboard widget, Plugins list entry, and editor sidebar. For agencies managing this site for a client. The site stays connected and fully manageable through your AI.', 'vibe-ai' ); ?></p>
+					<p class="wpvibe-white-label-warning"><?php esc_html_e( 'Once hidden, this page is gone too. To bring WPVibe back, ask your AI to disable white label mode (or delete the wpvibe_hide_from_admins option via WP-CLI). If the site goes 30 days without WPVibe activity, the plugin reappears on its own. WordPress auto-updates are turned on for WPVibe so it stays current while hidden.', 'vibe-ai' ); ?></p>
+					<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+						<input type="hidden" name="action" value="wpvibe_white_label" />
+						<input type="hidden" name="enable" value="1" />
+						<?php wp_nonce_field( 'wpvibe_white_label' ); ?>
+						<?php if ( $connected ) : ?>
+							<button type="submit" class="wpvibe-btn wpvibe-btn--secondary" onclick="return confirm( '<?php echo esc_js( __( 'Hide WPVibe from this WordPress dashboard for all users?', 'vibe-ai' ) ); ?>' );">
+								<?php esc_html_e( 'Hide WPVibe from wp-admin', 'vibe-ai' ); ?>
+							</button>
+						<?php else : ?>
+							<button type="submit" class="wpvibe-btn wpvibe-btn--secondary" disabled>
+								<?php esc_html_e( 'Hide WPVibe from wp-admin', 'vibe-ai' ); ?>
+							</button>
+							<p class="wpvibe-white-label-hint"><?php esc_html_e( 'Available once the site is connected to WPVibe.', 'vibe-ai' ); ?></p>
+						<?php endif; ?>
+					</form>
 				</div>
 
 				<!-- Footer links -->

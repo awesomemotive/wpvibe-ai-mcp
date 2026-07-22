@@ -268,6 +268,56 @@
 	margin-top: 8px;
 }
 
+/* White label */
+.wpvibe-white-label {
+	margin: 40px 0 32px;
+	padding: 24px;
+	border: 1px solid rgba(0, 0, 0, 0.08);
+	border-radius: 12px;
+	text-align: left;
+}
+
+.wpvibe-white-label strong {
+	display: block;
+	font-size: 14px;
+	margin-bottom: 8px;
+}
+
+.wpvibe-white-label p {
+	font-size: 13px;
+	color: rgba(0, 0, 0, 0.6);
+	margin: 0 0 10px;
+}
+
+.wpvibe-white-label-warning {
+	color: rgba(0, 0, 0, 0.45) !important;
+	font-size: 12px !important;
+}
+
+.wpvibe-white-label-hint {
+	font-size: 12px !important;
+	color: rgba(0, 0, 0, 0.4) !important;
+	margin-top: 8px !important;
+}
+
+.wpvibe-btn--secondary {
+	background: #ffffff;
+	color: #0a0a0a;
+	border: 1px solid rgba(0, 0, 0, 0.2);
+	padding: 10px 24px;
+	font-size: 13px;
+}
+
+.wpvibe-btn--secondary:hover:not([disabled]),
+.wpvibe-btn--secondary:focus:not([disabled]) {
+	border-color: #0a0a0a;
+}
+
+.wpvibe-btn--secondary[disabled] {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
 /* Footer */
 .wpvibe-footer {
 	display: flex;

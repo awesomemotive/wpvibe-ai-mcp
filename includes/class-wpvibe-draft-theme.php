@@ -47,9 +47,10 @@ class WPVibe_Draft_Theme {
 		if ( $fs && $fs->exists( $style_path ) ) {
 			$style = $fs->get_contents( $style_path );
 			if ( false !== $style ) {
-				// Strip any pre-existing " (WPVibe Draft)" suffix so it doesn't accumulate across cycles.
-				$source_name = preg_replace( '/(\s*\(WPVibe Draft\))+$/', '', wp_get_theme( $active_slug )->get( 'Name' ) );
-				$style = preg_replace( '/^Theme Name:\s*.+$/m', 'Theme Name: ' . $source_name . ' (WPVibe Draft)', $style );
+				// Strip any pre-existing draft suffix so it doesn't accumulate across cycles.
+				$source_name = preg_replace( '/(\s*\((?:WPVibe )?Draft\))+$/', '', wp_get_theme( $active_slug )->get( 'Name' ) );
+				$suffix = WPVibe_White_Label::is_hidden() ? ' (Draft)' : ' (WPVibe Draft)';
+				$style = preg_replace( '/^Theme Name:\s*.+$/m', 'Theme Name: ' . $source_name . $suffix, $style );
 				$fs->put_contents( $style_path, $style, FS_CHMOD_FILE );
 			}
 		}
@@ -94,7 +95,7 @@ class WPVibe_Draft_Theme {
 		}
 
 		// Capture the clean original name BEFORE the live dir is overwritten; strips any accumulated draft suffix.
-		$original_name = preg_replace( '/(\s*\(WPVibe Draft\))+$/', '', wp_get_theme( $source_slug )->get( 'Name' ) );
+		$original_name = preg_replace( '/(\s*\((?:WPVibe )?Draft\))+$/', '', wp_get_theme( $source_slug )->get( 'Name' ) );
 
 		// Backup the current live theme. Each step must succeed before the
 		// next; if backup fails we abort BEFORE touching the live theme.

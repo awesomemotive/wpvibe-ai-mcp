@@ -102,7 +102,7 @@ class WPVibe_Review_Notice {
 	}
 
 	public function maybe_render_notice() {
-		if ( ! $this->should_show() ) {
+		if ( WPVibe_White_Label::is_hidden() || ! $this->should_show() ) {
 			return;
 		}
 

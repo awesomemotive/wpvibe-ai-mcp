@@ -37,14 +37,14 @@ class WPVibe_Dashboard_Widget {
 	}
 
 	public function register_widget() {
-		if ( ! current_user_can( 'manage_options' ) ) {
+		if ( ! current_user_can( 'manage_options' ) || WPVibe_White_Label::is_hidden() ) {
 			return;
 		}
 		wp_add_dashboard_widget( 'wpvibe_dashboard', __( 'WPVibe', 'vibe-ai' ), array( $this, 'render' ) );
 	}
 
 	public function enqueue_assets( $hook ) {
-		if ( 'index.php' !== $hook || ! current_user_can( 'manage_options' ) ) {
+		if ( 'index.php' !== $hook || ! current_user_can( 'manage_options' ) || WPVibe_White_Label::is_hidden() ) {
 			return;
 		}
 

@@ -4,7 +4,7 @@ Tags: mcp, mcp-server, claude, chatgpt, ai-assistant
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.10.0
+Stable tag: 1.11.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -96,7 +96,7 @@ Whether you are a blogger managing content, a developer building WordPress theme
 
 <strong>WordPress Developers and Designers</strong> browse theme files, analyze code structure, and edit WordPress themes using a safe draft-preview-publish workflow. Build classic WordPress themes from scratch with AI-powered design directly from Cursor, Claude Code, or your favorite MCP client.
 
-<strong>Agencies and WordPress Site Managers</strong> connect client WordPress sites and manage content at scale. Use the WordPress Abilities API over MCP to interact with installed plugins. Automate routine WordPress tasks with whichever AI assistant fits the job.
+<strong>Agencies and WordPress Site Managers</strong> connect client WordPress sites and manage content at scale. Use the WordPress Abilities API over MCP to interact with installed plugins. Automate routine WordPress tasks with whichever AI assistant fits the job. White label mode (free on every plan) hides WPVibe from a client site's WordPress dashboard entirely, so your clients see a clean wp-admin while you manage the site through your AI.
 
 = Full WPVibe MCP Server Feature List =
 
@@ -234,6 +234,11 @@ Yes. Connected sites are unlimited on every plan, including the free plan. Conne
 No. WPVibe lets you manage your WordPress site entirely through conversation with your AI assistant. No coding required for content management. Theme editing is also conversational, your AI writes the code for your WordPress theme.
 
 == Changelog ==
+
+= 1.11.0 =
+* New: White label mode for agencies. One click on the WPVibe admin page (or one ask to your AI) hides WPVibe everywhere in the WordPress dashboard: the admin menu, dashboard widget, Plugins list entry, and editor sidebar. The site stays fully manageable through your AI. WordPress auto-updates keep the plugin current while hidden, and if the site goes 30 days without WPVibe activity the plugin reappears on its own, so it can never be lost.
+* Fix: Content edits now match straight and curly quotes interchangeably. WordPress converts quotes to the curly kind when it saves, which could make an edit fail with "no match" on text your AI had just written.
+* Fix: The WPVibe theme header is now registered on every request, so site_info correctly detects AI-built themes over REST. Props to Nick Kimuli for finding it and opening the fix on our GitHub mirror.
 
 = 1.10.0 =
 * New: Beaver Builder support. Your AI can now build and edit real Beaver Builder pages, landing pages, and layouts. The result is a native Beaver Builder layout: open it in the builder and every row, column, and module is there and individually editable, exactly as if you built it by hand. Works with both the free Beaver Builder (Lite) and the paid plugin.
