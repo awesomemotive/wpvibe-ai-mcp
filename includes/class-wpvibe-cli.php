@@ -374,8 +374,8 @@ class WPVibe_CLI {
 		'plugin install'          => 'plugin install <slug> [--version=<version>] [--activate]',
 		'plugin update'           => 'plugin update <slug>... | --all [--exclude=<slugs>] [--dry-run]',
 		'plugin uninstall'        => 'plugin uninstall <slug> [<slug>...]',
-		'option update'           => 'option update <key> <value>',
-		'option add'              => 'option add <key> <value> [--autoload=<yes|no>]',
+		'option update'           => 'option update <key> <value> [--format=json|plaintext] (values are plain strings; pass --format=json for arrays/objects)',
+		'option add'              => 'option add <key> <value> [--format=json|plaintext] [--autoload=<yes|no>]',
 		'option delete'           => 'option delete <key>',
 		'transient delete'        => 'transient delete <name> | --all | --expired',
 		'user delete'             => 'user delete <id|login|email> [<id>...] [--reassign=<user>]',
@@ -396,7 +396,7 @@ class WPVibe_CLI {
 		'w3-total-cache flush'    => 'w3-total-cache flush [all] (alias of cache purge, scoped to W3 Total Cache)',
 		'breeze purge'            => 'breeze purge (alias of cache purge, scoped to Breeze)',
 		'config get'              => 'config get <constant> (credentials/keys/salts are blocked; table_prefix supported)',
-		'option patch'            => 'option patch <insert|update|delete> <option> <key-path>... [<value>]',
+		'option patch'            => 'option patch <insert|update|delete> <option> <key-path>... [<value>] [--format=json|plaintext]',
 		'rewrite flush'           => 'rewrite flush',
 		'cron event run'          => 'cron event run <hook> [<hook>...]',
 		'cron event delete'       => 'cron event delete <hook> [<hook>...]',
@@ -1347,10 +1347,19 @@ class WPVibe_CLI {
 			/* translators: %s: option key */
 			return $this->error_result( sprintf( __( 'Option \'%s\' not found.', 'vibe-ai' ), $positional[0] ) );
 		}
+		$note = '';
+		if ( is_string( $value ) ) {
+			$trimmed = trim( $value );
+			if ( '' !== $trimmed && ( '[' === $trimmed[0] || '{' === $trimmed[0] ) && null !== json_decode( $trimmed, true ) ) {
+				$note = __( 'Note: this value is a STRING containing JSON text (a scalar), not a decoded array/object. The owning plugin decodes it itself. To modify it, edit the JSON text and write it back as a string: option update <key> <json-text> --format=plaintext.', 'vibe-ai' );
+			} elseif ( false !== strpos( $value, "\n" ) ) {
+				$note = __( 'Note: this value is ONE newline-delimited string (a scalar), not an array or list. To modify it, edit the string and write the whole string back with option update.', 'vibe-ai' );
+			}
+		}
 		return array(
 			'exit_code' => 0,
 			'stdout'    => is_scalar( $value ) ? (string) $value : wp_json_encode( $value, JSON_PRETTY_PRINT ),
-			'stderr'    => '',
+			'stderr'    => $note,
 		);
 	}
 
@@ -2412,9 +2421,38 @@ class WPVibe_CLI {
 		);
 	}
 
+	/**
+	 * WP-CLI parity: values are plain strings unless --format=json is passed.
+	 * Returns array( 'value' => mixed ) or array( 'error' => string ).
+	 */
+	private function parse_option_value( $raw, $flags, $key ) {
+		$raw    = (string) $raw;
+		$format = isset( $flags['format'] ) ? strtolower( (string) $flags['format'] ) : '';
+		if ( '' !== $format && ! in_array( $format, array( 'json', 'plaintext' ), true ) ) {
+			return array( 'error' => __( 'Unknown --format. Use --format=json for structured values or --format=plaintext for literal strings.', 'vibe-ai' ) );
+		}
+		if ( 'json' === $format ) {
+			$decoded = json_decode( $raw, true );
+			if ( null === $decoded && 'null' !== trim( $raw ) ) {
+				return array( 'error' => __( 'Value is not valid JSON. Fix the JSON, or drop --format=json to store the text as a plain string.', 'vibe-ai' ) );
+			}
+			return array( 'value' => $decoded );
+		}
+		if ( is_serialized( trim( $raw ) ) ) {
+			/* translators: %s: option key */
+			return array( 'error' => sprintf( __( 'Value for \'%s\' looks like a PHP-serialized string. WordPress serializes values automatically, so writing this would silently change the option\'s stored type and can fatally break the plugin that owns it. Read the option with `option get`, then write the structured value with --format=json (a JSON string like \'"a\\nb"\' stores a plain multi-line string).', 'vibe-ai' ), $key ) );
+		}
+		$json = json_decode( $raw, true );
+		if ( 'plaintext' !== $format && is_array( $json ) ) {
+			/* translators: %s: option key */
+			return array( 'error' => sprintf( __( 'Value for \'%s\' parses as a JSON array/object. To store a structured value, re-run with --format=json. To store this exact text as a plain string, re-run with --format=plaintext. (JSON is no longer decoded automatically: silent decoding corrupted options that store delimited strings, e.g. cache-plugin exclude lists.)', 'vibe-ai' ), $key ) );
+		}
+		return array( 'value' => $raw );
+	}
+
 	private function handle_option_update( $positional, $flags ) {
 		if ( count( $positional ) < 2 ) {
-			return $this->error_result( __( 'Usage: option update {key} {value}', 'vibe-ai' ) );
+			return $this->error_result( __( 'Usage: option update {key} {value} [--format=json|plaintext]', 'vibe-ai' ) );
 		}
 		$key   = $positional[0];
 
@@ -2428,17 +2466,33 @@ class WPVibe_CLI {
 			);
 		}
 
-		$value = $positional[1];
-		// Auto-decode JSON values.
-		$decoded = json_decode( $value, true );
-		if ( null !== $decoded ) {
-			$value = $decoded;
+		$parsed = $this->parse_option_value( $positional[1], $flags, $key );
+		if ( isset( $parsed['error'] ) ) {
+			return $this->error_result( $parsed['error'] );
+		}
+		$value = $parsed['value'];
+
+		// Type-shape guard: silently flipping an option between scalar and
+		// array/object corrupts the owning plugin (LiteSpeed newline lists,
+		// WP Fastest Cache serialized arrays) and can fatal the site.
+		$existing = get_option( $key, null );
+		if ( null !== $existing ) {
+			$existing_structured = is_array( $existing ) || is_object( $existing );
+			$new_structured      = is_array( $value ) || is_object( $value );
+			if ( $existing_structured && ! $new_structured ) {
+				/* translators: %s: option key */
+				return $this->error_result( sprintf( __( 'Option \'%s\' currently stores an array/object; writing a scalar would change its stored type and can fatally break the plugin that owns it. Pass the full structure with --format=json, use `option patch` to change one key, or `option delete` then `option add` if the type change is intentional.', 'vibe-ai' ), $key ) );
+			}
+			if ( ! $existing_structured && $new_structured ) {
+				/* translators: %s: option key */
+				return $this->error_result( sprintf( __( 'Option \'%s\' currently stores a scalar (often JSON text or a delimited string the owning plugin parses itself, e.g. cache-plugin settings); writing a decoded array would change its stored type and can break or fatal the owning plugin. Write the string form instead: option update with --format=plaintext stores the literal text, and --format=json \'"a\\nb"\' stores a plain multi-line string. Use `option delete` then `option add` only if the type change is intentional.', 'vibe-ai' ), $key ) );
+			}
 		}
 
 		// update_option returns false both when the write fails AND when the value
 		// is unchanged. Read back and compare to distinguish a real failure from a
 		// no-op. Mismatch = filter blocked it, DB rejected it, or a filter mutated
-		// the stored value. String-form compare: JSON auto-decode yields int/bool
+		// the stored value. String-form compare: --format=json yields int/bool
 		// while WP stores scalars as strings, and that type skew is not a failure.
 		update_option( $key, $value );
 		$stored = get_option( $key );
@@ -2476,11 +2530,11 @@ class WPVibe_CLI {
 			return $this->error_result( sprintf( __( 'Option \'%s\' already exists. Use option update to change it.', 'vibe-ai' ), $key ) );
 		}
 
-		$value = $positional[1];
-		$decoded = json_decode( $value, true );
-		if ( null !== $decoded ) {
-			$value = $decoded;
+		$parsed = $this->parse_option_value( $positional[1], $flags, $key );
+		if ( isset( $parsed['error'] ) ) {
+			return $this->error_result( $parsed['error'] );
 		}
+		$value = $parsed['value'];
 
 		$autoload = 'yes';
 		if ( isset( $flags['autoload'] ) ) {
@@ -3309,12 +3363,13 @@ class WPVibe_CLI {
 			if ( count( $rest ) < 2 ) {
 				return $this->error_result( __( 'Both a key path and a value are required. Usage: option patch <insert|update> <option> <key-path>... <value>', 'vibe-ai' ) );
 			}
-			$value   = array_pop( $rest );
-			$decoded = json_decode( $value, true );
-			if ( null !== $decoded ) {
-				$value = $decoded;
+			$raw    = array_pop( $rest );
+			$parsed = $this->parse_option_value( $raw, $flags, $key );
+			if ( isset( $parsed['error'] ) ) {
+				return $this->error_result( $parsed['error'] );
 			}
-			$path = $rest;
+			$value = $parsed['value'];
+			$path  = $rest;
 		}
 		if ( empty( $path ) ) {
 			return $this->error_result( __( 'Key path required.', 'vibe-ai' ) );

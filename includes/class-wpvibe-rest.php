@@ -175,6 +175,47 @@ class WPVibe_REST {
 	private function __construct() {
 		add_action( 'rest_api_init', array( $this, 'register_routes' ) );
 		add_filter( 'rest_post_dispatch', array( $this, 'track_rest_changes' ), 10, 3 );
+		add_filter( 'rest_pre_dispatch', array( $this, 'decode_armored_params' ), 10, 3 );
+	}
+
+	/**
+	 * Params the MCP Worker may base64-armor to get code-bearing bodies past
+	 * host WAFs that regex-block them (Hostinger hCDN, ModSecurity). Decoding
+	 * happens in rest_pre_dispatch, before validation, so every sanitizer,
+	 * capability check, and classifier downstream sees the same value a plain
+	 * request would have carried.
+	 */
+	private static $armorable_params = array( 'content', 'old_content', 'new_content', 'command', 'code' );
+
+	public function decode_armored_params( $result, $server, $request ) {
+		if ( null !== $result ) {
+			return $result;
+		}
+		$route = $request->get_route();
+		if ( ! is_string( $route ) || 0 !== strpos( $route, '/wpvibe/v1/' ) ) {
+			return $result;
+		}
+		$marker = $request->get_param( '_wpvibe_armor' );
+		if ( ! is_string( $marker ) || '' === $marker ) {
+			return $result;
+		}
+		foreach ( array_map( 'trim', explode( ',', $marker ) ) as $name ) {
+			if ( ! in_array( $name, self::$armorable_params, true ) ) {
+				/* translators: %s: parameter name */
+				return new WP_Error( 'bad_armor_param', sprintf( __( 'Parameter "%s" cannot be armor-encoded.', 'vibe-ai' ), $name ), array( 'status' => 400 ) );
+			}
+			$value = $request->get_param( $name );
+			if ( ! is_string( $value ) ) {
+				continue;
+			}
+			$decoded = base64_decode( $value, true );
+			if ( false === $decoded ) {
+				/* translators: %s: parameter name */
+				return new WP_Error( 'bad_base64', sprintf( __( 'Parameter "%s" is not valid base64. Armored params must be standard base64 (no URL-safe alphabet, no line breaks).', 'vibe-ai' ), $name ), array( 'status' => 400 ) );
+			}
+			$request->set_param( $name, $decoded );
+		}
+		return $result;
 	}
 
 	public function register_routes() {
@@ -912,7 +953,7 @@ class WPVibe_REST {
 	 * MCP to compare WPVIBE_VERSION strings — flags are forward-compatible.
 	 */
 	public static function feature_flags() {
-		return array( 'content_edit', 'content_search', 'code_snippet', 'beaver_save' );
+		return array( 'content_edit', 'content_search', 'code_snippet', 'beaver_save', 'armor' );
 	}
 
 	public function get_site_info() {

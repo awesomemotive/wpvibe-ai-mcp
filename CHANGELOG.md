@@ -2,6 +2,11 @@
 
 All notable changes to the WPVibe WordPress plugin *(WordPress.org slug: `vibe-ai`)*. The canonical source for WordPress.org's update API is `readme.txt`; this file mirrors the same information in markdown for GitHub readers.
 
+## [1.12.0] - 2026-07-23
+
+* Fix: safer settings edits. Option values are now treated as plain text unless your AI explicitly asks for JSON (matching the real WP-CLI), and WPVibe refuses any write that would silently change a setting's stored type, which could previously corrupt cache plugin settings or take a site offline. Reading an option now tells your AI when a value is one string that merely looks like a list.
+* Fix: theme and code edits no longer fail on hosts whose security firewall mistakes legitimate code for an attack. Some hosting firewalls inspect the content of save requests and block anything that looks like PHP or SQL, which made edits to files like functions.php fail intermittently with a 403 error. When that happens, WPVibe now automatically resends the same edit in an encoded form the firewall does not misread, and the plugin decodes it before any of its usual security checks run. Nothing changes about what gets saved or who is allowed to save it.
+
 ## [1.11.0] - 2026-07-22
 
 * New: White label mode for agencies. One click on the WPVibe admin page (or one ask to your AI) hides WPVibe everywhere in the WordPress dashboard: the admin menu, dashboard widget, Plugins list entry, and editor sidebar. The site stays fully manageable through your AI. WordPress auto-updates keep the plugin current while hidden, and if the site goes 30 days without WPVibe activity the plugin reappears on its own, so it can never be lost.
