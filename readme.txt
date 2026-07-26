@@ -1,18 +1,18 @@
-=== WPVibe - MCP Server for WordPress. Connect Claude, ChatGPT, Gemini & Cursor ===
+=== WPVibe - WordPress MCP Server. Connect Claude, ChatGPT & Any AI Agent via MCP ===
 Contributors: seedprod, smub
-Tags: mcp, mcp-server, claude, chatgpt, ai-assistant
+Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.12.0
+Stable tag: 1.13.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
-Secure MCP server for WordPress. Connect Claude, ChatGPT, Gemini, Cursor & any AI agent to manage content, edit themes & automate your site.
+Secure WordPress MCP server. Connect Claude, ChatGPT, Cursor & any AI agent via MCP to manage content, edit themes & automate your site.
 
 == Description ==
 
-Your WordPress site just became MCP-ready. [WPVibe](https://wpvibe.ai/?utm_source=wprepo&utm_medium=link&utm_campaign=liteplugin) is the Model Context Protocol server for WordPress, connecting your self-hosted site to any AI assistant that speaks MCP: Claude, ChatGPT, Gemini, Cursor, Windsurf, OpenCode, and more. No copy-pasting between tabs. No switching between your AI chat and wp-admin. Tell your AI what you want, and it happens on your live WordPress site.
+Your WordPress site just became MCP-ready. [WPVibe](https://wpvibe.ai/?utm_source=wprepo&utm_medium=link&utm_campaign=liteplugin) is the Model Context Protocol server for WordPress, connecting your self-hosted site to any AI assistant or AI agent that speaks MCP: Claude, ChatGPT, Cursor, Windsurf, OpenCode, and more. No copy-pasting between tabs. No switching between your AI chat and wp-admin. Tell your AI what you want, and it happens on your live WordPress site.
 
 https://www.youtube.com/watch?v=AsasOvrSWgI
 
@@ -40,9 +40,9 @@ WPVibe is the ChatGPT WordPress plugin that actually connects the two systems in
 
 Ask ChatGPT to turn a Google Doc into a WordPress blog post, find and tag every customer who downloaded a specific resource, update your About page in your own writing voice, or bulk-publish a content calendar. ChatGPT handles the language and strategy, WPVibe handles the WordPress REST API calls behind the scenes. There is also an official WPVibe connector in the ChatGPT Apps directory, so you can add it to ChatGPT in a couple of clicks.
 
-= Connect Cursor, Windsurf, and Every MCP Client =
+= Connect Cursor, Windsurf, and Every MCP-Compatible AI Agent =
 
-WPVibe is not locked to a single AI vendor. Cursor, Windsurf, OpenCode, Claude Code, ChatGPT, Claude, and any other AI client that supports the Model Context Protocol can connect through the same MCP server URL. One WordPress MCP server, every AI assistant, no integration rewrite when you switch tools.
+WPVibe is not locked to a single AI vendor. Cursor, Windsurf, OpenCode, Claude Code, ChatGPT, Claude, and any other AI agent that supports the Model Context Protocol can connect through the same MCP server URL. One WordPress MCP server, every AI assistant, no integration rewrite when you switch tools.
 
 For developers, this means Cursor can edit your WordPress theme files with context-aware suggestions, Claude Code can run WordPress tasks as part of an agentic workflow, and Windsurf can scaffold new WordPress templates. For content creators and agencies, this means whichever AI writes best for your brand can publish directly to your WordPress site through the WPVibe MCP bridge.
 
@@ -90,13 +90,13 @@ Connecting your WordPress site to an MCP server should take seconds. No applicat
 
 = WordPress MCP Server for Every Use Case =
 
-Whether you are a blogger managing content, a developer building WordPress themes, or an agency managing multiple client sites, WPVibe makes AI-powered WordPress management accessible through whichever MCP client you already use.
+Whether you are a blogger managing content, a developer building WordPress themes, or an agency managing multiple client sites, WPVibe makes AI-powered WordPress management and automation accessible through whichever MCP client you already use.
 
 <strong>Bloggers and Content Creators</strong> write and publish posts, manage media, organize categories and tags, and update WordPress site settings through conversation with Claude, ChatGPT, or any MCP assistant.
 
 <strong>WordPress Developers and Designers</strong> browse theme files, analyze code structure, and edit WordPress themes using a safe draft-preview-publish workflow. Build classic WordPress themes from scratch with AI-powered design directly from Cursor, Claude Code, or your favorite MCP client.
 
-<strong>Agencies and WordPress Site Managers</strong> connect client WordPress sites and manage content at scale. Use the WordPress Abilities API over MCP to interact with installed plugins. Automate routine WordPress tasks with whichever AI assistant fits the job. White label mode (free on every plan) hides WPVibe from a client site's WordPress dashboard entirely, so your clients see a clean wp-admin while you manage the site through your AI.
+<strong>Agencies and WordPress Site Managers</strong> connect client WordPress sites and manage content at scale. Use the WordPress Abilities API over MCP to interact with installed plugins. Automate routine WordPress tasks with whichever AI agent fits the job. White label mode (free on every plan) hides WPVibe from a client site's WordPress dashboard entirely, so your clients see a clean wp-admin while you manage the site through your AI.
 
 = Full WPVibe MCP Server Feature List =
 
@@ -111,7 +111,7 @@ Whether you are a blogger managing content, a developer building WordPress theme
 * WordPress Abilities API support - discover and execute plugin abilities on WordPress 6.9+ sites automatically
 * Connect Claude Desktop, Claude on the web, or Claude Code to WordPress via MCP
 * Connect ChatGPT's web app and desktop app to WordPress via MCP
-* Connect Cursor, Windsurf, OpenCode, and any other MCP-compatible AI client
+* Connect Cursor, Windsurf, OpenCode, and any other MCP-compatible AI agent
 * WordPress theme file browsing - list, search, and analyze theme file structure and code
 * AI WordPress theme editing with a draft-preview-publish workflow, safe sandboxed file operations, and PHP syntax validation
 * Classic WordPress theme builder - create new themes from scratch with AI-powered scaffolding
@@ -146,7 +146,7 @@ WPVibe is built by the team behind [SeedProd](https://www.seedprod.com/?utm_sour
 
 = Better Than Custom AI WordPress Integrations =
 
-If you have connected AI to your WordPress site before, you have probably dealt with custom API wrappers, one-off WordPress AI integrations, hand-rolled Custom GPTs, or copying content back and forth between Claude and your browser. WPVibe replaces all of that with a proper MCP server for WordPress, built on the Model Context Protocol, an open standard supported by Claude, ChatGPT, Gemini, Cursor, Windsurf, and a growing list of AI tools. Connect your WordPress site once and use it with any MCP client. No vendor lock-in, no custom code to maintain.
+If you have connected AI to your WordPress site before, you have probably dealt with custom API wrappers, one-off WordPress AI integrations, hand-rolled Custom GPTs, or copying content back and forth between Claude and your browser. WPVibe replaces all of that with a proper MCP server for WordPress, built on the Model Context Protocol, an open standard supported by Claude, ChatGPT, Cursor, Windsurf, and a growing list of AI tools. Connect your WordPress site once and use it with any MCP client. No vendor lock-in, no custom code to maintain.
 
 Unlike bundled-AI plugins (AI Engine, GetGenie, Bertha, AI Power, WPCode AI, and similar) that ship one model and one prompt style, WPVibe lets you bring your own AI and use whichever model reasons best for each task: Claude for long-form writing, ChatGPT for research, Cursor for theme editing, all through the same WordPress MCP server. Your data stays on your WordPress server, with no third-party servers processing your WordPress content.
 
@@ -163,7 +163,7 @@ This plugin is a product of SeedProd LLC. The product name is **WPVibe**, one wo
 
 1. Upload the `vibe-ai` folder to `/wp-content/plugins/`
 2. Activate the plugin through the 'Plugins' menu in WordPress
-3. Open the WPVibe menu in your WordPress admin and click the Connect button to view setup instructions for Claude, ChatGPT, Gemini, Cursor, and other MCP clients
+3. Open the WPVibe menu in your WordPress admin and click the Connect button to view setup instructions for Claude, ChatGPT, Cursor, and other MCP clients
 
 For detailed setup instructions, visit [wpvibe.ai/docs](https://wpvibe.ai/docs/?utm_source=wprepo&utm_medium=link&utm_campaign=liteplugin).
 
@@ -174,6 +174,12 @@ For detailed setup instructions, visit [wpvibe.ai/docs](https://wpvibe.ai/docs/?
 3. Upload images from your computer through a panel in the conversation, and your AI adds them to the WordPress media library.
 
 == Frequently Asked Questions ==
+
+= My host strips the Authorization header. Does WPVibe need an .htaccess change? =
+
+No, not from version 1.13.0 onward. Some servers, commonly Apache running PHP as CGI or FastCGI, do not pass the Authorization header to PHP unless CGIPassAuth is enabled. WordPress then treats every authenticated REST request as logged out. WPVibe sends the same credential under an X-WPVibe-Authorization header, which those servers do pass through, and the plugin restores it before WordPress authenticates. This mirrors what WordPress core already does in wp_populate_basic_auth_from_authorization_header(): it only runs when no credential arrived by any normal route, it validates the header format, and WordPress still checks the credential exactly as it always has, so nothing about who may do what changes.
+
+If you would rather it did not run, add `define( 'WPVIBE_DISABLE_AUTH_FALLBACK', true );` to wp-config.php, or return false from the `wpvibe_allow_auth_fallback` filter.
 
 = Is WPVibe free? Do I need another AI subscription? =
 
@@ -224,6 +230,10 @@ Yes. Connected sites are unlimited on every plan, including the free plan. Conne
 No. WPVibe lets you manage your WordPress site entirely through conversation with your AI assistant. No coding required for content management. Theme editing is also conversational, your AI writes the code for your WordPress theme.
 
 == Changelog ==
+
+= 1.13.0 =
+* Fix: WPVibe now works on hosts that strip the login header. On some servers, commonly Apache running PHP as CGI or FastCGI and some LiteSpeed setups, the web server removes the Authorization header before WordPress can read it. Every WPVibe request then arrived as a logged out visitor and failed with a permission error, even though the site was connected and the password was valid. WPVibe now sends the same credentials a second way that these servers pass through, and the plugin hands them back to WordPress before it checks who you are. Who is allowed to do what does not change, and sites that were already working are unaffected. To turn this off, define WPVIBE_DISABLE_AUTH_FALLBACK as true.
+* Improvement: permission errors now name the real cause. A request WordPress could not authenticate used to report a missing capability, which sent people off to reconnect with a different account when the actual problem was the server dropping the header, or Application Passwords being switched off. WPVibe now reports which of those it was, so the fix matches the problem.
 
 = 1.12.0 =
 * Fix: safer settings edits. Option values are now treated as plain text unless your AI explicitly asks for JSON (matching the real WP-CLI), and WPVibe refuses any write that would silently change a setting's stored type, which could previously corrupt cache plugin settings or take a site offline. Reading an option now tells your AI when a value is one string that merely looks like a list.

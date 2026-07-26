@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WPVibe – Connect Your Site to Claude, ChatGPT & AI Assistants
  * Description: Connect any AI assistant to your WordPress site. Manage content, edit themes, and automate site tasks with Claude, ChatGPT, Cursor & more via MCP.
- * Version: 1.12.0
+ * Version: 1.13.0
  * Author: SeedProd
  * Author URI: https://wpvibe.ai
  * License: GPL-2.0-or-later
@@ -14,13 +14,14 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WPVIBE_VERSION', '1.12.0' );
+define( 'WPVIBE_VERSION', '1.13.0' );
 define( 'WPVIBE_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'WPVIBE_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 define( 'WPVIBE_PLUGIN_BASENAME', plugin_basename( __FILE__ ) );
 
 // Core includes.
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-error-contract.php';
+require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-auth-fallback.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-white-label.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-rest.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-elementor.php';
@@ -98,6 +99,10 @@ function wpvibe_check_php_syntax( $source, $label = '' ) {
 	}
 	return true;
 }
+
+// Runs before the first determine_current_user so core sees the restored
+// credential; see the class for why this cannot weaken anything.
+WPVibe_Auth_Fallback::apply();
 
 // Registered at file scope so it precedes the first determine_current_user run.
 add_filter( 'application_password_is_api_request', array( 'WPVibe_REST', 'application_password_is_api_request' ) );
