@@ -367,6 +367,10 @@ class WPVibe_Content_Ops {
 				if ( '' === $name ) {
 					return new WP_Error( 'bad_option', __( 'option_name is required.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
 				}
+				$blocked = self::blocked_option_error( $name, false );
+				if ( $blocked ) {
+					return $blocked;
+				}
 				$sentinel = '__wpvibe_option_missing__';
 				$value    = get_option( $name, $sentinel );
 				if ( $sentinel === $value ) {
@@ -458,6 +462,10 @@ class WPVibe_Content_Ops {
 				return true;
 
 			case 'option':
+				$blocked = self::blocked_option_error( (string) $args['name'], true );
+				if ( $blocked ) {
+					return $blocked;
+				}
 				// update_option does NOT unslash — store the value verbatim.
 				$ok = update_option( (string) $args['name'], $updated );
 				if ( false === $ok && (string) get_option( (string) $args['name'] ) !== (string) $updated ) {
@@ -481,5 +489,35 @@ class WPVibe_Content_Ops {
 			default:
 				return (string) $type;
 		}
+	}
+
+	/**
+	 * Enforce WPVibe_CLI's option blocklist on the content/edit and content/search
+	 * routes, which reach update_option()/get_option() directly and so bypassed it.
+	 * The list is hard-blocked in the CLI (approval cannot lift it) and carries the
+	 * auth keys and salts plus default_role and users_can_register, so without this
+	 * the same keys were writable and readable here. Reads follow the CLI's split:
+	 * READABLE_BLOCKED_OPTIONS stay readable, everything else does not.
+	 *
+	 * @param string $name     Option name.
+	 * @param bool   $is_write True for a write, false for a read.
+	 * @return WP_Error|null
+	 */
+	private static function blocked_option_error( $name, $is_write ) {
+		if ( ! in_array( $name, WPVibe_CLI::BLOCKED_OPTIONS, true ) ) {
+			return null;
+		}
+		if ( ! $is_write && in_array( $name, WPVibe_CLI::READABLE_BLOCKED_OPTIONS, true ) ) {
+			return null;
+		}
+		return new WP_Error(
+			'blocked_option',
+			sprintf(
+				/* translators: %s: option key */
+				__( 'Option \'%s\' is blocked for security.', 'vibe-ai' ),
+				$name
+			),
+			WPVibe_Error_Contract::data( 'security_gate', false, array( 'status' => 403 ) )
+		);
 	}
 }

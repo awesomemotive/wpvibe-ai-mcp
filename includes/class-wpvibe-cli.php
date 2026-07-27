@@ -326,9 +326,9 @@ class WPVibe_CLI {
 		'theme mod list'          => 'theme mod list',
 		'option get'              => 'option get <key>',
 		'option pluck'            => 'option pluck <option> <key-path>... (read one nested key without fetching the whole option)',
-		'option list'             => 'option list [--search=<pattern>] [--autoload=<on|off>]',
-		'user list'               => 'user list [--role=<role>] [--number=<n>]',
-		'post list'               => 'post list [--post_type=<type>] [--post_status=<status>] [--posts_per_page=<n>] [--s=<search>] [--author=<id>] [--year=<yyyy>] [--monthnum=<1-12>]',
+		'option list'             => 'option list [--search=<pattern>] [--autoload=<on|off>] [--transients] [--format=json|ids|count] (transients are excluded unless --transients; capped at 100 rows)',
+		'user list'               => 'user list [--role=<role>] [--number=<n>] [--format=json|ids|count] (defaults to 100 rows, max 1000)',
+		'post list'               => 'post list [--post_type=<type>] [--post_status=<status>] [--posts_per_page=<n>] [--s=<search>] [--author=<id>] [--year=<yyyy>] [--monthnum=<1-12>] [--format=json|ids|count] (defaults to 20 rows, max 100)',
 		'post get'                => 'post get <id> [--fields=<fields>]',
 		'post meta get'           => 'post meta get <id> [<key>] [--all]',
 		'post meta list'          => 'post meta list <id> [--all]',
@@ -363,7 +363,7 @@ class WPVibe_CLI {
 		'role list'               => 'role list',
 		'maintenance-mode status' => 'maintenance-mode status',
 		'media image-size'        => 'media image-size',
-		'transient get'           => 'transient get <key> [--network]',
+		'transient get'           => 'transient get <key>',
 		'menu item list'          => 'menu item list <menu>',
 		'user get'                => 'user get <id|login|email> [--fields=<fields>]',
 		'theme get'               => 'theme get <slug> [--fields=<fields>]',
@@ -376,10 +376,10 @@ class WPVibe_CLI {
 		'plugin uninstall'        => 'plugin uninstall <slug> [<slug>...]',
 		'option update'           => 'option update <key> <value> [--format=json|plaintext] (values are plain strings; pass --format=json for arrays/objects)',
 		'option add'              => 'option add <key> <value> [--format=json|plaintext] [--autoload=<yes|no>]',
-		'option delete'           => 'option delete <key>',
+		'option delete'           => 'option delete <key> [<key>...]',
 		'transient delete'        => 'transient delete <name> | --all | --expired',
 		'user delete'             => 'user delete <id|login|email> [<id>...] [--reassign=<user>]',
-		'post create'             => 'post create --post_title=<title> [--post_content=<content>] [--post_content_base64=<b64>] [--post_status=<status>] [--post_type=<type>] [--post_date=<Y-m-d H:i:s>] (use base64 when content mixes single AND double quotes — plain --post_content silently drops colliding quotes)',
+		'post create'             => 'post create --post_title=<title> [--post_content=<content>] [--post_content_base64=<b64>] [--post_status=<status>] [--post_type=<type>] [--post_date=<Y-m-d H:i:s>] [--porcelain] (use base64 when content mixes single AND double quotes; plain --post_content silently drops colliding quotes; --porcelain returns just the new post ID)',
 		'post update'             => 'post update <id> [<id>...] [--post_title=<title>] [--post_content=<content>] [--post_content_base64=<b64>] [--post_status=<status>] (use base64 when content mixes single AND double quotes)',
 		'post delete'             => 'post delete <id> [<id>...] [--force]',
 		'post meta update'        => 'post meta update <id> <key> <value> [--force] (replaces all rows of the key)',
@@ -689,19 +689,61 @@ class WPVibe_CLI {
 		// transient rows stay approval-free so the hygiene cleanup loop
 		// doesn't drown the user; one bypass approval covers option delete:*.
 		if ( 'option delete' === $command_key ) {
-			$key = $positional[0] ?? '';
-			// Deleting the white-label option UNhides the plugin — that's recovery, not destruction.
-			if ( '' === $key
-				|| 0 === strpos( $key, 'wpvibe_task_' )
-				|| 0 === strpos( $key, '_transient_' )
-				|| 0 === strpos( $key, '_site_transient_' )
-				|| ( class_exists( 'WPVibe_White_Label' ) && WPVibe_White_Label::OPTION === $key ) ) {
+			// Every key is examined, not just the first: the handler deletes them
+			// all, so exempting the list on $positional[0] would let an ordinary
+			// option ride along behind a leading wpvibe_task_ key.
+			$gated = array();
+			foreach ( (array) $positional as $key ) {
+				$key = (string) $key;
+				// Deleting the white-label option UNhides the plugin — that's recovery, not destruction.
+				if ( '' === $key
+					|| 0 === strpos( $key, 'wpvibe_task_' )
+					|| 0 === strpos( $key, '_transient_' )
+					|| 0 === strpos( $key, '_site_transient_' )
+					|| ( class_exists( 'WPVibe_White_Label' ) && WPVibe_White_Label::OPTION === $key ) ) {
+					continue;
+				}
+				$gated[] = $key;
+			}
+			if ( empty( $gated ) ) {
 				return null;
 			}
+			if ( 1 === count( $gated ) ) {
+				return array(
+					'operation' => 'option delete:' . $gated[0],
+					'reason'    => __( 'Options are deleted permanently (WordPress has no trash for them), and a plugin\'s entire configuration can live in a single option. Review the value preview before approving.', 'vibe-ai' ),
+					'dry_run'   => $this->build_option_delete_dry_run( $gated[0] ),
+				);
+			}
 			return array(
-				'operation' => 'option delete:' . $key,
-				'reason'    => __( 'Options are deleted permanently (WordPress has no trash for them), and a plugin\'s entire configuration can live in a single option. Review the value preview before approving.', 'vibe-ai' ),
-				'dry_run'   => $this->build_option_delete_dry_run( $key ),
+				'operation' => 'option delete:bulk:' . implode( ',', $gated ),
+				/* translators: %d: number of options */
+				'reason'    => sprintf( __( 'Deletes %d options permanently (WordPress has no trash for them), and a plugin\'s entire configuration can live in a single option. Review each value preview before approving.', 'vibe-ai' ), count( $gated ) ),
+				'dry_run'   => array(
+					'command' => 'wp option delete',
+					'count'   => count( $gated ),
+					'targets' => array_map( array( $this, 'build_option_delete_dry_run' ), $gated ),
+				),
+			);
+		}
+
+		// `option patch delete` unsets a subtree of an option in place, which is
+		// as permanent as deleting the option itself — same "options have no
+		// trash" rationale as the branch above. insert/update overwrite a leaf
+		// whose prior value the preview shows, so they stay approval-free.
+		if ( 'option patch' === $command_key && 'delete' === ( $positional[0] ?? '' ) ) {
+			$key  = $positional[1] ?? '';
+			$path = array_slice( $positional, 2 );
+			if ( '' === $key || empty( $path )
+				|| 0 === strpos( $key, 'wpvibe_task_' )
+				|| 0 === strpos( $key, '_transient_' )
+				|| 0 === strpos( $key, '_site_transient_' ) ) {
+				return null; // Handler returns a usage error, or AI temp state.
+			}
+			return array(
+				'operation' => 'option patch delete:' . $key . ':' . implode( '.', $path ),
+				'reason'    => __( 'Removes a key from inside an option permanently. WordPress has no trash for options, and the surrounding option keeps its other keys, so the loss is easy to miss. Review the value preview before approving.', 'vibe-ai' ),
+				'dry_run'   => $this->build_option_patch_delete_dry_run( $key, $path ),
 			);
 		}
 
@@ -722,6 +764,27 @@ class WPVibe_CLI {
 						? __( 'Every wp_options row whose name starts with _transient_ is deleted. Site transients (_site_transient_ rows) are left untouched.', 'vibe-ai' )
 						: __( 'Every transient whose expiration timestamp is in the past is deleted.', 'vibe-ai' ),
 				),
+			);
+		}
+
+		// On `post meta delete`, --force means the opposite of what it means on
+		// `post delete`: it disables the is_protected_meta() rail rather than
+		// bypassing trash. Either way it removes a safety net, and post meta is
+		// not kept in revisions, so a builder's layout (_elementor_data et al)
+		// is unrecoverable. Without a value argument every row for the key goes.
+		// Only the all-rows wipe gates. A third positional names one exact value, so the
+		// caller already had to know what they were removing, and `post meta update`
+		// overwrites a value just as unrecoverably with no gate at all — prompting on the
+		// narrow form mostly teaches people to approve routine work, which is how a gate
+		// stops carrying signal. The handler's own is_protected_meta() rail is unchanged.
+		if ( ! empty( $flags['force'] ) && 'post meta delete' === $command_key && ! isset( $positional[2] ) ) {
+			$post_id = $positional[0] ?? '?';
+			$meta_key = $positional[1] ?? '?';
+			return array(
+				'operation' => 'post_meta_delete_force:' . $post_id . ':' . $meta_key,
+				/* translators: 1: meta key, 2: post ID */
+				'reason'    => sprintf( __( '--force overrides the protected-meta guard and deletes every \'%1$s\' row on post %2$s. Post meta is not stored in revisions, so page-builder layouts and template settings cannot be restored afterwards.', 'vibe-ai' ), $meta_key, $post_id ),
+				'dry_run'   => $this->build_post_meta_delete_dry_run( $post_id, $meta_key, null ),
 			);
 		}
 
@@ -984,7 +1047,7 @@ class WPVibe_CLI {
 		$dry   = array( 'command' => 'wp option delete', 'option' => $key );
 		$value = get_option( $key, null );
 		if ( null === $value ) {
-			$dry['note'] = __( 'Option not found — execution will fail.', 'vibe-ai' );
+			$dry['note'] = __( 'Option not found, so execution will fail.', 'vibe-ai' );
 			return $dry;
 		}
 		$str                     = is_scalar( $value ) ? (string) $value : (string) wp_json_encode( $value );
@@ -993,6 +1056,72 @@ class WPVibe_CLI {
 		$dry['value_preview']    = mb_substr( $str, 0, 200 ) . ( strlen( $str ) > 200 ? '… [truncated]' : '' );
 		if ( in_array( $key, self::BLOCKED_OPTIONS, true ) ) {
 			$dry['warning'] = __( 'This option is permanently protected by WPVibe; execution will refuse even after approval.', 'vibe-ai' );
+		}
+		return $dry;
+	}
+
+	private function build_option_patch_delete_dry_run( $key, $path ) {
+		$dry     = array( 'command' => 'wp option patch delete', 'option' => $key, 'key_path' => implode( '.', $path ) );
+		$current = get_option( $key, null );
+		if ( null === $current ) {
+			$dry['note'] = __( 'Option not found, so execution will fail.', 'vibe-ai' );
+			return $dry;
+		}
+		if ( ! is_array( $current ) && ! is_object( $current ) ) {
+			$dry['note'] = __( 'Option is not an array or object, so execution will fail.', 'vibe-ai' );
+			return $dry;
+		}
+		// Walk to the leaf so the preview shows what this key path actually drops.
+		$node = $current;
+		foreach ( $path as $segment ) {
+			$seg = is_numeric( $segment ) ? (int) $segment : $segment;
+			if ( is_object( $node ) ) {
+				$node = isset( $node->$seg ) ? $node->$seg : null;
+			} elseif ( is_array( $node ) && array_key_exists( $seg, $node ) ) {
+				$node = $node[ $seg ];
+			} else {
+				$dry['note'] = __( 'Key path not found in this option, so execution will fail.', 'vibe-ai' );
+				return $dry;
+			}
+			if ( null === $node ) {
+				$dry['note'] = __( 'Key path not found in this option, so execution will fail.', 'vibe-ai' );
+				return $dry;
+			}
+		}
+		$str                     = is_scalar( $node ) ? (string) $node : (string) wp_json_encode( $node );
+		$dry['value_type']       = strtolower( gettype( $node ) );
+		$dry['value_size_chars'] = mb_strlen( $str );
+		$dry['value_preview']    = mb_substr( $str, 0, 200 ) . ( strlen( $str ) > 200 ? '… [truncated]' : '' );
+		if ( is_array( $node ) || is_object( $node ) ) {
+			$dry['warning'] = __( 'This key path holds a nested structure; deleting it removes everything beneath it.', 'vibe-ai' );
+		}
+		if ( in_array( $key, self::BLOCKED_OPTIONS, true ) ) {
+			$dry['warning'] = __( 'This option is permanently protected by WPVibe; execution will refuse even after approval.', 'vibe-ai' );
+		}
+		return $dry;
+	}
+
+	private function build_post_meta_delete_dry_run( $post_id, $meta_key, $value = null ) {
+		$dry = array(
+			'command'  => 'wp post meta delete --force',
+			'post_id'  => $post_id,
+			'meta_key' => $meta_key,
+			'note'     => null === $value
+				? __( 'No value argument: every row stored under this meta key is deleted.', 'vibe-ai' )
+				: __( 'Value argument given: only rows matching that value are deleted.', 'vibe-ai' ),
+		);
+		if ( is_protected_meta( $meta_key, 'post' ) ) {
+			$dry['protected'] = true;
+			$dry['warning']   = __( 'This is a protected/internal meta key. Without --force the command would refuse; --force overrides that guard.', 'vibe-ai' );
+		}
+		$existing = get_post_meta( (int) $post_id, $meta_key, false );
+		if ( is_array( $existing ) ) {
+			$dry['row_count'] = count( $existing );
+			if ( ! empty( $existing ) ) {
+				$first                = $existing[0];
+				$str                  = is_scalar( $first ) ? (string) $first : (string) wp_json_encode( $first );
+				$dry['value_preview'] = mb_substr( $str, 0, 200 ) . ( strlen( $str ) > 200 ? '… [truncated]' : '' );
+			}
 		}
 		return $dry;
 	}
@@ -1410,11 +1539,33 @@ class WPVibe_CLI {
 	private function handle_option_list( $positional, $flags ) {
 		global $wpdb;
 
+		$reject = $this->reject_unknown_flags( 'option list', $flags, array( 'search', 'autoload', 'transients', 'fields', 'format' ), array(
+			'exclude-search' => __( 'Filter the returned rows yourself.', 'vibe-ai' ),
+			'orderby'        => __( 'Rows come back ordered by option_name; sort them yourself.', 'vibe-ai' ),
+			'field'          => __( 'Use --fields=<name> and read that column from the rows.', 'vibe-ai' ),
+		) );
+		if ( $reject ) {
+			return $reject;
+		}
+		$format_reject = $this->reject_unsupported_format( 'option list', $flags );
+		if ( $format_reject ) {
+			return $format_reject;
+		}
+
 		// esc_like first so literal %/_ in the input stay literal, THEN convert
 		// WP-CLI wildcard syntax (* and ?) to SQL LIKE syntax (% and _).
 		$search = isset( $flags['search'] )
 			? str_replace( array( '*', '?' ), array( '%', '_' ), $wpdb->esc_like( $flags['search'] ) )
 			: '%';
+
+		// Transients are cache rows, not configuration: listing them by default
+		// buries real settings and invites a cleanup pass that deletes caches.
+		// Matches upstream, which needs --transients to include them. The patterns
+		// are literals, not input: backslash escapes the _ wildcard, and %% is a
+		// literal % once prepare() has run over the surrounding query.
+		$transient_filter = empty( $flags['transients'] )
+			? " AND option_name NOT LIKE '\\_transient\\_%%' AND option_name NOT LIKE '\\_site\\_transient\\_%%'"
+			: '';
 
 		$has_autoload = isset( $flags['autoload'] );
 
@@ -1431,7 +1582,7 @@ class WPVibe_CLI {
 			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare
 			$rows = $wpdb->get_results(
 				$wpdb->prepare(
-					"SELECT option_name, option_value FROM {$wpdb->options} WHERE option_name LIKE %s AND autoload {$operator} ( %s, %s, %s ) ORDER BY option_name LIMIT 100",
+					"SELECT option_name, option_value FROM {$wpdb->options} WHERE option_name LIKE %s{$transient_filter} AND autoload {$operator} ( %s, %s, %s ) ORDER BY option_name LIMIT 100",
 					array_merge( array( $search ), $not_on )
 				),
 				ARRAY_A
@@ -1440,7 +1591,7 @@ class WPVibe_CLI {
 			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 			$rows = $wpdb->get_results(
 				$wpdb->prepare(
-					"SELECT option_name, option_value FROM {$wpdb->options} WHERE option_name LIKE %s ORDER BY option_name LIMIT 100",
+					"SELECT option_name, option_value FROM {$wpdb->options} WHERE option_name LIKE %s{$transient_filter} ORDER BY option_name LIMIT 100",
 					$search
 				),
 				ARRAY_A
@@ -1458,10 +1609,32 @@ class WPVibe_CLI {
 			$results[] = $row;
 		}
 
-		return $this->success_result( $this->filter_fields( $results, $flags ) );
+		// Notice keys off the raw row count: BLOCKED_OPTIONS filtering can drop
+		// rows below the cap while more still matched in the database.
+		return $this->success_result(
+			$this->format_rows( $results, $flags, 'option_name' ),
+			$this->truncation_notice( $rows, 100, 'option list' )
+		);
 	}
 
 	private function handle_user_list( $positional, $flags ) {
+		$reject = $this->reject_unknown_flags( 'user list', $flags, array( 'role', 'number', 'fields', 'format' ), array(
+			'search'  => __( 'Filter the returned rows yourself, or use rest_api GET /wp/v2/users?search=<term>.', 'vibe-ai' ),
+			'include' => __( 'Fetch the ids individually with `user get`, or use rest_api GET /wp/v2/users?include=<ids>.', 'vibe-ai' ),
+			'exclude' => __( 'Filter the returned rows yourself, or use rest_api GET /wp/v2/users?exclude=<ids>.', 'vibe-ai' ),
+			'orderby' => __( 'Rows come back ordered by ID; sort them yourself, or use rest_api GET /wp/v2/users?orderby=<field>.', 'vibe-ai' ),
+			'field'   => __( 'Use --fields=<name> and read that column from the rows.', 'vibe-ai' ),
+			'network' => __( 'Multisite network scoping is not emulated; this lists users of the current site only.', 'vibe-ai' ),
+		) );
+		if ( $reject ) {
+			return $reject;
+		}
+		$format_reject = $this->reject_unsupported_format( 'user list', $flags );
+		if ( $format_reject ) {
+			return $format_reject;
+		}
+		// Default caps the row count; say so, because a silently truncated list
+		// feeding a bulk operation targets the wrong set.
 		$args = array( 'number' => 100 );
 		if ( isset( $flags['role'] ) )   $args['role']   = $flags['role'];
 		if ( isset( $flags['number'] ) ) $args['number'] = min( (int) $flags['number'], 1000 );
@@ -1477,7 +1650,10 @@ class WPVibe_CLI {
 				'user_registered' => $user->user_registered,
 			);
 		}
-		return $this->success_result( $this->filter_fields( $results, $flags ) );
+		return $this->success_result(
+			$this->format_rows( $results, $flags, 'ID' ),
+			$this->truncation_notice( $results, (int) $args['number'], 'user list' )
+		);
 	}
 
 	private function handle_post_list( $positional, $flags ) {
@@ -1498,6 +1674,10 @@ class WPVibe_CLI {
 		if ( isset( $flags['author'] ) )   $args['author']   = (int) $flags['author'];
 		if ( isset( $flags['year'] ) )     $args['year']     = (int) $flags['year'];
 		if ( isset( $flags['monthnum'] ) ) $args['monthnum'] = (int) $flags['monthnum'];
+		$format_reject = $this->reject_unsupported_format( 'post list', $flags );
+		if ( $format_reject ) {
+			return $format_reject;
+		}
 		$known = array( 'post_type', 'post_status', 'posts_per_page', 'orderby', 'order', 's', 'author', 'year', 'monthnum', 'fields', 'format' );
 		foreach ( array_keys( $flags ) as $flag ) {
 			if ( ! in_array( $flag, $known, true ) ) {
@@ -1517,7 +1697,10 @@ class WPVibe_CLI {
 				'post_date'   => $post->post_date,
 			);
 		}
-		return $this->success_result( $this->filter_fields( $results, $flags ) );
+		return $this->success_result(
+			$this->format_rows( $results, $flags, 'ID' ),
+			$this->truncation_notice( $results, (int) $args['posts_per_page'], 'post list' )
+		);
 	}
 
 	private function handle_post_get( $positional, $flags ) {
@@ -1587,7 +1770,10 @@ class WPVibe_CLI {
 			);
 		}
 
-		// All meta mode.
+		// All meta mode. One row per postmeta row, keyed post_id/meta_key/meta_value to
+		// match real WP-CLI: collapsing a multi-value key into one entry hid how many
+		// rows exist, which is what `post meta delete <id> <key> <value>` operates on.
+		// Values stay raw — upstream emits the serialized string too, unmodified.
 		$meta    = get_post_meta( $post_id );
 		$results = array();
 		foreach ( $meta as $key => $values ) {
@@ -1595,10 +1781,13 @@ class WPVibe_CLI {
 			if ( empty( $flags['all'] ) && strpos( $key, '_' ) === 0 ) {
 				continue;
 			}
-			$results[] = array(
-				'key'   => $key,
-				'value' => count( $values ) === 1 ? $values[0] : $values,
-			);
+			foreach ( (array) $values as $value ) {
+				$results[] = array(
+					'post_id'    => $post_id,
+					'meta_key'   => $key,
+					'meta_value' => $value,
+				);
+			}
 		}
 
 		return $this->success_result( $results );
@@ -2251,6 +2440,17 @@ class WPVibe_CLI {
 			}
 		}
 
+		// Checked after the self-update guard so `plugin update vibe-ai --version=x`
+		// still reports the self-update refusal, which is the more useful message.
+		$reject = $this->reject_unknown_flags( 'plugin update', $flags, array( 'all', 'exclude', 'dry_run' ), array(
+			'version' => __( 'Version pinning and rollback are not emulated; this always installs the latest available version. To install a specific version, use `plugin install <slug> --version=<version> --force` if supported, or upload that version in wp-admin > Plugins > Add New.', 'vibe-ai' ),
+			'minor'   => __( 'Constraining to minor releases is not emulated; this always installs the latest available version.', 'vibe-ai' ),
+			'patch'   => __( 'Constraining to patch releases is not emulated; this always installs the latest available version.', 'vibe-ai' ),
+		) );
+		if ( $reject ) {
+			return $reject;
+		}
+
 		wp_update_plugins();
 		$update_data = get_site_transient( 'update_plugins' );
 		$available   = ( is_object( $update_data ) && ! empty( $update_data->response ) ) ? $update_data->response : array();
@@ -2555,35 +2755,68 @@ class WPVibe_CLI {
 	}
 
 	private function handle_option_delete( $positional, $flags ) {
-		if ( empty( $positional[0] ) ) {
-			return $this->error_result( __( 'Option key required. Usage: option delete <key>', 'vibe-ai' ) );
-		}
-		$key = $positional[0];
-
-		// HARD-BLOCK — these options are never approval-gated. No legitimate AI workflow needs to delete them.
-		if ( in_array( $key, self::BLOCKED_OPTIONS, true ) ) {
-			return $this->error_result( $this->blocked_option_message( $key, 'deleted' ) );
+		$keys = array_values( array_filter( (array) $positional, function ( $k ) {
+			return '' !== (string) $k;
+		} ) );
+		if ( empty( $keys ) ) {
+			return $this->error_result( __( 'Option key required. Usage: option delete <key> [<key>...]', 'vibe-ai' ) );
 		}
 
-		if ( null === get_option( $key, null ) ) {
-			/* translators: %s: option key */
-			return $this->error_result( sprintf( __( 'Option \'%s\' not found.', 'vibe-ai' ), $key ) );
+		// HARD-BLOCK — these options are never approval-gated. No legitimate AI
+		// workflow needs to delete them. Checked across the whole list before any
+		// write, so a blocked key cannot ride along behind a permitted one.
+		foreach ( $keys as $key ) {
+			if ( in_array( $key, self::BLOCKED_OPTIONS, true ) ) {
+				return $this->error_result( $this->blocked_option_message( $key, 'deleted' ) );
+			}
 		}
 
-		$ok = delete_option( $key );
-		if ( ! $ok ) {
-			return $this->error_result( __( 'Failed to delete option.', 'vibe-ai' ) );
+		$results = array();
+		$deleted = array();
+		foreach ( $keys as $key ) {
+			if ( null === get_option( $key, null ) ) {
+				$results[] = array( 'option' => $key, 'status' => 'error', 'error' => 'not found' );
+				continue;
+			}
+			if ( ! delete_option( $key ) ) {
+				$results[] = array( 'option' => $key, 'status' => 'error', 'error' => 'delete failed' );
+				continue;
+			}
+			$results[] = array( 'option' => $key, 'status' => 'deleted' );
+			$deleted[] = $key;
+		}
+
+		if ( empty( $deleted ) ) {
+			// Single key keeps the original message so existing callers still match on it.
+			return 1 === count( $keys )
+				/* translators: %s: option key */
+				? $this->error_result( sprintf( __( 'Option \'%s\' not found.', 'vibe-ai' ), $keys[0] ) )
+				: $this->error_result( __( 'No options were deleted.', 'vibe-ai' ) );
 		}
 
 		WPVibe_Change_Tracker::mark( array(
-			'summary'      => "Option deleted: {$key}",
+			'summary'      => 'Options deleted: ' . implode( ', ', $deleted ),
 			'action_label' => 'Refresh',
 		) );
-		/* translators: %s: option key */
-		return $this->success_result( array( 'message' => sprintf( __( 'Deleted option \'%s\'.', 'vibe-ai' ), $key ) ) );
+
+		if ( 1 === count( $keys ) ) {
+			/* translators: %s: option key */
+			return $this->success_result( array( 'message' => sprintf( __( 'Deleted option \'%s\'.', 'vibe-ai' ), $keys[0] ) ) );
+		}
+		return $this->success_result( array(
+			/* translators: 1: number deleted, 2: number requested */
+			'message' => sprintf( __( 'Deleted %1$d of %2$d options.', 'vibe-ai' ), count( $deleted ), count( $keys ) ),
+			'results' => $results,
+		) );
 	}
 
 	private function handle_transient_delete( $positional, $flags ) {
+		$reject = $this->reject_unknown_flags( 'transient delete', $flags, array( 'all', 'expired' ), array(
+			'network' => __( 'Site (network) transients are not emulated: this command only touches the current site\'s _transient_ rows. Delete a site transient with `option delete _site_transient_<name>`.', 'vibe-ai' ),
+		) );
+		if ( $reject ) {
+			return $reject;
+		}
 		if ( empty( $positional[0] ) && empty( $flags['all'] ) && empty( $flags['expired'] ) ) {
 			return $this->error_result( __( 'Usage: transient delete <name> | --all | --expired', 'vibe-ai' ) );
 		}
@@ -2892,6 +3125,14 @@ class WPVibe_CLI {
 	}
 
 	private function handle_post_create( $positional, $flags ) {
+		$reject = $this->reject_unknown_flags( 'post create', $flags, array(
+			'post_title', 'post_content', 'post_content_base64', 'post_status', 'post_type',
+			'post_excerpt', 'post_name', 'post_parent', 'menu_order', 'comment_status', 'post_date',
+			'porcelain',
+		), $this->post_write_unsupported_flags( true ) );
+		if ( $reject ) {
+			return $reject;
+		}
 		$args = array(
 			'post_title'    => $flags['post_title'] ?? __( 'Untitled', 'vibe-ai' ),
 			'post_content'  => $flags['post_content'] ?? '',
@@ -2939,6 +3180,12 @@ class WPVibe_CLI {
 			'admin_url'    => admin_url( "post.php?post={$id}&action=edit" ),
 		) );
 
+		// --porcelain returns the bare ID, matching upstream. The Divi skill chains
+		// on it, so this must stay machine-readable with nothing around it.
+		if ( ! empty( $flags['porcelain'] ) ) {
+			return $this->success_result( $id );
+		}
+
 		return $this->success_result( array(
 			'ID'      => $id,
 			/* translators: 1: post type, 2: post ID */
@@ -2954,6 +3201,15 @@ class WPVibe_CLI {
 
 		$updatable = array( 'post_title', 'post_content', 'post_status', 'post_excerpt',
 			'post_name', 'post_parent', 'menu_order', 'comment_status', 'post_type' );
+		$reject = $this->reject_unknown_flags(
+			'post update',
+			$flags,
+			array_merge( $updatable, array( 'post_content_base64' ) ),
+			$this->post_write_unsupported_flags( false )
+		);
+		if ( $reject ) {
+			return $reject;
+		}
 		$fields = array();
 		foreach ( $updatable as $field ) {
 			if ( isset( $flags[ $field ] ) ) {
@@ -3871,6 +4127,15 @@ class WPVibe_CLI {
 
 		$skip_columns    = array_filter( wp_parse_list( (string) ( $flags['skip_columns'] ?? '' ) ) );
 		$include_columns = array_filter( wp_parse_list( (string) ( $flags['include_columns'] ?? '' ) ) );
+
+		// Never rewrite password hashes. A search string that happens to appear
+		// inside a bcrypt hash would corrupt it and lock that user out with no way
+		// back. Upstream hard-appends this too, and unlike guid it is not
+		// overridable: the skip test below runs before the include test, so even
+		// an explicit --include_columns=user_pass yields zero columns rather than
+		// re-opening the column.
+		$skip_columns[] = 'user_pass';
+
 		$guid_skipped    = false;
 		if ( empty( $flags['include_guids'] ) && ! in_array( 'guid', $include_columns, true ) ) {
 			// WP best practice: GUIDs are permanent identifiers, not URLs.
@@ -5795,12 +6060,23 @@ class WPVibe_CLI {
 		return $capped;
 	}
 
-	private function success_result( $data ) {
+	// $notice rides on stderr, where real WP-CLI puts warnings, so a caller
+	// parsing stdout sees the same shape it always did.
+	private function success_result( $data, $notice = '' ) {
 		return array(
 			'exit_code' => 0,
 			'stdout'    => wp_json_encode( $data, JSON_PRETTY_PRINT ),
-			'stderr'    => '',
+			'stderr'    => $notice,
 		);
+	}
+
+	/** Warning text when a listing hit its row cap, so a bulk op is not driven off a partial set. */
+	private function truncation_notice( $rows, $limit, $command ) {
+		if ( count( $rows ) < $limit ) {
+			return '';
+		}
+		/* translators: 1: row limit, 2: command */
+		return sprintf( __( 'Results truncated at %1$d rows. More may exist, so do NOT treat this as the complete set for a bulk operation. Narrow the query, or raise the limit where `%2$s` supports it.', 'vibe-ai' ), $limit, $command );
 	}
 
 	/**
@@ -5870,6 +6146,82 @@ class WPVibe_CLI {
 			'stdout'    => '',
 			'stderr'    => $message,
 		);
+	}
+
+	/**
+	 * Refuse flags a handler does not implement. Accepting one and dropping it
+	 * reports success for work that never happened, which is the single failure
+	 * an AI caller cannot detect or recover from. $unsupported maps a known
+	 * upstream WP-CLI flag to the alternative, so the refusal routes somewhere
+	 * instead of just saying no.
+	 */
+	/** Upstream post create/update flags we do not emulate, each routed to the path that works. */
+	private function post_write_unsupported_flags( $is_create ) {
+		$shared = array(
+			'meta_input'  => __( 'Create the post first, then set each key with `post meta update <id> <key> <value>`.', 'vibe-ai' ),
+			'tax_input'   => __( 'Set terms after the write with `post term set <id> <taxonomy> <term>...`.', 'vibe-ai' ),
+			'post_author' => __( 'Posts are authored as the connected WPVibe user. To change the author afterwards, use rest_api PUT /wp/v2/posts/<id> with {"author":<id>}.', 'vibe-ai' ),
+		);
+		if ( $is_create ) {
+			return array_merge( $shared, array(
+				'post_category' => __( 'Create the post first, then `post term set <id> category <term>...`.', 'vibe-ai' ),
+				'tags_input'    => __( 'Create the post first, then `post term set <id> post_tag <term>...`.', 'vibe-ai' ),
+				'from_post'     => __( 'Duplicating a post is not emulated: `post get <id>` the source, then pass the fields to `post create`.', 'vibe-ai' ),
+				'post_date_gmt' => __( 'Pass --post_date with a site-local time; WordPress derives the GMT value.', 'vibe-ai' ),
+			) );
+		}
+		return array_merge( $shared, array(
+			'post_date'             => __( 'Changing the publish date on update is not emulated; use rest_api PUT /wp/v2/posts/<id> with {"date":"..."}.', 'vibe-ai' ),
+			'defer_term_counting'   => __( 'Term-count deferral is a bulk-import optimization with no effect here.', 'vibe-ai' ),
+		) );
+	}
+
+	private function reject_unknown_flags( $command, $flags, $known, $unsupported = array() ) {
+		foreach ( array_keys( $flags ) as $flag ) {
+			if ( in_array( $flag, $known, true ) ) {
+				continue;
+			}
+			if ( isset( $unsupported[ $flag ] ) ) {
+				/* translators: 1: command, 2: flag name, 3: guidance */
+				return $this->error_result( sprintf( __( '`%1$s` does not support --%2$s in the WPVibe emulation. %3$s', 'vibe-ai' ), $command, $flag, $unsupported[ $flag ] ) );
+			}
+			/* translators: 1: command, 2: flag name, 3: supported flag list */
+			return $this->error_result( sprintf( __( '`%1$s` does not support --%2$s in the WPVibe emulation. Supported flags: %3$s.', 'vibe-ai' ), $command, $flag, implode( ', ', $known ) ) );
+		}
+		return null;
+	}
+
+	/**
+	 * Formats we emulate for listings. json is the native shape; ids and count are
+	 * implemented in format_rows(). Anything else (csv, table, yaml) would return a
+	 * shape the caller did not ask for, so it is refused rather than ignored.
+	 */
+	private function reject_unsupported_format( $command, $flags ) {
+		if ( ! isset( $flags['format'] ) ) {
+			return null;
+		}
+		$format = strtolower( (string) $flags['format'] );
+		if ( in_array( $format, array( 'json', 'ids', 'count' ), true ) ) {
+			return null;
+		}
+		/* translators: 1: command, 2: requested format */
+		return $this->error_result( sprintf( __( '`%1$s` supports --format=json|ids|count; --format=%2$s is not emulated. Use --fields=<list> to narrow the columns instead.', 'vibe-ai' ), $command, $format ) );
+	}
+
+	/**
+	 * Apply --format=ids|count, else --fields. `post list --format=ids` feeding a
+	 * bulk `post delete` is the documented workflow in the run_wp_cli tool
+	 * description, so returning full rows here silently breaks it.
+	 */
+	private function format_rows( $results, $flags, $id_key ) {
+		$format = isset( $flags['format'] ) ? strtolower( (string) $flags['format'] ) : '';
+		if ( 'count' === $format ) {
+			return count( $results );
+		}
+		if ( 'ids' === $format ) {
+			return array_values( array_map( 'strval', array_column( $results, $id_key ) ) );
+		}
+		return $this->filter_fields( $results, $flags );
 	}
 
 	private function filter_fields( $results, $flags ) {
