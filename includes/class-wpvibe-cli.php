@@ -484,8 +484,15 @@ class WPVibe_CLI {
 			require_once ABSPATH . 'wp-admin/includes/misc.php';
 		}
 
-		$args        = $this->strip_blocked_flags( $tokens );
+		// command_key from original tokens (flags are not positionals). Cache
+		// purge family keeps --url= as a *command-local* flag; global --url
+		// (WP-CLI site selection) stays blocked for every other command.
 		$command_key = implode( ' ', array_slice( $this->get_positional( $tokens ), 0, $key_length ) );
+		$keep_flags  = (
+			isset( self::HANDLERS[ $command_key ] )
+			&& 'handle_cache_purge' === self::HANDLERS[ $command_key ]
+		) ? array( '--url' ) : array();
+		$args        = $this->strip_blocked_flags( $tokens, $keep_flags );
 
 		// Classify destructive on every path. When !skip_destructive, the
 		// classification triggers approval_required. When skip_destructive
@@ -3895,9 +3902,25 @@ class WPVibe_CLI {
 		}
 		$targets = $this->cache_purge_targets();
 
+		// --url must be --url=<url>[,...]. Bare --url (boolean true) or empty
+		// --url= used to fall through to a full purge with exit 0 — the same
+		// silent-wrong-success class FlagFidelity polices.
 		$urls = array();
-		if ( ! empty( $flags['url'] ) && is_string( $flags['url'] ) ) {
-			$urls = array_values( array_filter( wp_parse_list( $flags['url'] ) ) );
+		if ( array_key_exists( 'url', $flags ) ) {
+			if ( ! is_string( $flags['url'] ) || '' === trim( $flags['url'] ) ) {
+				return $this->error_result( __( 'Use --url=<url>[,<url>...] with at least one absolute http(s) URL. Bare --url or an empty value is not supported.', 'vibe-ai' ) );
+			}
+			$urls = array_values( array_filter( array_map( 'trim', wp_parse_list( $flags['url'] ) ) ) );
+			if ( empty( $urls ) ) {
+				return $this->error_result( __( 'Use --url=<url>[,<url>...] with at least one absolute http(s) URL. Bare --url or an empty value is not supported.', 'vibe-ai' ) );
+			}
+			foreach ( $urls as $url ) {
+				$scheme = wp_parse_url( $url, PHP_URL_SCHEME );
+				if ( ! in_array( $scheme, array( 'http', 'https' ), true ) ) {
+					/* translators: %s: rejected URL */
+					return $this->error_result( sprintf( __( 'URL-scoped purge only accepts http(s) URLs; refused: %s', 'vibe-ai' ), $url ) );
+				}
+			}
 		}
 		$skip = array();
 		if ( ! empty( $flags['skip'] ) && is_string( $flags['skip'] ) ) {
@@ -3913,6 +3936,16 @@ class WPVibe_CLI {
 					sprintf(
 						/* translators: %s: cache plugin name */
 						__( '%s is not active on this site. Run `cache purge` to purge whatever cache is installed, or `cache flush` for the object cache.', 'vibe-ai' ),
+						$target['name']
+					)
+				);
+			}
+			// Surgical --url= on an engine with no URL API must not silent full-flush.
+			if ( $urls && empty( $target['purge_url'] ) ) {
+				return $this->error_result(
+					sprintf(
+						/* translators: %s: cache plugin name */
+						__( '%s does not support URL-scoped purge. Omit --url for a full purge of that engine, or use `cache purge --url=...` to hit page caches that support it.', 'vibe-ai' ),
 						$target['name']
 					)
 				);
@@ -4024,6 +4057,13 @@ class WPVibe_CLI {
 			if ( $purged ) {
 				/* translators: 1: plugin names, 2: URL count */
 				$message = sprintf( __( 'Purged %1$s for %2$d URL(s).', 'vibe-ai' ), implode( ', ', $purged ), count( $urls ) );
+			} elseif ( $failed ) {
+				$detail = array();
+				foreach ( $failed as $f ) {
+					$detail[] = $f['name'] . ': ' . $f['error'];
+				}
+				/* translators: %s: per-engine failure reasons */
+				return $this->error_result( sprintf( __( 'URL purge failed for every detected page cache. %s', 'vibe-ai' ), implode( '; ', $detail ) ) );
 			} else {
 				$message = __( 'No page-cache plugin detected; nothing to purge for those URLs.', 'vibe-ai' );
 			}
@@ -5667,13 +5707,25 @@ class WPVibe_CLI {
 		return new WP_Error( 'command_not_allowed', sprintf( __( 'Command "%s" is not in the allowlist. Run `help` for the full supported-command catalog — the capability may exist under different syntax.', 'vibe-ai' ), implode( ' ', array_slice( $positional, 0, 2 ) ) ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 403 ) ) );
 	}
 
-	private function strip_blocked_flags( $tokens ) {
+	/**
+	 * Drop WP-CLI global flags that the emulator never supports (site selection,
+	 * remote shells, etc.). $keep_flags is a per-command exception list: only
+	 * the exact blocked flag names in that list survive (e.g. cache purge keeps
+	 * --url / --url= as a surgical-purge target, not as WP-CLI --url site context).
+	 *
+	 * @param array $tokens     Tokenized command.
+	 * @param array $keep_flags Blocked-flag names to retain (e.g. array( '--url' )).
+	 * @return array
+	 */
+	private function strip_blocked_flags( $tokens, $keep_flags = array() ) {
 		$cleaned = array();
 		foreach ( $tokens as $token ) {
 			$blocked = false;
 			foreach ( self::BLOCKED_FLAGS as $flag ) {
 				if ( $token === $flag || strpos( $token, $flag . '=' ) === 0 ) {
-					$blocked = true;
+					if ( ! in_array( $flag, $keep_flags, true ) ) {
+						$blocked = true;
+					}
 					break;
 				}
 			}

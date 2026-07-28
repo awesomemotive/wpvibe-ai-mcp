@@ -724,6 +724,21 @@ class WPVibe_REST {
 				WPVibe_Error_Contract::data( 'capability_cpt_mapping', false, $data )
 			);
 		}
+		$data['user_is_admin'] = current_user_can( 'manage_options' );
+		$data['is_multisite'] = is_multisite();
+
+		// edit_themes/edit_plugins are withheld from site admins on multisite and
+		// commonly stripped by security plugins, so the reconnect advice that is
+		// right for every other capability sends those users in circles.
+		if ( in_array( $capability, array( 'edit_themes', 'edit_plugins' ), true ) && ( $data['is_multisite'] || $data['user_is_admin'] ) ) {
+			$message = $data['is_multisite']
+				/* translators: %s: WordPress capability name */
+				? sprintf( __( 'This action requires the WordPress capability "%s". On a multisite network only NETWORK super admins have it; site Administrators never do. Reconnecting with another site admin cannot help.', 'vibe-ai' ), $capability )
+				/* translators: %s: WordPress capability name */
+				: sprintf( __( 'This action requires the WordPress capability "%s". The connected account is an Administrator and still lacks it, which means a security plugin removed it; reconnecting cannot help. Re-enable file editing in that plugin\'s settings to restore it.', 'vibe-ai' ), $capability );
+			return new WP_Error( 'wpvibe_missing_capability', $message, WPVibe_Error_Contract::data( 'capability_role', false, $data ) );
+		}
+
 		return new WP_Error(
 			'wpvibe_missing_capability',
 			sprintf(

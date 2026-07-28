@@ -185,6 +185,11 @@ class WPVibe_Content_Ops {
 	 * with one line of context each, so the AI can find an edit anchor without
 	 * pulling the whole field into context. Pure — no WordPress calls.
 	 *
+	 * Matching uses the same desanitize + quote-lenient rules as the edit path,
+	 * so anything search returns is guaranteed findable by compute_replacement.
+	 * Snippets are windowed around the match on long lines and carry explicit
+	 * truncation flags; a silent cut used to feed models un-matchable text.
+	 *
 	 * @return array{matches: array, truncated: bool, total_lines: int}
 	 */
 	public function find_matches( $content, $pattern, $case_sensitive = false, $max_results = 50 ) {
@@ -193,26 +198,58 @@ class WPVibe_Content_Ops {
 		$out       = array();
 		$truncated = false;
 
+		$needle = self::desanitize( (string) $pattern );
+		$regex  = '/' . self::quote_lenient_pattern( $needle ) . '/u' . ( $case_sensitive ? '' : 'i' );
+
 		foreach ( $lines as $i => $line ) {
 			if ( count( $out ) >= $max_results ) {
 				$truncated = true;
 				break;
 			}
-			$found = $case_sensitive
-				? ( strpos( $line, $pattern ) !== false )
-				: ( stripos( $line, $pattern ) !== false );
-			if ( ! $found ) {
+			$byte_pos = false;
+			$hit      = preg_match( $regex, $line, $m, PREG_OFFSET_CAPTURE );
+			if ( 1 === $hit ) {
+				$byte_pos = $m[0][1];
+			} elseif ( false === $hit ) {
+				// Not valid UTF-8; only byte-literal matching is possible.
+				$byte_pos = $case_sensitive ? strpos( $line, $needle ) : stripos( $line, $needle );
+			}
+			if ( false === $byte_pos ) {
 				continue;
 			}
+
+			$line_len = mb_strlen( $line );
+			$char_pos = mb_strlen( substr( $line, 0, $byte_pos ) );
+
+			$window_start = 0;
+			if ( $line_len > 400 && $char_pos > 300 ) {
+				$window_start = min( max( 0, $char_pos - 100 ), $line_len - 400 );
+			}
+
 			$match = array(
 				'line'    => $i + 1,
-				'content' => mb_substr( $line, 0, 400 ),
+				'content' => mb_substr( $line, $window_start, 400 ),
 			);
+			if ( $window_start > 0 ) {
+				$match['snippet_starts_at_char'] = $window_start;
+			}
+			if ( $line_len > $window_start + 400 ) {
+				$match['snippet_truncated'] = true;
+			}
+			if ( $line_len > 400 ) {
+				$match['line_length'] = $line_len;
+			}
 			if ( $i > 0 ) {
 				$match['context_before'] = mb_substr( $lines[ $i - 1 ], 0, 200 );
+				if ( mb_strlen( $lines[ $i - 1 ] ) > 200 ) {
+					$match['context_before_truncated'] = true;
+				}
 			}
 			if ( $i < $total - 1 ) {
 				$match['context_after'] = mb_substr( $lines[ $i + 1 ], 0, 200 );
+				if ( mb_strlen( $lines[ $i + 1 ] ) > 200 ) {
+					$match['context_after_truncated'] = true;
+				}
 			}
 			$out[] = $match;
 		}
@@ -253,6 +290,9 @@ class WPVibe_Content_Ops {
 		$replaced = 0;
 		$updated  = $this->compute_replacement( $current, $old_content, $new_content, (bool) $replace_all, (bool) $whole_word, $replaced );
 		if ( is_wp_error( $updated ) ) {
+			if ( is_string( $current ) && in_array( $updated->get_error_code(), array( 'no_match', 'multiple_matches' ), true ) ) {
+				$this->augment_match_error( $updated, $current, $old_content );
+			}
 			return $updated;
 		}
 
@@ -261,12 +301,18 @@ class WPVibe_Content_Ops {
 			return $stored;
 		}
 
+		// Filters (kses, content_save_pre, security plugins) can silently mutate
+		// the write; report the bytes that actually landed, not what was sent.
+		$readback = $this->load( $type, $args );
+		$verbatim = is_string( $readback ) ? ( $readback === $updated ) : null;
+		$stored_len = is_string( $readback ) ? strlen( $readback ) : strlen( $updated );
+
 		$label = $this->target_label( $type, $args );
 
 		WPVibe_Audit_Log::log_execution( array(
 			'operation'      => 'content edit',
 			'command'        => $label,
-			'result_summary' => sprintf( 'edited; replaced %d; new length %d', $replaced, strlen( $updated ) ),
+			'result_summary' => sprintf( 'edited; replaced %d; new length %d', $replaced, $stored_len ),
 		) );
 
 		if ( 'post' === $type ) {
@@ -281,13 +327,18 @@ class WPVibe_Content_Ops {
 			WPVibe_Change_Tracker::mark( array( 'summary' => "Content edited: {$label}" ) );
 		}
 
-		return rest_ensure_response( array(
+		$response = array(
 			'target'   => $label,
 			'status'   => 'edited',
 			'message'  => __( 'Content updated successfully.', 'vibe-ai' ),
 			'replaced' => $replaced,
-			'bytes'    => strlen( $updated ),
-		) );
+			'bytes'    => $stored_len,
+		);
+		if ( false === $verbatim ) {
+			$response['stored_verbatim'] = false;
+			$response['message']         = __( 'Content updated, but the site modified the saved value (a filter such as kses or a security plugin altered it). Your copy of this value is now stale; re-read it with content/search before making further edits.', 'vibe-ai' );
+		}
+		return rest_ensure_response( $response );
 	}
 
 	/**
@@ -321,6 +372,109 @@ class WPVibe_Content_Ops {
 			'total_lines'   => $result['total_lines'],
 			'truncated'     => $result['truncated'],
 		) );
+	}
+
+	// ------------------------------------------------------------------
+	// Match-failure diagnostics: give the model the real nearby bytes so the
+	// retry is informed instead of blind.
+	// ------------------------------------------------------------------
+
+	/** Mutates the WP_Error, merging candidates and value shape into its data. */
+	private function augment_match_error( $error, $current, $old_content ) {
+		$data = $error->get_error_data();
+		if ( ! is_array( $data ) ) {
+			$data = array();
+		}
+
+		$data['value_length']      = strlen( $current );
+		$data['value_single_line'] = ( false === strpos( $current, "\n" ) );
+
+		$old = self::desanitize( (string) $old_content );
+		if ( 'no_match' === $error->get_error_code() ) {
+			$candidates = $this->nearest_candidates( $current, $old );
+			if ( $candidates ) {
+				$data['candidates'] = $candidates;
+			}
+		} else {
+			$locations = $this->match_excerpts( $current, $old, 5 );
+			if ( $locations ) {
+				$data['match_locations'] = $locations;
+			}
+		}
+
+		$error->add_data( $data );
+	}
+
+	/**
+	 * Excerpts around partial-anchor hits of old_content. Anchors are short
+	 * head/tail slices, matched leniently; plain substring scans, never edit
+	 * distance, so multi-MB values stay cheap.
+	 *
+	 * @return array Excerpt strings, deduplicated, at most 3.
+	 */
+	private function nearest_candidates( $current, $old ) {
+		$anchors  = array();
+		$old_len  = mb_strlen( $old );
+		$trimmed  = trim( $old );
+		if ( '' !== $trimmed ) {
+			// Progressively shorter head/tail slices: the divergence from the
+			// stored text can sit inside the first slice tried. The middle slice
+			// covers stitched attempts whose head AND tail are both wrong.
+			$anchors[] = mb_substr( $trimmed, 0, 30 );
+			$anchors[] = mb_substr( $trimmed, 0, 16 );
+			if ( $old_len > 60 ) {
+				$anchors[] = mb_substr( $trimmed, -30 );
+				$anchors[] = mb_substr( $trimmed, -16 );
+				$anchors[] = mb_substr( $trimmed, (int) ( $old_len * 0.4 ), 24 );
+			}
+		}
+
+		$out    = array();
+		$ranges = array();
+		foreach ( $anchors as $anchor ) {
+			if ( mb_strlen( $anchor ) < 8 ) {
+				continue;
+			}
+			$pattern = '/' . self::quote_lenient_pattern( $anchor ) . '/u';
+			if ( 1 !== preg_match( $pattern, $current, $m, PREG_OFFSET_CAPTURE ) ) {
+				continue;
+			}
+			$byte_pos = $m[0][1];
+			$overlaps = false;
+			foreach ( $ranges as $seen ) {
+				if ( abs( $seen - $byte_pos ) < 160 ) {
+					$overlaps = true;
+					break;
+				}
+			}
+			if ( $overlaps ) {
+				continue;
+			}
+			$ranges[] = $byte_pos;
+			$char_pos = mb_strlen( substr( $current, 0, $byte_pos ) );
+			$out[]    = mb_substr( $current, max( 0, $char_pos - 40 ), 200 );
+			if ( count( $out ) >= 3 ) {
+				break;
+			}
+		}
+		return $out;
+	}
+
+	/** Excerpts around every lenient match of old_content, capped. */
+	private function match_excerpts( $current, $old, $cap ) {
+		$pattern = '/' . self::quote_lenient_pattern( $old ) . '/u';
+		if ( false === preg_match_all( $pattern, $current, $m, PREG_OFFSET_CAPTURE ) ) {
+			return array();
+		}
+		$out = array();
+		foreach ( $m[0] as $hit ) {
+			$char_pos = mb_strlen( substr( $current, 0, $hit[1] ) );
+			$out[]    = mb_substr( $current, max( 0, $char_pos - 40 ), mb_strlen( $old ) + 80 );
+			if ( count( $out ) >= $cap ) {
+				break;
+			}
+		}
+		return $out;
 	}
 
 	// ------------------------------------------------------------------
