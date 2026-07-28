@@ -2558,10 +2558,19 @@ class WPVibe_CLI {
 		$upgrader = new Plugin_Upgrader( $skin );
 
 		if ( $single ) {
-			$result = $upgrader->upgrade( array_keys( $targets )[0] );
+			$file = array_keys( $targets )[0];
+			// upgrade() silently deactivates the plugin (deactivate_plugin_before_upgrade) and
+			// leaves reactivation to the caller; bulk_upgrade() preserves activation, which is
+			// why core's own AJAX updater uses it for single plugins too.
+			$was_active = is_plugin_active( $file );
+			$bulk       = $upgrader->bulk_upgrade( array( $file ) );
+			$result     = ( is_array( $bulk ) && isset( $bulk[ $file ] ) ) ? $bulk[ $file ] : null;
 
 			if ( is_wp_error( $result ) ) {
 				return $this->error_result( $result->get_error_message() );
+			}
+			if ( empty( $result ) ) {
+				return $this->error_result( __( 'Update failed. The plugin files were not replaced; the installed version is unchanged.', 'vibe-ai' ) );
 			}
 
 			WPVibe_Change_Tracker::mark( array(
@@ -2570,14 +2579,20 @@ class WPVibe_CLI {
 				'admin_url'    => admin_url( 'plugins.php' ),
 			) );
 
-			return $this->success_result( array(
+			$is_active = is_plugin_active( $file );
+			$payload   = array(
 				'message' => sprintf(
 					/* translators: 1: plugin name, 2: new version */
 					__( 'Updated %1$s to v%2$s.', 'vibe-ai' ),
 					$preview[0]['name'],
 					$preview[0]['new_version']
 				),
-			) );
+				'status'  => $is_active ? 'active' : 'inactive',
+			);
+			if ( $was_active && ! $is_active ) {
+				$payload['warning'] = __( 'The plugin was active before this update but is inactive now. Reactivate it with `plugin activate <slug>` and check the site for fatal errors.', 'vibe-ai' );
+			}
+			return $this->success_result( $payload );
 		}
 
 		// Same path as wp-admin's bulk update (maintenance mode around the run).
