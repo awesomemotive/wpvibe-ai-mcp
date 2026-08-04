@@ -21,6 +21,10 @@ class WPVibe_Preview {
 	private static $instance = null;
 	private $preview_token   = null;
 
+	// The template/stylesheet filters fire many times per request; resolve the
+	// parent once instead of re-reading style.css on each.
+	private $template_slug_cache = array();
+
 	public static function instance() {
 		if ( null === self::$instance ) {
 			self::$instance = new self();
@@ -93,12 +97,52 @@ class WPVibe_Preview {
 
 	public function swap_template( $template ) {
 		$slug = $this->get_preview_slug();
-		return $slug ? $slug : $template;
+		if ( ! $slug ) {
+			return $template;
+		}
+		return $this->draft_template_slug( $slug );
 	}
 
 	public function swap_stylesheet( $stylesheet ) {
 		$slug = $this->get_preview_slug();
 		return $slug ? $slug : $stylesheet;
+	}
+
+	/**
+	 * A draft cloned from a child theme must keep the PARENT as `template`.
+	 * Pointing both filters at the draft makes WP treat it as standalone, so
+	 * the parent's functions.php never loads and parent templates fatal on the
+	 * parent's own helpers. Read via get_file_data rather than wp_get_theme:
+	 * this runs inside the `template` filter, which wp_get_theme re-enters.
+	 *
+	 * @param string $draft_slug Draft theme slug.
+	 * @return string Slug to use for `template`.
+	 */
+	private function draft_template_slug( $draft_slug ) {
+		if ( isset( $this->template_slug_cache[ $draft_slug ] ) ) {
+			return $this->template_slug_cache[ $draft_slug ];
+		}
+
+		$resolved = $draft_slug;
+		$style    = get_theme_root( $draft_slug ) . '/' . $draft_slug . '/style.css';
+
+		if ( is_readable( $style ) ) {
+			$data   = get_file_data( $style, array( 'Template' => 'Template' ) );
+			$parent = isset( $data['Template'] ) ? trim( $data['Template'] ) : '';
+
+			// A theme slug is a single directory name. The draft's style.css is
+			// writable through the file tools, so refuse separators outright
+			// rather than let a Template: header steer the resolved path.
+			$safe = '' !== $parent && $parent === basename( $parent ) && ! preg_match( '#[/\\\\]|\.\.#', $parent );
+
+			// Parent may be registered under a different theme root than the child.
+			if ( $safe && $parent !== $draft_slug && is_dir( get_theme_root( $parent ) . '/' . $parent ) ) {
+				$resolved = $parent;
+			}
+		}
+
+		$this->template_slug_cache[ $draft_slug ] = $resolved;
+		return $resolved;
 	}
 
 	/**

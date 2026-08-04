@@ -4,7 +4,7 @@ Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.13.3
+Stable tag: 1.13.4
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -231,6 +231,10 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 
 == Changelog ==
 
+= 1.13.4 =
+* Fix: draft theme preview no longer breaks on sites running a child theme. The preview pointed WordPress at the draft for both the child theme and its parent, so the parent theme's code never loaded and the page stopped rendering partway through. The preview now keeps the parent theme in place and layers your draft on top of it, the way WordPress expects a child theme to work. The live site was never affected. Thanks to Ryan De La Uz for the detailed report.
+* Improvement: the WP-CLI command layer is reorganized under the hood so new commands can ship in smaller, safer pieces. Which commands you can run and how they behave are unchanged.
+
 = 1.13.3 =
 * Fix: updating a single plugin no longer leaves it deactivated. WordPress silently deactivates a plugin before replacing its files, and the update command did not turn it back on, so a plugin that was active before an update could end up switched off without any error. Updates now use the same method as the WordPress dashboard and the WP-CLI tool, which keeps the plugin active the whole time.
 * Improvement: the update result now states whether the plugin is active or inactive after the update, verified against the site rather than assumed, so your AI assistant reports the real state instead of guessing.
@@ -351,88 +355,5 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 * New: Symmetric read commands: media image-size, transient get (with --network), menu item list, user get, and theme get.
 * New: Command discovery. "help" returns the full supported-command catalog (name, tier, usage, approval requirements) generated from the security allowlist, and "help <command>" filters it, so an assistant discovers what is supported instead of burning calls guessing. "cli version" and "cli info" return honest emulator identity (plugin version, WordPress and PHP versions) instead of an error, so an assistant probing the environment gets accurate expectations rather than concluding WP-CLI is broken.
 
-= 1.5.2 =
-* Fix: The WP-CLI plugin list command now reports update availability. It exposes "update" (available/none) and "update_version" fields and honors the --update=available filter, so an assistant can reliably see which plugins have updates instead of getting blank update info.
-* Fix: Permission-denied errors now name the specific missing WordPress capability (e.g. "edit_theme_options") instead of WordPress's generic "not allowed" message, so an assistant connected with a lower-privilege account gets an actionable next step instead of a dead end.
-
-= 1.5.1 =
-* Hardening: Image imports now pin the download to the exact IP address that passed the security check, closing a DNS-rebinding window where a hostname could switch to an internal address between validation and download.
-* Hardening: Content meta edits and searches now enforce WordPress per-key meta permissions, so a user can no longer read or change protected post meta they are not authorized for, even on posts they can otherwise edit.
-* Hardening: The WP-CLI post meta update and delete commands now guard every protected meta key (not just core internal keys) behind the same explicit --force override.
-* Fix: Image imports no longer fail with "you are not allowed to upload this file type" when the source name has dots before the extension (e.g. macOS screenshots like "...14.45.58@2x"). The importer now derives the extension from the file's actual type instead of trusting the parsed name.
-
-= 1.5.0 =
-* Feature: Surgical content edits. WPVibe can now make targeted find-and-replace changes to a post's content, excerpt, or title, to post meta, and to site options without rewriting the whole value. Two new endpoints (content search and content edit) locate the exact text first and then replace a single match (or all matches), so large posts no longer have to round-trip through the AI in full. Serialized values are refused so they cannot be corrupted.
-* Feature: Bulk cleanup commands. The post update, post delete, user delete, and plugin uninstall commands now accept several targets in one call, so the AI can tidy up a batch of posts, users, or plugins in a single step.
-* Feature: Approval previews now list every affected item. When an irreversible action touches more than one target (permanently deleting posts, deleting users, uninstalling plugins), the confirmation screen enumerates each one so you can review the full list before approving. Reversible actions (moving posts to trash, updating posts) continue to run without interruption.
-* Hardening: Clearer database change previews. Update queries now show a sample of the rows that will change (previously only deletes did), and long values are trimmed in the preview so a wide table stays readable.
-* Hardening: The approval gate for direct SQL now also covers REPLACE, CREATE, RENAME, and GRANT/REVOKE statements, so those route through the same human confirmation as other database writes.
-* Fix: Frontend edit affordances now render only for registered WPVibe fields/settings, preventing accidental edit markers on unrelated template attributes.
-* Fix: Classic starter theme front-page hero fields now resolve against the configured static front page, so the hover-to-edit links point to the correct page fields.
-* Maintenance: Classic starter theme declares responsive-embeds support so embedded media scales correctly on mobile.
-
-= 1.4.0 =
-* Feature: Field API for theme authors — register editable custom fields and global settings from a theme's `functions.php` via `wpvibe_field_register()`, `wpvibe_setting_register()`, and `wpvibe_field_group_register()`. The plugin handles admin meta box rendering, save handlers, and sanitization across 12 field types (text, textarea, number, email, url, date, checkbox, color, image, gallery, wysiwyg, post_select, repeater). Templates read native `get_option()` / `get_post_meta()` so they keep rendering when the plugin is deactivated.
-* Feature: "WPVibe AI" meta box on every post edit screen for themes that declare `WPVibe: yes` in their `style.css` header — surfaces registered fields for the current post type plus a "Connect Claude / ChatGPT" CTA when no MCP client is paired to the site.
-* Feature: Frontend hover-to-edit affordance — registered fields render with a dashed outline + edit pin during draft preview, click to jump to the wp-admin edit screen for that field.
-* Feature: Hybrid classic starter theme — Tailwind v4 (browser CDN at draft time, compiled `dist/styles.css` at publish) + Gutenberg color/typography integration driven by the same `theme.css` `@theme` tokens. Bundles Alpine.js v3.15.12 for interactivity (modals, dropdowns, tabs, accordions, sliders). No `theme.json` — single source of truth.
-* Feature: Cookie-based draft preview that survives wp-admin navigation. Admins with `edit_themes` see the draft theme across the whole admin so the field API works in wp-admin without needing the preview-token query string on every URL.
-* Feature: Elementor integration with four new REST endpoints — `GET /wpvibe/v1/elementor/widgets` (list installed widgets + structural elements), `GET /wpvibe/v1/elementor/schema?slug=` (control schema discovery for a widget or element), `POST /wpvibe/v1/elementor/save-page` (atomic create or update of an Elementor page), `POST /wpvibe/v1/elementor/save-template` (Elementor Pro theme builder templates with display conditions). All routes return 404 with `elementor_inactive` when Elementor isn't installed.
-* Feature: Per-request REST timing — every WPVibe REST response now carries an `X-WPVibe-PHP-Time-Ms` header so MCP clients can break down "why is this slow?" by Worker overhead, network round-trip, and time spent in WordPress PHP.
-* Feature: Human-in-the-loop approval for destructive operations. AI-initiated db query mutations (DELETE/UPDATE/DROP/etc.), user deletes, plugin uninstalls, and `--force` trash bypasses now pause and surface an approval URL the user must open and confirm in their browser before WPVibe executes them.
-* Feature: New WP-CLI-style commands so the AI can clean up after itself — `option add`, `option delete`, `transient delete` (with `--all` / `--expired` modes), and `transient list`. Non-blocked option/transient deletes auto-execute; protected core options (siteurl, active_plugins, auth_*, etc.) remain hard-blocked.
-* Feature: Approval Log admin tab (WP admin → WPVibe → Approval Log) — append-only audit of every destructive operation WPVibe has executed on this site, including the dry-run preview the user saw before approving and the post-execution result summary.
-* Feature: New `/wpvibe/v1/cli/run-approved`, `/wpvibe/v1/audit-log`, and `/wpvibe/v1/registered-meta` REST endpoints.
-* Hardening: Destructive operations classified by command/SQL keyword rather than a default-deny allowlist. The narrow list (mutating SQL, user delete, plugin uninstall, `post delete --force`) returns `approval_required` with a row-count preview when the operation hits the database; all other commands continue to auto-execute behind the existing per-command capability checks.
-* Fix: Custom post types now auto-receive the `'custom-fields'` post type support when fields are registered via `wpvibe_field_register()` — was silently dropping `meta` on REST writes for CPTs that lacked it.
-* Fix: First write to a new subdirectory of the draft theme (e.g. `dist/styles.css`) no longer fails with "Resolved path is outside the draft theme" — path-safety check walks up to the nearest existing ancestor for the realpath validation.
-* Fix: `publish_draft_theme` now tolerates a missing live theme directory (interrupted prior publish, manual delete) and creates the live from the draft instead of fatal-ing inside `RecursiveDirectoryIterator`.
-
-= 1.3.0 =
-* Feature: New unauthenticated `/wpvibe/v1/ping` endpoint returns plugin and WordPress version so the WPVibe MCP server can detect plugin presence before generating an OAuth magic link. Cuts the "magic link works but plugin is missing" failure mode that strands users mid-onboarding.
-
-= 1.2.3 =
-* Fix: Draft theme name no longer accumulates "(WPVibe Draft)" on every publish cycle — the suffix is now stripped on both create and publish, and the theme header cache is invalidated after restore. Thanks to J. Hoon Yu for the report.
-
-= 1.2.2 =
-* Security: SSRF hardening on /upload-media — validate every resolved A and AAAA record against private, loopback, link-local, and reserved ranges; re-validate redirect hops
-* Security: Server-side user scoping on /last-change so a lower-privilege user can't read change summaries from an admin session
-* Security: Require edit_theme_options or edit_posts in addition to the x_wpvibe header before bumping the admin "Connected" indicator
-* Security: 24-hour TTL on the draft theme preview token so a leaked URL can't be used indefinitely
-* Security: Remove SVG from the file-write allowlist (SVG can embed script and isn't needed for classic-theme scaffolding)
-* Fix: Resolve an undefined variable when building the "View Trash" admin URL in the change tracker
-* Maintenance: Uninstall now clears wpvibe_last_active, wpvibe_preview_token_issued, the activation-redirect transient, and any leftover *-wpvibe-draft / *-wpvibe-backup theme directories on disk
-* Thanks to Rob Weaver for the responsible disclosure
-
-= 1.2.1 =
-* Compliance: Migrate inline styles and scripts to wp_enqueue_style / wp_enqueue_script
-* Compliance: Replace direct PHP file I/O with the WP_Filesystem API across theme and file operations
-* Compliance: Replace exec()-based PHP syntax validation with in-process tokenizer
-* Feature: Unsplash stock photo search with third-party service disclosure
-* Fix: Allow SQL comparison operators in db query and honor the --limit flag; add {prefix} placeholder
-* Fix: Detect an active WPVibe connection via last-active timestamp instead of the auth token
-* Fix: Custom CLI command sanitizer that preserves angle brackets used by SQL queries
-
-= 1.1.0 =
-* Expanded WP-CLI dispatcher with 16 new commands (34 total)
-* Security: Block sensitive options (auth keys, salts) from being read via option get
-* Security: Whitelist post get return fields (excludes post_password)
-* New read commands: plugin search, option list, taxonomy list, term list, post meta get, media list, comment list, comment count, sidebar list
-* New write commands: post create, post update, post delete, post meta update, post meta delete
-* Plugin install and update with two-phase confirmation flow
-* Content truncation for large post_content and post_content_filtered fields
-* Flag normalization: hyphenated flags (--per-page) auto-convert to underscored (--per_page)
-
-= 1.0.0 =
-* Initial release
-* WordPress site connection with one-click authorization
-* Full WordPress REST API access for AI content management
-* WordPress Abilities API support (WP 6.9+)
-* WordPress theme file browsing (list, search, outline)
-* WordPress theme editing via draft-preview-publish workflow
-* Classic WordPress theme builder
-* WordPress WP-CLI native dispatch
-* WordPress media uploads from URL
-* Unsplash stock photo search
-* Smart live reload with context-aware navigation
-* Progressive skills system for guided AI WordPress workflows
+= Older versions =
+WP.org caps the changelog at 5,000 words. For the full release history back to 1.0.0, see https://wpvibe.ai/changelog/
