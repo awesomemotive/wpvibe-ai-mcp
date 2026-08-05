@@ -4,7 +4,7 @@ Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.13.4
+Stable tag: 1.13.5
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -230,6 +230,12 @@ Yes. Connected sites are unlimited on every plan, including the free plan. Conne
 No. WPVibe lets you manage your WordPress site entirely through conversation with your AI assistant. No coding required for content management. Theme editing is also conversational, your AI writes the code for your WordPress theme.
 
 == Changelog ==
+
+= 1.13.5 =
+* Improvement: editing page-builder content now works through the safe content-edit path. Elementor stores a page's text inside a protected field, so surgical text edits used to fall back to direct database writes. Those edits now go through the normal content-edit tool, which also refreshes Elementor's cached styles so the change shows on the front end right away.
+* Fix: a content edit that would have broken a builder layout's stored data is now refused before saving, with the original left untouched, instead of writing a corrupted value.
+* Fix: content search and edit now match text the way it appears on the page when the database stores HTML entities. A search for "R&D" finds stored "R&amp;D", and ordinary spaces match non-breaking spaces, so an AI reading rendered HTML can edit the real stored value without a no-match miss.
+* Security: direct database writes to protected site settings (site address, active plugins, user roles and capabilities, the users table) are now refused even after approval. These already could not be changed through the normal commands, and raw SQL can no longer be used to get around that. Everyday content edits are unaffected.
 
 = 1.13.4 =
 * Fix: draft theme preview no longer breaks on sites running a child theme. The preview pointed WordPress at the draft for both the child theme and its parent, so the parent theme's code never loaded and the page stopped rendering partway through. The preview now keeps the parent theme in place and layers your draft on top of it, the way WordPress expects a child theme to work. The live site was never affected. Thanks to Ryan De La Uz for the detailed report.

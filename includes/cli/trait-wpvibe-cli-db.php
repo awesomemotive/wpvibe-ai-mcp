@@ -72,6 +72,18 @@ trait WPVibe_CLI_Db {
 			return $this->error_result( __( 'Multiple SQL statements are not allowed.', 'vibe-ai' ) );
 		}
 
+		// Identity/privilege state is unapprovable by design: approval-gated SQL
+		// runs with no WP-level guardrails, so one approved statement against
+		// these targets is a site-takeover primitive (siteurl, active_plugins,
+		// wp_capabilities, the users table). Option/user writes enforce this via
+		// their own handlers; raw SQL walked around it until this guard.
+		if ( ! $is_select && ! $is_schema_read ) {
+			$privileged = $this->privileged_sql_target_error( $normalized );
+			if ( $privileged ) {
+				return $privileged;
+			}
+		}
+
 		if ( $is_select || $is_schema_read ) {
 			if ( preg_match( '/\bINTO\s+(OUTFILE|DUMPFILE|@)/i', $normalized ) ) {
 				return $this->error_result( __( 'SELECT INTO is not allowed.', 'vibe-ai' ) );
@@ -158,6 +170,69 @@ trait WPVibe_CLI_Db {
 		);
 	}
 
+	/**
+	 * Hard-refuse mutating SQL aimed at identity/privilege state, even on the
+	 * approved path. $normalized is the uppercased, comment-stripped statement.
+	 * Judged on the WRITE TARGET table (not any substring), so ordinary content
+	 * whose prose contains "users"/"options" is unaffected. Fails closed: an
+	 * unparseable target on a privilege-shaped statement is still refused.
+	 */
+	private function privileged_sql_target_error( $normalized ) {
+		global $wpdb;
+		$prefix = strtoupper( $wpdb->prefix );
+
+		if ( ! preg_match(
+			'/\b(?:UPDATE(?:\s+LOW_PRIORITY)?(?:\s+IGNORE)?|INSERT(?:\s+(?:LOW_PRIORITY|DELAYED|HIGH_PRIORITY))?(?:\s+IGNORE)?\s+INTO|REPLACE(?:\s+(?:LOW_PRIORITY|DELAYED))?\s+INTO|DELETE(?:\s+LOW_PRIORITY)?(?:\s+QUICK)?(?:\s+IGNORE)?\s+FROM)\s+`?([A-Z0-9_{}]+)`?/',
+			$normalized,
+			$m
+		) ) {
+			return null;
+		}
+		$table = $m[1];
+		$base  = preg_replace( '/^' . preg_quote( $prefix, '/' ) . '/', '', $table );
+		$base  = preg_replace( '/^\{PREFIX\}/', '', $base );
+		$base  = preg_replace( '/^WP_/', '', $base );
+
+		// wp_options: refuse writes naming a blocked option, or a blanket
+		// UPDATE/DELETE (no WHERE) that would touch every option including the
+		// blocked ones. INSERT/REPLACE never carry a WHERE, so the no-WHERE rule
+		// applies only to UPDATE/DELETE — an insert is already caught by name.
+		if ( 'OPTIONS' === $base ) {
+			foreach ( WPVibe_CLI::BLOCKED_OPTIONS as $name ) {
+				if ( false !== strpos( $normalized, "'" . strtoupper( $name ) . "'" ) ) {
+					return $this->privileged_refusal( 'a protected option (' . $name . ')' );
+				}
+			}
+			$is_update_or_delete = (bool) preg_match( '/^\s*(?:UPDATE|DELETE)\b/', $normalized );
+			if ( $is_update_or_delete && ! preg_match( '/\bWHERE\b/', $normalized ) ) {
+				return $this->privileged_refusal( 'the options table without a WHERE clause' );
+			}
+			return null;
+		}
+
+		// The users table itself (row inserts, role/login/email changes).
+		if ( 'USERS' === $base ) {
+			return $this->privileged_refusal( 'the users table' );
+		}
+
+		// wp_usermeta: refuse only when the write concerns the capability/role map;
+		// ordinary user meta (last_name, session tokens the user owns) is fine.
+		if ( 'USERMETA' === $base
+			&& ( false !== strpos( $normalized, 'CAPABILITIES' ) || false !== strpos( $normalized, 'USER_LEVEL' ) )
+		) {
+			return $this->privileged_refusal( 'user capabilities or roles' );
+		}
+
+		return null;
+	}
+
+	private function privileged_refusal( $what ) {
+		return $this->error_result( sprintf(
+			/* translators: %s: description of the blocked SQL target */
+			__( 'Refused: this SQL writes to %s. That target is protected and cannot be changed through raw SQL even with approval, because direct SQL bypasses every WordPress safety check on it. Use the dedicated command instead (option update, user set-role), which enforces the correct guardrails.', 'vibe-ai' ),
+			$what
+		) );
+	}
 
 	private function handle_search_replace( $positional, $flags ) {
 		global $wpdb;

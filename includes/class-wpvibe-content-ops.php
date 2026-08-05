@@ -47,6 +47,31 @@ class WPVibe_Content_Ops {
 		) );
 	}
 
+	/**
+	 * Quote-lenient pattern plus HTML-entity bridges for text models read from
+	 * rendered output. Stored HTML often has &amp; / &nbsp; while the model
+	 * types & / space. preg_quote does not escape &; expand entities first.
+	 */
+	private static function match_lenient_pattern( $str ) {
+		$p = self::quote_lenient_pattern( $str );
+		// Longest entity first so bare & does not split &amp; / &nbsp;.
+		$p = preg_replace_callback(
+			'/&amp;|&nbsp;|&/',
+			static function ( $m ) {
+				if ( '&amp;' === $m[0] ) {
+					return '(?:&amp;|&)';
+				}
+				if ( '&nbsp;' === $m[0] ) {
+					return '(?:&nbsp;| |\xC2\xA0)';
+				}
+				return '(?:&amp;|&)';
+			},
+			$p
+		);
+		$p = str_replace( ' ', '(?: |&nbsp;|\xC2\xA0)', $p );
+		return $p;
+	}
+
 
 	/** Reverse the XML-token sanitization Claude's API applies to its own output. */
 	private static function desanitize( $str ) {
@@ -86,9 +111,9 @@ class WPVibe_Content_Ops {
 	 * (empty_old / no_change / no_match / multiple_matches / not_text).
 	 *
 	 * old/new are desanitized the same way edit_file desanitizes them MCP-side.
-	 * Matching is byte-exact first, then quote-lenient (straight and curly
-	 * quotes match interchangeably) — texturized prose stores curly quotes the
-	 * model rarely reproduces byte-for-byte. new_content is written verbatim;
+	 * Matching is byte-exact first, then lenient: straight/curly quotes and
+	 * common HTML entities (&amp;/&nbsp;) interchange with what the model
+	 * types after reading rendered HTML. new_content is written verbatim;
 	 * wptexturize re-curls straight quotes at render time, so display
 	 * typography stays consistent without rewriting what was sent.
 	 *
@@ -124,7 +149,7 @@ class WPVibe_Content_Ops {
 		// Whole-word matching uses a fully-escaped literal between \b anchors, so
 		// there are no user-controlled quantifiers/alternation: ReDoS-safe.
 		if ( $whole_word ) {
-			$pattern = '/\b' . self::quote_lenient_pattern( $old ) . '\b/u';
+			$pattern = '/\b' . self::match_lenient_pattern( $old ) . '\b/u';
 			$count   = preg_match_all( $pattern, $current );
 			if ( false === $count ) {
 				return new WP_Error( 'match_failed', __( 'Whole-word match failed (the text may not be valid UTF-8). Try without whole_word.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422 ) ) );
@@ -155,7 +180,7 @@ class WPVibe_Content_Ops {
 			return new WP_Error( 'multiple_matches', sprintf( __( 'old_content matches %d locations. Add surrounding context to target one, or set replace_all=true to change all of them.', 'vibe-ai' ), $exact ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422 ) ) );
 		}
 
-		$pattern = '/' . self::quote_lenient_pattern( $old ) . '/u';
+		$pattern = '/' . self::match_lenient_pattern( $old ) . '/u';
 		$count   = preg_match_all( $pattern, $current );
 		if ( false === $count ) {
 			// Stored value is not valid UTF-8; only byte-exact matching is possible.
@@ -185,7 +210,7 @@ class WPVibe_Content_Ops {
 	 * with one line of context each, so the AI can find an edit anchor without
 	 * pulling the whole field into context. Pure — no WordPress calls.
 	 *
-	 * Matching uses the same desanitize + quote-lenient rules as the edit path,
+	 * Matching uses the same desanitize + lenient rules as the edit path,
 	 * so anything search returns is guaranteed findable by compute_replacement.
 	 * Snippets are windowed around the match on long lines and carry explicit
 	 * truncation flags; a silent cut used to feed models un-matchable text.
@@ -199,7 +224,7 @@ class WPVibe_Content_Ops {
 		$truncated = false;
 
 		$needle = self::desanitize( (string) $pattern );
-		$regex  = '/' . self::quote_lenient_pattern( $needle ) . '/u' . ( $case_sensitive ? '' : 'i' );
+		$regex  = '/' . self::match_lenient_pattern( $needle ) . '/u' . ( $case_sensitive ? '' : 'i' );
 
 		foreach ( $lines as $i => $line ) {
 			if ( count( $out ) >= $max_results ) {
@@ -296,9 +321,23 @@ class WPVibe_Content_Ops {
 			return $updated;
 		}
 
+		// A replace that breaks a JSON value (builder layouts like _elementor_data)
+		// would silently destroy the whole structure on save.
+		if ( in_array( $type, array( 'meta', 'option' ), true ) && $this->json_broken_by_edit( $current, $updated ) ) {
+			return new WP_Error(
+				'json_corrupted',
+				__( 'This value is JSON and the replacement would corrupt it (the result no longer parses). Inside JSON, quotes and slashes must stay escaped (\" and \/): take old_content verbatim from content/search and escape new_content the same way. No change was made.', 'vibe-ai' ),
+				WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422 ) )
+			);
+		}
+
 		$stored = $this->store( $type, $args, $updated );
 		if ( is_wp_error( $stored ) ) {
 			return $stored;
+		}
+
+		if ( 'meta' === $type ) {
+			$this->invalidate_builder_caches( (int) ( $args['post_id'] ?? 0 ), (string) ( $args['key'] ?? '' ) );
 		}
 
 		// Filters (kses, content_save_pre, security plugins) can silently mutate
@@ -435,7 +474,7 @@ class WPVibe_Content_Ops {
 			if ( mb_strlen( $anchor ) < 8 ) {
 				continue;
 			}
-			$pattern = '/' . self::quote_lenient_pattern( $anchor ) . '/u';
+			$pattern = '/' . self::match_lenient_pattern( $anchor ) . '/u';
 			if ( 1 !== preg_match( $pattern, $current, $m, PREG_OFFSET_CAPTURE ) ) {
 				continue;
 			}
@@ -462,7 +501,7 @@ class WPVibe_Content_Ops {
 
 	/** Excerpts around every lenient match of old_content, capped. */
 	private function match_excerpts( $current, $old, $cap ) {
-		$pattern = '/' . self::quote_lenient_pattern( $old ) . '/u';
+		$pattern = '/' . self::match_lenient_pattern( $old ) . '/u';
 		if ( false === preg_match_all( $pattern, $current, $m, PREG_OFFSET_CAPTURE ) ) {
 			return array();
 		}
@@ -561,6 +600,40 @@ class WPVibe_Content_Ops {
 		return true;
 	}
 
+	/** True when the value parsed as a JSON object/array before the edit but no longer does after. */
+	private function json_broken_by_edit( $current, $updated ) {
+		if ( ! is_string( $current ) || ! is_string( $updated ) ) {
+			return false;
+		}
+		$trimmed = ltrim( $current );
+		if ( '' === $trimmed || ( '[' !== $trimmed[0] && '{' !== $trimmed[0] ) ) {
+			return false;
+		}
+		if ( null === json_decode( $current ) ) {
+			return false;
+		}
+		return null === json_decode( $updated );
+	}
+
+	/**
+	 * Elementor renders layout from _elementor_data but styles from cached CSS;
+	 * a data edit without a cache purge can leave the page visually stale.
+	 */
+	private function invalidate_builder_caches( $post_id, $key ) {
+		if ( ! $post_id || ! in_array( $key, array( '_elementor_data', '_elementor_page_settings' ), true ) ) {
+			return;
+		}
+		delete_post_meta( $post_id, '_elementor_css' );
+		delete_post_meta( $post_id, '_elementor_element_cache' );
+		if ( class_exists( '\\Elementor\\Core\\Files\\CSS\\Post' ) ) {
+			try {
+				\Elementor\Core\Files\CSS\Post::create( $post_id )->delete();
+			} catch ( \Throwable $e ) {
+				// Cache purge is best-effort; the content write already succeeded.
+			}
+		}
+	}
+
 	private function meta_has_auth_callback( $post_id, $key ) {
 		if ( has_filter( "auth_post_meta_{$key}" ) ) {
 			return true;
@@ -573,7 +646,7 @@ class WPVibe_Content_Ops {
 		if ( is_protected_meta( $key, 'post' ) || $this->meta_has_auth_callback( $post_id, $key ) ) {
 			return new WP_Error(
 				'meta_forbidden',
-				__( 'This meta key is protected (underscore-prefixed or registered with an auth callback), a boundary that applies even to Administrators. Read it with WP-CLI "post meta list", or write it through the approval-gated db query path.', 'vibe-ai' ),
+				__( 'This meta key is protected (underscore-prefixed or registered with an auth callback), a boundary that applies even to Administrators. Read it with WP-CLI "post meta list". To write it, use the write path of the plugin that owns the key (an ability or its REST namespace); if this is page-builder data, the builder plugin is likely inactive on this site. Do not fall back to raw SQL.', 'vibe-ai' ),
 				WPVibe_Error_Contract::data( 'meta_protected', false, array( 'status' => 403, 'protected' => true ) )
 			);
 		}
