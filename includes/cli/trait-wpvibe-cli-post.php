@@ -573,12 +573,7 @@ trait WPVibe_CLI_Post {
 			return $cap_check;
 		}
 
-		$value = $positional[2];
-		// Auto-decode JSON values.
-		$decoded = json_decode( $value, true );
-		if ( null !== $decoded ) {
-			$value = $decoded;
-		}
+		$value = $this->maybe_decode_meta_value( $positional[2] );
 
 		update_post_meta( $post_id, $key, $value );
 
@@ -591,6 +586,21 @@ trait WPVibe_CLI_Post {
 		return $this->success_result( array( 'message' => sprintf( __( 'Updated meta \'%1$s\' on post #%2$d.', 'vibe-ai' ), $key, $post_id ) ) );
 	}
 
+
+	/**
+	 * Decode only structured JSON ({...} / [...]) into arrays. Scalars stay raw
+	 * strings to match real WP-CLI (which stores "true" literally without
+	 * --format=json); decoding them stored booleans as "1"/"" and silently
+	 * broke string-typed metas like GeneratePress's _generate-full-width-content.
+	 */
+	private function maybe_decode_meta_value( $value ) {
+		$trimmed = ltrim( (string) $value );
+		if ( '' === $trimmed || ( '{' !== $trimmed[0] && '[' !== $trimmed[0] ) ) {
+			return $value;
+		}
+		$decoded = json_decode( $value, true );
+		return null === $decoded ? $value : $decoded;
+	}
 
 	private function handle_post_meta_add( $positional, $flags ) {
 		if ( count( $positional ) < 3 ) {
@@ -623,11 +633,7 @@ trait WPVibe_CLI_Post {
 			return $cap_check;
 		}
 
-		$value   = $positional[2];
-		$decoded = json_decode( $value, true );
-		if ( null !== $decoded ) {
-			$value = $decoded;
-		}
+		$value = $this->maybe_decode_meta_value( $positional[2] );
 
 		add_post_meta( $post_id, $key, $value );
 

@@ -170,7 +170,7 @@ class WPVibe_Elementor {
 				), WPVibe_Error_Contract::data( 'capability_cpt_mapping', false, array( 'status' => 403 ) ) );
 			}
 		}
-		if ( 'publish' === $new_status && ! current_user_can( $pt_obj->cap->publish_posts ) ) {
+		if ( in_array( $new_status, array( 'publish', 'private', 'future' ), true ) && ! current_user_can( $pt_obj->cap->publish_posts ) ) {
 			return new WP_Error( 'forbidden_publish', sprintf(
 				/* translators: %s: post type label */
 				__( 'You do not have permission to publish %s.', 'vibe-ai' ),

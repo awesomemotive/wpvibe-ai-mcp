@@ -4,7 +4,7 @@ Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.13.5
+Stable tag: 1.14.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -58,11 +58,11 @@ WordPress 6.9 introduced the Abilities API, a powerful way for plugins to declar
 
 This means AI-powered WordPress plugin management works automatically over MCP. If a plugin registers abilities (WPForms, SeedProd, and others are adopting this standard), your AI assistant can interact with it without any custom integration. The WordPress Abilities API and WPVibe together make every compatible plugin MCP-ready.
 
-= WooCommerce, Elementor, and Your Other Plugins =
+= WooCommerce, Elementor, Bricks, and Your Other Plugins =
 
 WPVibe works with the plugins already running your site. For WooCommerce, your AI can review the store, manage products, and bulk-edit prices, stock, and descriptions through conversation, so updating fifty product pages no longer means fifty trips through wp-admin.
 
-For Elementor, WPVibe ships dedicated integration endpoints: your AI can discover installed widgets, create and update Elementor pages, and save Elementor Pro theme builder templates with display conditions. Built-in skills teach your AI the right approach for Gutenberg, Elementor, and SeedProd page building. Other plugins work through their own REST APIs or the WordPress Abilities API, and custom fields (including ACF fields, which are post meta under the hood) are read and written correctly, including on custom post types.
+Page builders get dedicated support. Elementor, Bricks, Breakdance, Beaver Builder, and Divi pages are written through each builder's own save pipeline, so the result opens in the builder like a hand-built page. Built-in skills cover Gutenberg, Kadence, GeneratePress (including GP Premium Elements), and SeedProd. Other plugins work through their own REST APIs or the WordPress Abilities API, and custom fields (including ACF fields, which are post meta under the hood) are read and written correctly, including on custom post types.
 
 = Safely Edit WordPress Theme Files =
 
@@ -103,7 +103,7 @@ Whether you are a blogger managing content, a developer building WordPress theme
 * WordPress MCP server connection with one-click authorization and AES-256 encrypted credential storage
 * AI content management - create, update, and manage WordPress posts, pages, media, categories, and tags through AI conversation
 * WooCommerce management - review the store and bulk-edit products, prices, stock, and descriptions through conversation
-* Elementor integration - create and update Elementor pages and Elementor Pro theme builder templates via dedicated endpoints
+* Page builder integrations - Elementor, Bricks, Breakdance, Beaver Builder, and Divi pages via each builder's own save pipeline
 * Human-in-the-loop approvals - destructive operations pause for an in-chat approval panel with a dry-run preview
 * Approval Log - append-only audit trail in wp-admin of every destructive operation, its preview, and its result
 * Surgical content edits - targeted find-and-replace in posts, meta, and options without rewriting the whole value
@@ -231,6 +231,13 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 
 == Changelog ==
 
+= 1.14.0 =
+* Feature: Bricks support. Your AI can now build and edit Bricks pages through Bricks' own save pipeline, with the theme's element security checks applied and page CSS regenerated on every save (external file mode included). Layouts open in the Bricks editor exactly like hand-built pages.
+* Feature: Breakdance support. Your AI can now build and edit Breakdance pages, including the blank canvas template for landing pages. Saves go through Breakdance's own data format and refresh its CSS cache, so pages render correctly on the first load and open cleanly in the Breakdance editor. Writing a layout requires Breakdance builder access, the same permission Breakdance uses for its own editor, so connect as an administrator or a role you have granted Breakdance access.
+* Fix: text values written to post fields by the AI now store exactly what was sent. Words like true or false used to be converted before saving, which could silently break theme and plugin settings that expect the literal text (found with GeneratePress page layout options). Structured JSON values are unaffected.
+* Fix: sites that lock the theme and plugin file editors (a common managed-hosting setting) are now reported as locked instead of "a security plugin removed your permissions", so your AI explains the real reason and what to do about it.
+* Security: saving an Elementor or Beaver Builder page as private or scheduled now requires the same publish permission WordPress requires for publishing. Previously a user who could edit but not publish could reach those states through the builder endpoints. Publishing itself was always checked.
+
 = 1.13.5 =
 * Improvement: editing page-builder content now works through the safe content-edit path. Elementor stores a page's text inside a protected field, so surgical text edits used to fall back to direct database writes. Those edits now go through the normal content-edit tool, which also refreshes Elementor's cached styles so the change shows on the front end right away.
 * Fix: a content edit that would have broken a builder layout's stored data is now refused before saving, with the original left untouched, instead of writing a corrupted value.
@@ -342,24 +349,6 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 * Fix: "post list" now accepts a comma-separated --post_type (e.g. post,page) instead of returning an empty list.
 * Fix: draft themes can now be deleted on hosts that block the HTTP DELETE method at the server (a POST alias was added; previously the cancel action failed with a 405 on many hardened hosts).
 * Improvement: "option get" now allows reading users_can_register and default_role (writes remain blocked). Security-audit workflows need to check whether open registration is enabled.
-
-= 1.6.0 =
-* New: WP-CLI checksum verification. "core verify-checksums" and "plugin verify-checksums" (single plugin or --all) compare installed files against the official WordPress.org checksums and report modified or missing files, so an assistant can run a file-integrity check when investigating a possibly compromised site.
-* Improvement: core verify-checksums also reports unknown files inside the core directories (the "File should not exist" check from real WP-CLI, the half that catches injected malware) and supports --include-root, --exclude, --version, and --locale. plugin verify-checksums skips readme.txt/readme.md by default (WordPress.org regenerates readmes after release) with --strict to include them, and reports files added to a plugin folder that are not part of the official release.
-* New: Read-only WP-CLI commands assistants ask for most: core version, core check-update, db tables, db prefix, post-type list, menu location list, theme mod list, and plugin get.
-* Feature: Unified cache purge. "cache purge" detects the installed cache plugin (LiteSpeed Cache, WP Rocket, SG Optimizer, WP Super Cache, W3 Total Cache, Breeze, plus the Elementor CSS cache) and calls each plugin's own purge API, then flushes the object cache. The plugin-specific spellings assistants guess first (litespeed-purge, elementor flush-css, rocket clean, sg purge, super-cache flush, w3-total-cache flush, breeze purge) work as scoped aliases.
-* New: "config get <constant>" reads a single configuration constant (and table_prefix) for diagnostics like WP_DEBUG or DISALLOW_FILE_EDIT. Credentials and secrets (database credentials and anything matching KEY, SALT, SECRET, PASSWORD, or TOKEN) are blocked outright, and config list/set/edit remain blocked.
-* New: "option patch insert|update|delete" makes surgical changes to one key inside a nested settings array (plugin settings like Rank Math) without rewriting the whole option.
-* Hardening: Deleting an option now pauses for browser approval with a preview of the stored value, since options have no trash and a plugin's entire configuration can live in one. The AI's own temporary options (wpvibe_task_ prefix) and transients stay approval-free, and the session-bypass checkbox covers repeated cleanup.
-* Feature: Role and capability editing, the gap core REST cannot fill (the reason role-editor plugins exist): cap add/remove on roles, role create (with --clone), role delete, role reset (restore WordPress defaults), and user add-cap/remove-cap. Every change pauses for browser approval with the literal grant spelled out, administrator-equivalent capabilities are flagged in the preview, and lockout protections refuse removing core capabilities from the administrator role, deleting the administrator role, or deleting the last administrator user. role reset is the escape hatch back to WordPress defaults.
-* New: "cron event run <hook>" and "cron event delete <hook>" (both approval-gated) complete the stuck-cron debugging loop alongside cron event list and cron test.
-* New: "theme install", "theme update", and "theme delete" (delete approval-gated; refuses the active theme and the parent of an active child theme), symmetric with the existing plugin management commands.
-* Feature: search-replace is now implemented (previously a stub). It performs serialized-data-aware replacements (nested arrays and objects are unserialized, replaced, and re-serialized with correct lengths, so widget settings and theme mods survive a domain migration), works table by table in primary-key chunks, skips the guid column by default (--include-guids to opt in), supports --dry-run, --skip-tables, --skip-columns, and explicit table arguments, and reports completed vs remaining tables if it hits the time budget. Live runs pause for browser approval with per-table match counts, and the preview warns loudly when the replacement would change the site URL; --dry-run runs without approval.
-* New: Permission diagnostics. "cap list <role>" (with --show-grant) and "role list" let an assistant show exactly which capability a role is missing instead of hand-waving at a permission error.
-* New: "maintenance-mode status" reports the effective maintenance state from all three sources: the core .maintenance file (honoring the 10-minute expiry), the wp-content/maintenance.php drop-in, and known maintenance/coming-soon plugins (SeedProd, LightStart, Under Construction, CMP, Maintenance) with their enable state.
-* New: "cron test" verifies WP-Cron spawning end to end (DISABLE_WP_CRON, ALTERNATE_WP_CRON, and a live loopback spawn check), so stuck-cron debugging has a first step.
-* New: Symmetric read commands: media image-size, transient get (with --network), menu item list, user get, and theme get.
-* New: Command discovery. "help" returns the full supported-command catalog (name, tier, usage, approval requirements) generated from the security allowlist, and "help <command>" filters it, so an assistant discovers what is supported instead of burning calls guessing. "cli version" and "cli info" return honest emulator identity (plugin version, WordPress and PHP versions) instead of an error, so an assistant probing the environment gets accurate expectations rather than concluding WP-CLI is broken.
 
 = Older versions =
 WP.org caps the changelog at 5,000 words. For the full release history back to 1.0.0, see https://wpvibe.ai/changelog/

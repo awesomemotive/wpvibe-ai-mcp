@@ -14,7 +14,7 @@ defined( 'ABSPATH' ) || exit;
 class WPVibe_Dashboard_Widget {
 
 	const FEED_URL             = 'https://wpvibe.ai/wp-json/wpvibe/v1/widget-feed';
-	const CHATGPT_APP_URL      = 'https://chatgpt.com/apps/wpvibe/asdk_app_6a244fb509e481918985fee76373b0f9';
+	const CHATGPT_APP_URL      = 'https://chatgpt.com/plugins/plugin_asdk_app_6a244fb509e481918985fee76373b0f9';
 	const FEED_TRANSIENT       = 'wpvibe_widget_feed';
 	const FEED_ERROR_TRANSIENT = 'wpvibe_widget_feed_error';
 	const FEED_TTL             = 43200; // 12 hours.

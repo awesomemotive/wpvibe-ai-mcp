@@ -775,19 +775,13 @@ class WPVibe_REST {
 	}
 
 	/**
-	 * Read theme files — edit_themes capability.
-	 * Same capability WordPress requires for the Theme File Editor.
+	 * The file-editor lock constants remove edit_themes from every role via
+	 * map_meta_cap, so a gate that checks the capability alone misreports a
+	 * locked site as a stripped capability ("a security plugin removed it").
+	 *
+	 * @return WP_Error|null Null when neither constant locks file editing.
 	 */
-	public function can_read_themes() {
-		return current_user_can( 'edit_themes' ) ? true : $this->missing_capability_error( 'edit_themes' );
-	}
-
-	/**
-	 * Write/edit/delete theme files — edit_themes + respects DISALLOW_FILE_EDIT.
-	 * WordPress uses this constant to lock down the Theme/Plugin File Editor.
-	 * Managed hosts often set this. We must respect it.
-	 */
-	public function can_edit_themes() {
+	private function file_lock_error() {
 		if ( defined( 'DISALLOW_FILE_EDIT' ) && DISALLOW_FILE_EDIT ) {
 			return new WP_Error(
 				'file_edit_disabled',
@@ -804,6 +798,31 @@ class WPVibe_REST {
 			);
 		}
 
+		return null;
+	}
+
+	/**
+	 * Read theme files — edit_themes capability.
+	 * Same capability WordPress requires for the Theme File Editor.
+	 */
+	public function can_read_themes() {
+		$locked = $this->file_lock_error();
+		if ( $locked ) {
+			return $locked;
+		}
+		return current_user_can( 'edit_themes' ) ? true : $this->missing_capability_error( 'edit_themes' );
+	}
+
+	/**
+	 * Write/edit/delete theme files — edit_themes + respects DISALLOW_FILE_EDIT.
+	 * WordPress uses this constant to lock down the Theme/Plugin File Editor.
+	 * Managed hosts often set this. We must respect it.
+	 */
+	public function can_edit_themes() {
+		$locked = $this->file_lock_error();
+		if ( $locked ) {
+			return $locked;
+		}
 		return current_user_can( 'edit_themes' ) ? true : $this->missing_capability_error( 'edit_themes' );
 	}
 
@@ -968,7 +987,7 @@ class WPVibe_REST {
 	 * MCP to compare WPVIBE_VERSION strings — flags are forward-compatible.
 	 */
 	public static function feature_flags() {
-		return array( 'content_edit', 'content_search', 'code_snippet', 'beaver_save', 'armor' );
+		return array( 'content_edit', 'content_search', 'code_snippet', 'beaver_save', 'breakdance_save', 'bricks_save', 'armor' );
 	}
 
 	public function get_site_info() {

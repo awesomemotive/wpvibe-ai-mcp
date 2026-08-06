@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WPVibe – Connect Your Site to Claude, ChatGPT & AI Assistants
  * Description: Connect any AI assistant to your WordPress site. Manage content, edit themes, and automate site tasks with Claude, ChatGPT, Cursor & more via MCP.
- * Version: 1.13.5
+ * Version: 1.14.0
  * Author: SeedProd
  * Author URI: https://wpvibe.ai
  * License: GPL-2.0-or-later
@@ -14,7 +14,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WPVIBE_VERSION', '1.13.5' );
+define( 'WPVIBE_VERSION', '1.14.0' );
 define( 'WPVIBE_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'WPVIBE_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 define( 'WPVIBE_PLUGIN_BASENAME', plugin_basename( __FILE__ ) );
@@ -26,6 +26,8 @@ require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-white-label.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-rest.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-elementor.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-beaver.php';
+require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-breakdance.php';
+require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-bricks.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-file-ops.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-content-ops.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-draft-theme.php';
@@ -126,6 +128,8 @@ function wpvibe_init() {
 	WPVibe_REST::instance();
 	WPVibe_Elementor::instance();
 	WPVibe_Beaver::instance();
+	WPVibe_Breakdance::instance();
+	WPVibe_Bricks::instance();
 	WPVibe_Ping::instance();
 	WPVibe_Preview::instance();
 	WPVibe_Live_Reload::instance();
