@@ -195,6 +195,40 @@ trait WPVibe_CLI_Plugin {
 		}
 		$slug = sanitize_key( $positional[0] );
 
+		$reject = $this->reject_unknown_flags( 'plugin install', $flags, array( 'version', 'activate', 'force' ), array(
+			'activate_network' => __( 'Multisite network activation is not emulated.', 'vibe-ai' ),
+			'insecure'         => __( 'Disabling release-signature checks is not emulated.', 'vibe-ai' ),
+		) );
+		if ( $reject ) {
+			return $reject;
+		}
+
+		// The force-overwrite path is approval-gated in classify_destructive();
+		// the browser dry-run already previews the version change, so an
+		// approved run executes without a second confirmation round-trip.
+		$confirm_write = $confirm_write || $this->skip_destructive;
+
+		$existing_file = $this->resolve_plugin_file( $slug );
+
+		// Self-guard on every install path, not just update: a force-replace of
+		// vibe-ai deletes the code serving this request (opaque 500, never
+		// completes), and the already-installed guidance below must not
+		// recommend a --force that would do the same.
+		if ( 'vibe-ai' === $slug || ( $existing_file && plugin_basename( WPVIBE_PLUGIN_DIR . 'vibe-ai.php' ) === $existing_file ) ) {
+			return $this->error_result( __( 'WPVibe cannot replace its own files over its own connection (the request would delete the code serving it). Update or reinstall WPVibe from the Plugins screen in wp-admin.', 'vibe-ai' ) );
+		}
+
+		if ( $existing_file && empty( $flags['force'] ) ) {
+			$installed = get_plugins();
+			$version   = isset( $installed[ $existing_file ]['Version'] ) ? $installed[ $existing_file ]['Version'] : '?';
+			return $this->error_result( sprintf(
+				/* translators: 1: plugin slug, 2: installed version */
+				__( 'Plugin \'%1$s\' is already installed (v%2$s). Use `plugin update %1$s` to update it, or `plugin install %1$s --version=<version> --force` to replace it with a specific version (rollback/downgrade; replacing an existing install needs approval).', 'vibe-ai' ),
+				$slug,
+				$version
+			) );
+		}
+
 		// Canonical admin-context bootstrap. Plugin_Upgrader is meant to run
 		// from wp-admin, so calling it from REST/CLI needs the same includes
 		// that wp-admin loads first.
@@ -210,13 +244,46 @@ trait WPVibe_CLI_Plugin {
 			'banners'           => false,
 		);
 		$api_args = array( 'slug' => $slug, 'fields' => $api_fields );
-		if ( ! empty( $flags['version'] ) ) {
-			$api_args['version'] = $flags['version'];
-		}
 
 		$api = plugins_api( 'plugin_information', $api_args );
 		if ( is_wp_error( $api ) ) {
 			return $this->error_result( $api->get_error_message() );
+		}
+
+		// plugins_api ignores a version argument and always describes the latest
+		// release, so a pinned version must rewrite the download URL to the
+		// versioned zip and verify it exists (WP-CLI's alter_api_response).
+		$requested = ! empty( $flags['version'] ) ? trim( (string) $flags['version'] ) : '';
+		if ( 'dev' === $requested || 'trunk' === $requested ) {
+			return $this->error_result( __( 'Installing development/trunk builds is not emulated; name a released version, e.g. --version=1.2.3.', 'vibe-ai' ) );
+		}
+		// The version is interpolated into the download URL path; a slash or query
+		// char would address a different file on downloads.wordpress.org.
+		if ( '' !== $requested && ! preg_match( '/^[A-Za-z0-9._-]+$/', $requested ) ) {
+			return $this->error_result( sprintf(
+				/* translators: %s: the rejected version string */
+				__( '"%s" is not a valid plugin version string.', 'vibe-ai' ),
+				$requested
+			) );
+		}
+		if ( '' !== $requested && $requested !== $api->version ) {
+			$base = str_replace( $api->slug . '.' . $api->version . '.zip', '', $api->download_link );
+			if ( $base === $api->download_link ) {
+				$base = 'https://downloads.wordpress.org/plugin/';
+			}
+			$versioned_link = $base . $api->slug . '.' . $requested . '.zip';
+			$head           = wp_remote_head( $versioned_link, array( 'timeout' => 10, 'redirection' => 3 ) );
+			$head_code      = is_wp_error( $head ) ? 0 : (int) wp_remote_retrieve_response_code( $head );
+			if ( 200 !== $head_code ) {
+				return $this->error_result( sprintf(
+					/* translators: 1: requested version, 2: HTTP status or transport error */
+					__( "Can't find the requested plugin's version %1\$s in the WordPress.org plugin repository (%2\$s). Available versions are listed on the plugin's page under Advanced View.", 'vibe-ai' ),
+					$requested,
+					is_wp_error( $head ) ? $head->get_error_message() : 'HTTP ' . $head_code
+				) );
+			}
+			$api->download_link = $versioned_link;
+			$api->version       = $requested;
 		}
 
 		// Phase 1: Return info and require confirmation.
@@ -257,11 +324,27 @@ trait WPVibe_CLI_Plugin {
 			$wpdb->dbname = 'wordpress';
 		}
 
+		// Mirror the approval gate's condition (file OR slug directory): an
+		// unparseable directory is still deleted by clear_destination, so it is
+		// still a replace and must report as one.
+		$slug_dir_exists = defined( 'WP_PLUGIN_DIR' ) && is_dir( trailingslashit( WP_PLUGIN_DIR ) . $slug );
+		$replacing       = ! empty( $flags['force'] ) && ( $existing_file || $slug_dir_exists );
+		$old_version     = null;
+		$was_active      = false;
+		if ( $replacing && $existing_file ) {
+			$installed   = get_plugins();
+			$old_version = isset( $installed[ $existing_file ]['Version'] ) ? $installed[ $existing_file ]['Version'] : null;
+			$was_active  = is_plugin_active( $existing_file );
+		}
+
 		$skin     = new Automatic_Upgrader_Skin();
 		$upgrader = new Plugin_Upgrader( $skin );
 
 		try {
-			$result = $upgrader->install( $api->download_link );
+			// overwrite_package makes core clear the destination instead of
+			// aborting on an existing directory (same end state as WP-CLI's
+			// DestructivePluginUpgrader) — the emulated rollback/downgrade path.
+			$result = $upgrader->install( $api->download_link, array( 'overwrite_package' => ! empty( $flags['force'] ) ) );
 		} catch ( \Throwable $e ) {
 			$skin_messages = $skin->get_upgrade_messages();
 			return $this->error_result(
@@ -326,18 +409,56 @@ trait WPVibe_CLI_Plugin {
 			);
 		}
 
+		// Post-condition, not assumption: replacing an active plugin keeps it
+		// active only while the main file path is unchanged. If the new version
+		// renamed it, active_plugins holds a stale path — re-activate the new one.
+		$active_note = '';
+		if ( $replacing && $was_active ) {
+			$new_file = $upgrader->plugin_info();
+			if ( $new_file && $new_file !== $existing_file ) {
+				// clear_destination only empties the zip's target directory, so a
+				// top-level single-file plugin (hello.php) survives the replace.
+				// Drop its active_plugins entry BEFORE activating the new file, or
+				// both copies load and a duplicate-function fatal takes the site down.
+				deactivate_plugins( $existing_file, true );
+				try {
+					$reactivate = activate_plugin( $new_file );
+				} catch ( \Throwable $e ) {
+					$reactivate = new WP_Error( 'activation_fatal', $e->getMessage() );
+				}
+				$active_note = is_wp_error( $reactivate )
+					/* translators: %s: activation error */
+					? ' ' . sprintf( __( 'The plugin was active, its main file changed in this version, and re-activation failed: %s Activate it manually in wp-admin.', 'vibe-ai' ), $reactivate->get_error_message() )
+					: ' ' . __( 'The plugin remains active (main file changed; re-activated).', 'vibe-ai' );
+			} else {
+				$active_note = ' ' . __( 'The plugin remains active.', 'vibe-ai' );
+			}
+		}
+
 		WPVibe_Change_Tracker::mark( array(
-			'summary'      => "Plugin installed: {$slug}" . ( $activated ? ' (activated)' : '' ),
+			'summary'      => $replacing
+				? "Plugin replaced: {$slug} v" . ( $old_version ?: '?' ) . " -> v{$api->version}"
+				: "Plugin installed: {$slug}" . ( $activated ? ' (activated)' : '' ),
 			'action_label' => 'Manage Plugins',
 			'admin_url'    => admin_url( 'plugins.php' ),
 		) );
 
-		$msg = sprintf(
-			/* translators: 1: plugin name, 2: plugin version */
-			__( 'Installed %1$s v%2$s.', 'vibe-ai' ),
-			$api->name,
-			$api->version
-		);
+		if ( $replacing ) {
+			$msg = sprintf(
+				/* translators: 1: plugin name, 2: previously installed version, 3: newly installed version */
+				__( 'Replaced %1$s v%2$s with v%3$s.', 'vibe-ai' ),
+				$api->name,
+				$old_version ?: '?',
+				$api->version
+			) . $active_note;
+		} else {
+			$msg = sprintf(
+				/* translators: 1: plugin name, 2: plugin version */
+				__( 'Installed %1$s v%2$s.', 'vibe-ai' ),
+				$api->name,
+				$api->version
+			);
+		}
 		if ( $activated ) {
 			$msg .= ' ' . __( 'Plugin activated.', 'vibe-ai' );
 		}
@@ -377,7 +498,7 @@ trait WPVibe_CLI_Plugin {
 		// Checked after the self-update guard so `plugin update vibe-ai --version=x`
 		// still reports the self-update refusal, which is the more useful message.
 		$reject = $this->reject_unknown_flags( 'plugin update', $flags, array( 'all', 'exclude', 'dry_run' ), array(
-			'version' => __( 'Version pinning and rollback are not emulated; this always installs the latest available version. To install a specific version, use `plugin install <slug> --version=<version> --force` if supported, or upload that version in wp-admin > Plugins > Add New.', 'vibe-ai' ),
+			'version' => __( 'Version pinning on update is not emulated; this always installs the latest available version. To install a specific version (rollback or downgrade), run `plugin install <slug> --version=<version> --force` — replacing an existing install pauses for browser approval.', 'vibe-ai' ),
 			'minor'   => __( 'Constraining to minor releases is not emulated; this always installs the latest available version.', 'vibe-ai' ),
 			'patch'   => __( 'Constraining to patch releases is not emulated; this always installs the latest available version.', 'vibe-ai' ),
 		) );

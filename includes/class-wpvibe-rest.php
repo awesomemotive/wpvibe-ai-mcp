@@ -510,6 +510,18 @@ class WPVibe_REST {
 			),
 		) );
 
+		// Execution-receipt lookup for Worker reconciliation. Always 200 —
+		// a bare 404 is indistinguishable from a rolled-back plugin, which the
+		// Worker must treat as UNKNOWN rather than "never executed".
+		register_rest_route( $namespace, '/op-receipt/(?P<op_id>op_[a-z0-9]+)', array(
+			'methods'             => 'GET',
+			'callback'            => array( $this, 'op_receipt_get' ),
+			'permission_callback' => array( $this, 'can_manage_options' ),
+			'args'                => array(
+				'op_id' => array( 'type' => 'string', 'required' => true ),
+			),
+		) );
+
 		register_rest_route( $namespace, '/cli/run-approved', array(
 			'methods'             => 'POST',
 			'callback'            => array( $this, 'run_cli_approved' ),
@@ -1252,6 +1264,16 @@ class WPVibe_REST {
 			'result_summary' => (string) ( $request->get_param( 'result_summary' ) ?? '' ),
 		) );
 		return rest_ensure_response( array( 'recorded' => true ) );
+	}
+
+	public function op_receipt_get( $request ) {
+		$receipt = WPVibe_Op_Receipts::get_receipt( (string) $request->get_param( 'op_id' ) );
+		if ( null === $receipt ) {
+			return rest_ensure_response( array( 'found' => false ) );
+		}
+		return rest_ensure_response(
+			array_merge( array( 'found' => true ), WPVibe_Op_Receipts::receipt_payload( $receipt ) )
+		);
 	}
 
 	// ------------------------------------------------------------------

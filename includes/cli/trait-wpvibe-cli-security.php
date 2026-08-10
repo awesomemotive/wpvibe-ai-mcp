@@ -85,6 +85,40 @@ trait WPVibe_CLI_Security {
 			);
 		}
 
+		// plugin install --force replaces an existing install in place (the
+		// emulated rollback/downgrade path). Fresh installs run freely; force
+		// is only destructive when there are files to destroy.
+		if ( 'plugin install' === $command_key && ! empty( $flags['force'] ) && ! empty( $positional[0] ) ) {
+			$slug = sanitize_key( $positional[0] );
+			$file = $this->resolve_plugin_file( $slug );
+			// Gate on what clear_destination will actually delete (the slug
+			// directory), not only on a get_plugins()-parseable install — a
+			// broken/half-updated directory is the rollback case itself.
+			$dir_exists = defined( 'WP_PLUGIN_DIR' ) && is_dir( trailingslashit( WP_PLUGIN_DIR ) . $slug );
+			if ( $file || $dir_exists ) {
+				if ( ! function_exists( 'get_plugins' ) ) {
+					require_once ABSPATH . 'wp-admin/includes/plugin.php';
+				}
+				$all       = get_plugins();
+				$installed = ( $file && isset( $all[ $file ] ) ) ? $all[ $file ] : array();
+				$dry_run   = array(
+					'target'            => $slug,
+					'name'              => isset( $installed['Name'] ) ? $installed['Name'] : $slug,
+					'installed_version' => isset( $installed['Version'] ) ? $installed['Version'] : '?',
+					'requested_version' => ! empty( $flags['version'] ) ? $flags['version'] : 'latest',
+					'active'            => $file ? is_plugin_active( $file ) : false,
+				);
+				if ( ! $file ) {
+					$dry_run['note'] = __( 'The existing directory is not a readable plugin (possibly a broken or partial install); its files will still be deleted and replaced.', 'vibe-ai' );
+				}
+				return array(
+					'operation' => 'plugin_install_force:' . $slug,
+					'reason'    => __( 'plugin install --force replaces the installed plugin files in place. Downgrading past a version that migrated its data can break the plugin, and any manual edits to its files are lost. Review the version change before approving.', 'vibe-ai' ),
+					'dry_run'   => $dry_run,
+				);
+			}
+		}
+
 		// db query: mutating SQL needs approval. Bare-word verbs, plus REPLACE
 		// matched only as a statement so the REPLACE() string function inside a
 		// read-only SELECT is not misread as a write.

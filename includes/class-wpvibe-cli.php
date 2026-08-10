@@ -399,7 +399,7 @@ class WPVibe_CLI {
 		'theme activate'          => 'theme activate <slug>',
 		'plugin activate'         => 'plugin activate <slug>',
 		'plugin deactivate'       => 'plugin deactivate <slug>',
-		'plugin install'          => 'plugin install <slug> [--version=<version>] [--activate]',
+		'plugin install'          => 'plugin install <slug> [--version=<version>] [--activate] [--force] (--force replaces an existing install, e.g. rollback to an older version; needs approval)',
 		'plugin update'           => 'plugin update <slug>... | --all [--exclude=<slugs>] [--dry-run]',
 		'plugin uninstall'        => 'plugin uninstall <slug> [<slug>...]',
 		'option update'           => 'option update <key> <value> [--format=json|plaintext] (values are plain strings; pass --format=json for arrays/objects)',

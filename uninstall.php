@@ -20,6 +20,7 @@ delete_option( 'wpvibe_installed_at' );
 delete_option( 'wpvibe_review_eligible_since' );
 delete_option( 'wpvibe_review_notice_status' );
 delete_option( 'wpvibe_audit_log_schema' );
+delete_option( 'wpvibe_op_receipts_schema' );
 delete_option( 'wpvibe_recent_activity' );
 delete_option( 'wpvibe_hide_from_admins' );
 
@@ -34,6 +35,11 @@ global $wpdb;
 $audit_table = $wpdb->prefix . 'wpvibe_audit_log';
 // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.DirectDatabaseQuery.SchemaChange, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 $wpdb->query( "DROP TABLE IF EXISTS {$audit_table}" );
+
+// Drop the op-receipts table created by class-wpvibe-op-receipts.php.
+$receipts_table = $wpdb->prefix . 'wpvibe_op_receipts';
+// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.DirectDatabaseQuery.SchemaChange, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+$wpdb->query( "DROP TABLE IF EXISTS {$receipts_table}" );
 
 // Remove transients.
 delete_transient( 'wpvibe_last_change' );
