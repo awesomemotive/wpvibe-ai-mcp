@@ -145,7 +145,11 @@ trait WPVibe_CLI_Parse {
 		}
 
 		$base    = $positional[0] ?? '';
-		$blocked = array( 'eval', 'eval-file', 'shell', 'core', 'config', 'package', 'server', 'site' );
+		if ( in_array( $base, array( 'eval', 'eval-file' ), true ) ) {
+			/* translators: %s: command name */
+			return new WP_Error( 'command_blocked', sprintf( __( '"%s" is blocked for security: this emulator never executes arbitrary PHP, so do not retry it in another form. To add PHP that should run on the site (hooks, filters, small features), use the code_snippet tool instead; it creates a WPCode snippet the user reviews and approves. For one-off reads or data changes, use the supported commands listed by `help`.', 'vibe-ai' ), $base ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 403 ) ) );
+		}
+		$blocked = array( 'shell', 'core', 'config', 'package', 'server', 'site' );
 		if ( in_array( $base, $blocked, true ) ) {
 			/* translators: 1: command name, 2: the same command name */
 			return new WP_Error( 'command_blocked', sprintf( __( '"%1$s" commands are blocked for security. Individually supported subcommands (if any) are listed by `help %2$s`; run `help` for the full catalog.', 'vibe-ai' ), $base, $base ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 403 ) ) );

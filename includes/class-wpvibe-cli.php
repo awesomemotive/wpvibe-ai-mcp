@@ -53,6 +53,7 @@ class WPVibe_CLI {
 
 	/** Set when the Worker calls run_approved(); allows handlers to proceed past destructive gates. */
 	private $skip_destructive = false;
+	private $approved_state   = null;
 
 	/** Resolved allowlist key of the command being dispatched (for handlers shared across aliases). */
 	private $current_command = '';
@@ -474,7 +475,22 @@ class WPVibe_CLI {
 	 * (run_wp_cli's schema does not expose an "approved" flag, and the Worker
 	 * controls all plugin API calls).
 	 */
-	public function run_approved( $command, $confirm_write = false ) {
+	public function run_approved( $command, $confirm_write = false, $approved_state = null ) {
+		// Snapshot of what the human approved (operation + dry_run), sent by
+		// Workers that support the drift check. Only genuinely absent fails
+		// open (older worker); present-but-unreadable refuses, or a worker
+		// serialization bug would silently disable the check fleet-wide.
+		if ( is_string( $approved_state ) && '' !== $approved_state ) {
+			$decoded = json_decode( $approved_state, true );
+			if ( ! is_array( $decoded ) ) {
+				return new WP_Error(
+					'approved_state_unreadable',
+					__( 'Not run: the approval snapshot attached to this command could not be read, so the safety check comparing the site against what the user approved cannot run. This indicates a WPVibe server fault, not a problem with the site. Re-run the command; report it if this repeats.', 'vibe-ai' ),
+					WPVibe_Error_Contract::data( 'approval_flow', false, array( 'status' => 400 ) )
+				);
+			}
+			$this->approved_state = $decoded;
+		}
 		return $this->execute( $command, $confirm_write, true );
 	}
 
@@ -550,6 +566,17 @@ class WPVibe_CLI {
 					'command'   => 'wp ' . $command_key,
 				) )
 			);
+		}
+
+		// Approve-to-execute drift check (issue #30): the approval was granted
+		// against a state snapshot; refuse if the site no longer matches it.
+		// Reuses the classification computed above — never classify twice, the
+		// dry-run builders run preview SQL.
+		if ( $skip_destructive ) {
+			$drift = $this->check_approved_state_drift( $destructive );
+			if ( is_wp_error( $drift ) ) {
+				return $drift;
+			}
 		}
 
 		// Dispatch to native handler.

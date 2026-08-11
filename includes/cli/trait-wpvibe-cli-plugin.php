@@ -193,7 +193,6 @@ trait WPVibe_CLI_Plugin {
 		if ( empty( $positional[0] ) ) {
 			return $this->error_result( __( 'Plugin slug required.', 'vibe-ai' ) );
 		}
-		$slug = sanitize_key( $positional[0] );
 
 		$reject = $this->reject_unknown_flags( 'plugin install', $flags, array( 'version', 'activate', 'force' ), array(
 			'activate_network' => __( 'Multisite network activation is not emulated.', 'vibe-ai' ),
@@ -208,7 +207,9 @@ trait WPVibe_CLI_Plugin {
 		// approved run executes without a second confirmation round-trip.
 		$confirm_write = $confirm_write || $this->skip_destructive;
 
-		$existing_file = $this->resolve_plugin_file( $slug );
+		$state         = $this->plugin_install_replace_state( $positional[0], $flags );
+		$slug          = $state['slug'];
+		$existing_file = $state['file'];
 
 		// Self-guard on every install path, not just update: a force-replace of
 		// vibe-ai deletes the code serving this request (opaque 500, never
@@ -219,8 +220,7 @@ trait WPVibe_CLI_Plugin {
 		}
 
 		if ( $existing_file && empty( $flags['force'] ) ) {
-			$installed = get_plugins();
-			$version   = isset( $installed[ $existing_file ]['Version'] ) ? $installed[ $existing_file ]['Version'] : '?';
+			$version = isset( $state['installed']['Version'] ) ? $state['installed']['Version'] : '?';
 			return $this->error_result( sprintf(
 				/* translators: 1: plugin slug, 2: installed version */
 				__( 'Plugin \'%1$s\' is already installed (v%2$s). Use `plugin update %1$s` to update it, or `plugin install %1$s --version=<version> --force` to replace it with a specific version (rollback/downgrade; replacing an existing install needs approval).', 'vibe-ai' ),
@@ -324,17 +324,12 @@ trait WPVibe_CLI_Plugin {
 			$wpdb->dbname = 'wordpress';
 		}
 
-		// Mirror the approval gate's condition (file OR slug directory): an
-		// unparseable directory is still deleted by clear_destination, so it is
-		// still a replace and must report as one.
-		$slug_dir_exists = defined( 'WP_PLUGIN_DIR' ) && is_dir( trailingslashit( WP_PLUGIN_DIR ) . $slug );
-		$replacing       = ! empty( $flags['force'] ) && ( $existing_file || $slug_dir_exists );
-		$old_version     = null;
-		$was_active      = false;
+		$replacing   = $state['replacing'];
+		$old_version = null;
+		$was_active  = false;
 		if ( $replacing && $existing_file ) {
-			$installed   = get_plugins();
-			$old_version = isset( $installed[ $existing_file ]['Version'] ) ? $installed[ $existing_file ]['Version'] : null;
-			$was_active  = is_plugin_active( $existing_file );
+			$old_version = isset( $state['installed']['Version'] ) ? $state['installed']['Version'] : null;
+			$was_active  = $state['active'];
 		}
 
 		$skin     = new Automatic_Upgrader_Skin();
@@ -855,6 +850,40 @@ trait WPVibe_CLI_Plugin {
 	private function plugin_slug_from_file( $file ) {
 		$dir = dirname( $file );
 		return '.' === $dir ? basename( $file, '.php' ) : $dir;
+	}
+
+
+	/**
+	 * The one derivation of "does plugin install --force replace an existing
+	 * install". Both the approval gate and the install handler consume this;
+	 * computing it twice let the two conditions drift (issue #30).
+	 */
+	private function plugin_install_replace_state( $slug_raw, $flags ) {
+		$slug  = sanitize_key( $slug_raw );
+		$state = array(
+			'slug'       => $slug,
+			'file'       => null,
+			'dir_exists' => false,
+			'replacing'  => false,
+			'installed'  => array(),
+			'active'     => false,
+		);
+		// An empty sanitized slug would make the dir check test the plugins root.
+		if ( '' === $slug ) {
+			return $state;
+		}
+		$file          = $this->resolve_plugin_file( $slug );
+		$state['file'] = $file;
+		// clear_destination deletes the slug directory even when it is not a
+		// get_plugins()-parseable install (broken/partial dir) — still a replace.
+		$state['dir_exists'] = defined( 'WP_PLUGIN_DIR' ) && is_dir( trailingslashit( WP_PLUGIN_DIR ) . $slug );
+		$state['replacing']  = ! empty( $flags['force'] ) && ( $file || $state['dir_exists'] );
+		if ( $file ) {
+			$all                = get_plugins();
+			$state['installed'] = isset( $all[ $file ] ) ? $all[ $file ] : array();
+			$state['active']    = is_plugin_active( $file );
+		}
+		return $state;
 	}
 
 

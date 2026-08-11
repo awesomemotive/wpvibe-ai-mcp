@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.14.3] - 2026-08-11
+
+* Fix: page builder compatibility. The live-refresh script no longer loads inside Divi, Elementor, Beaver Builder, Bricks, or Breakdance editing sessions, where it could interrupt the builder while your AI assistant was making changes (fixes the "Edit with Divi" endless spinner).
+* Hardening: approved plugin replacements re-verify the installed version and active state at execution, and refuse to run if the site changed after the approval was granted (for example an auto-update during the approval window).
+* Fix: clearer guidance when eval and eval-file commands are blocked. The denial now points to the code snippet workflow instead of a dead-end help lookup.
+* Hardening: the approval gate and the install handler now derive "is this replacing an existing plugin" from one shared check, so they can never disagree.
+
 ## [1.14.2] - 2026-08-10
 
 * Feature: plugin rollback. `plugin install <slug> --version=<version> --force` now replaces an installed plugin with the exact version you name, so your AI can walk a broken update back to the last working release. Replacing an existing install pauses for browser approval and shows the version change before anything runs; if the plugin was active it stays active afterward.

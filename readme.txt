@@ -4,7 +4,7 @@ Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.14.2
+Stable tag: 1.14.3
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -231,6 +231,12 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 
 == Changelog ==
 
+= 1.14.3 =
+* Fix: page builder compatibility. The live-refresh script no longer loads inside Divi, Elementor, Beaver Builder, Bricks, or Breakdance editing sessions, where it could interrupt the builder while your AI assistant was making changes (fixes the "Edit with Divi" endless spinner).
+* Hardening: approved plugin replacements re-verify the installed version and active state at execution, and refuse to run if the site changed after the approval was granted (for example an auto-update during the approval window).
+* Fix: clearer guidance when eval and eval-file commands are blocked. The denial now points to the code snippet workflow instead of a dead-end help lookup.
+* Hardening: the approval gate and the install handler now derive "is this replacing an existing plugin" from one shared check, so they can never disagree.
+
 = 1.14.2 =
 * Feature: plugin rollback. `plugin install <slug> --version=<version> --force` now replaces an installed plugin with the exact version you name, so your AI can walk a broken update back to the last working release. Replacing an existing install pauses for browser approval and shows the version change before anything runs; if the plugin was active it stays active afterward.
 * Fix: `plugin install` on an already-installed plugin now explains the two ways forward (update, or force-replace with a specific version) instead of failing with a raw folder error, and unsupported install flags are refused with the supported list instead of being silently ignored.
@@ -348,17 +354,6 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 = 1.6.2 =
 * Improvement: The plugin now displays as WPVibe, matching the product brand at wpvibe.ai. Same plugin, nothing else changes.
 * Fix: "plugin update vibe-ai" no longer tries to replace the plugin's own files over its own connection, which failed with an unhelpful server error. It now explains that WPVibe should be updated from the wp-admin Plugins screen or via auto-updates.
-
-= 1.6.1 =
-* Fix: "option list --autoload=on|off" returned no rows on WordPress 6.6+ (the query only matched the legacy yes/no autoload values). It now matches the current on/off/auto-on/auto-off/auto values as well.
-* Fix: "option update" and "option patch" no longer report a false failure when writing a numeric or boolean value (JSON decoding produced an int/bool while WordPress stores scalars as strings; setting an option to its current value also tripped this).
-* Fix: "user list" now includes user_registered, so account age is available to site-audit workflows.
-* Fix: WP-CLI commands no longer have HTML tags silently stripped from their values (a value like "&lt;b&gt;x&lt;/b&gt;" was stored as "x", and script blocks vanished entirely, surfacing as a confusing usage error). Commands containing angle brackets are now rejected with a clear message pointing to the content editing tools, which handle HTML safely.
-* Fix: "post list" was silently ignoring targeting flags (--s, --year, --monthnum, --author) and returning the full unfiltered list, which is dangerous when a listing feeds a bulk operation. Those filters now work, and unsupported flags are rejected with a clear message instead of ignored.
-* Fix: "post create" now honors --post_date (site-local time, matching WP-CLI) instead of silently creating the post dated today.
-* Fix: "post list" now accepts a comma-separated --post_type (e.g. post,page) instead of returning an empty list.
-* Fix: draft themes can now be deleted on hosts that block the HTTP DELETE method at the server (a POST alias was added; previously the cancel action failed with a 405 on many hardened hosts).
-* Improvement: "option get" now allows reading users_can_register and default_role (writes remain blocked). Security-audit workflows need to check whether open registration is enabled.
 
 = Older versions =
 WP.org caps the changelog at 5,000 words. For the full release history back to 1.0.0, see https://wpvibe.ai/changelog/

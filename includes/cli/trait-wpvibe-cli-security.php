@@ -89,30 +89,21 @@ trait WPVibe_CLI_Security {
 		// emulated rollback/downgrade path). Fresh installs run freely; force
 		// is only destructive when there are files to destroy.
 		if ( 'plugin install' === $command_key && ! empty( $flags['force'] ) && ! empty( $positional[0] ) ) {
-			$slug = sanitize_key( $positional[0] );
-			$file = $this->resolve_plugin_file( $slug );
-			// Gate on what clear_destination will actually delete (the slug
-			// directory), not only on a get_plugins()-parseable install — a
-			// broken/half-updated directory is the rollback case itself.
-			$dir_exists = defined( 'WP_PLUGIN_DIR' ) && is_dir( trailingslashit( WP_PLUGIN_DIR ) . $slug );
-			if ( $file || $dir_exists ) {
-				if ( ! function_exists( 'get_plugins' ) ) {
-					require_once ABSPATH . 'wp-admin/includes/plugin.php';
-				}
-				$all       = get_plugins();
-				$installed = ( $file && isset( $all[ $file ] ) ) ? $all[ $file ] : array();
+			$state = $this->plugin_install_replace_state( $positional[0], $flags );
+			if ( $state['replacing'] ) {
+				$installed = $state['installed'];
 				$dry_run   = array(
-					'target'            => $slug,
-					'name'              => isset( $installed['Name'] ) ? $installed['Name'] : $slug,
+					'target'            => $state['slug'],
+					'name'              => isset( $installed['Name'] ) ? $installed['Name'] : $state['slug'],
 					'installed_version' => isset( $installed['Version'] ) ? $installed['Version'] : '?',
 					'requested_version' => ! empty( $flags['version'] ) ? $flags['version'] : 'latest',
-					'active'            => $file ? is_plugin_active( $file ) : false,
+					'active'            => $state['active'],
 				);
-				if ( ! $file ) {
+				if ( ! $state['file'] ) {
 					$dry_run['note'] = __( 'The existing directory is not a readable plugin (possibly a broken or partial install); its files will still be deleted and replaced.', 'vibe-ai' );
 				}
 				return array(
-					'operation' => 'plugin_install_force:' . $slug,
+					'operation' => 'plugin_install_force:' . $state['slug'],
 					'reason'    => __( 'plugin install --force replaces the installed plugin files in place. Downgrading past a version that migrated its data can break the plugin, and any manual edits to its files are lost. Review the version change before approving.', 'vibe-ai' ),
 					'dry_run'   => $dry_run,
 				);
@@ -291,6 +282,89 @@ trait WPVibe_CLI_Security {
 			);
 		}
 
+		return null;
+	}
+
+
+	/**
+	 * Drift-sensitive dry-run fields per operation prefix (issue #30). A
+	 * missing entry means NO check — search-replace and SQL previews are
+	 * volatile by design and must never be compared. Field names follow the
+	 * classify dry_run shape; a renamed field fails safe (reads as drifted).
+	 */
+	private function drift_sensitive_fields( $operation ) {
+		$map    = array(
+			'plugin_install_force' => array( 'installed_version', 'active' ),
+		);
+		$prefix = $this->operation_prefix( $operation );
+		return isset( $map[ $prefix ] ) ? $map[ $prefix ] : null;
+	}
+
+
+	private function operation_prefix( $operation ) {
+		$prefix = strstr( (string) $operation, ':', true );
+		return false === $prefix ? (string) $operation : $prefix;
+	}
+
+
+	private function drift_comparable( $value ) {
+		if ( is_bool( $value ) ) {
+			return $value ? '1' : '0';
+		}
+		return null === $value ? '' : (string) $value;
+	}
+
+	// Refusal text reaches the AI conversation; site-derived values (plugin
+	// Version headers) must stay identifier-shaped there.
+	private function drift_display( $value ) {
+		$value = $this->drift_comparable( $value );
+		return preg_match( '/^[A-Za-z0-9._?-]{0,40}$/', $value ) ? $value : '?';
+	}
+
+
+	/**
+	 * Compare the fresh classification against the approved snapshot the
+	 * Worker echoed back. Null = proceed; WP_Error = refuse, nothing ran.
+	 */
+	private function check_approved_state_drift( $destructive ) {
+		$approved = $this->approved_state;
+		if ( ! is_array( $approved ) || empty( $approved['operation'] ) ) {
+			return null;
+		}
+		$fields = $this->drift_sensitive_fields( $approved['operation'] );
+		if ( null === $fields ) {
+			return null;
+		}
+		$fresh_operation = is_array( $destructive ) && isset( $destructive['operation'] ) ? $destructive['operation'] : '';
+		if ( (string) $fresh_operation !== (string) $approved['operation'] ) {
+			// Declassified, reclassified, or aimed at a different target than
+			// the approval covered. Full-string compare so a snapshot for one
+			// slug can never validate an operation on another.
+			return new WP_Error(
+				'approval_state_drift',
+				__( 'Not run: the site changed after this operation was approved and it no longer matches what the user reviewed (for a force install, the plugin it would have replaced is no longer installed). Re-run the command to act on the site\'s current state.', 'vibe-ai' ),
+				WPVibe_Error_Contract::data( 'approval_flow', false, array( 'status' => 409 ) )
+			);
+		}
+		$approved_dry = isset( $approved['dry_run'] ) && is_array( $approved['dry_run'] ) ? $approved['dry_run'] : array();
+		$fresh_dry    = is_array( $destructive ) && isset( $destructive['dry_run'] ) && is_array( $destructive['dry_run'] ) ? $destructive['dry_run'] : array();
+		foreach ( $fields as $field ) {
+			$was = isset( $approved_dry[ $field ] ) ? $approved_dry[ $field ] : null;
+			$now = isset( $fresh_dry[ $field ] ) ? $fresh_dry[ $field ] : null;
+			if ( $this->drift_comparable( $was ) !== $this->drift_comparable( $now ) ) {
+				return new WP_Error(
+					'approval_state_drift',
+					sprintf(
+						/* translators: 1: field name, 2: value at approval, 3: value now */
+						__( 'Not run: the site changed after this operation was approved (%1$s was "%2$s" at approval, now "%3$s"). The approval covered exactly what the user reviewed, so nothing was executed. Re-run the command to generate a fresh approval for the current state.', 'vibe-ai' ),
+						$field,
+						$this->drift_display( $was ),
+						$this->drift_display( $now )
+					),
+					WPVibe_Error_Contract::data( 'approval_flow', false, array( 'status' => 409 ) )
+				);
+			}
+		}
 		return null;
 	}
 

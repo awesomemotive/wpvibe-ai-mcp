@@ -11,6 +11,11 @@ defined( 'ABSPATH' ) || exit;
 
 class WPVibe_Live_Reload {
 
+	// Frontend page-builder edit sessions: auto-reload/navigation there
+	// destroys the user's editing session mid-boot (reads as an endless
+	// builder spinner while an MCP session is active).
+	const BUILDER_EDIT_PARAMS = array( 'et_fb', 'fl_builder', 'elementor-preview', 'bricks', 'breakdance', 'breakdance_iframe', 'oxygen', 'ct_builder', 'vc_editable', 'brizy-edit', 'brizy-edit-iframe', 'fb-edit' );
+
 	private static $instance = null;
 
 	public static function instance() {
@@ -29,12 +34,38 @@ class WPVibe_Live_Reload {
 	}
 
 	/**
+	 * Whether the request is a frontend page-builder edit session.
+	 *
+	 * @param array $get $_GET snapshot.
+	 * @return bool
+	 */
+	public static function is_builder_edit_request( array $get ) {
+		$params = apply_filters( 'wpvibe_builder_edit_params', self::BUILDER_EDIT_PARAMS );
+		foreach ( (array) $params as $param ) {
+			if ( isset( $get[ $param ] ) ) {
+				return true;
+			}
+		}
+		// Elementor's editor is an admin screen (post.php?action=elementor);
+		// the same-post reload() branch would destroy the session.
+		if ( isset( $get['action'] ) && 'elementor' === $get['action'] ) {
+			return true;
+		}
+		return false;
+	}
+
+	/**
 	 * Check if the current user should get the live reload script.
 	 *
 	 * @return bool
 	 */
 	private function should_load() {
 		if ( ! is_user_logged_in() ) {
+			return false;
+		}
+
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Reading URL params, not processing form.
+		if ( self::is_builder_edit_request( $_GET ) ) {
 			return false;
 		}
 

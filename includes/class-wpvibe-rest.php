@@ -536,6 +536,12 @@ class WPVibe_REST {
 					'type'    => 'boolean',
 					'default' => false,
 				),
+				// JSON {operation, dry_run} snapshot of what the human approved;
+				// compared against a fresh classification before execution.
+				'approved_state' => array(
+					'type'     => 'string',
+					'required' => false,
+				),
 			),
 		) );
 
@@ -1226,7 +1232,7 @@ class WPVibe_REST {
 		$confirm_write = (bool) $request->get_param( 'confirm_write' );
 
 		$cli = new WPVibe_CLI();
-		return $cli->run_approved( $command, $confirm_write );
+		return $cli->run_approved( $command, $confirm_write, $request->get_param( 'approved_state' ) );
 	}
 
 	public function cli_status() {
