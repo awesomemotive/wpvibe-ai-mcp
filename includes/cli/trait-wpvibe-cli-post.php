@@ -215,6 +215,264 @@ trait WPVibe_CLI_Post {
 	}
 
 
+	private function handle_term_create( $positional, $flags ) {
+		$reject = $this->reject_unknown_flags( 'term create', $flags, array( 'slug', 'description', 'parent', 'porcelain' ) );
+		if ( $reject ) {
+			return $reject;
+		}
+		$taxonomy = isset( $positional[0] ) ? (string) $positional[0] : '';
+		$name     = isset( $positional[1] ) ? trim( (string) $positional[1] ) : '';
+		if ( '' === $taxonomy || '' === $name ) {
+			return $this->error_result( __( 'Usage: term create <taxonomy> <term> [--slug=<slug>] [--description=<text>] [--parent=<term-id>] [--porcelain]', 'vibe-ai' ) );
+		}
+		if ( 'nav_menu' === $taxonomy ) {
+			return $this->error_result( __( 'Navigation menus are managed with the menu commands (`menu create`, `menu item add-custom`), not term commands: a bare nav_menu term has no items and no theme location.', 'vibe-ai' ) );
+		}
+		$tax = get_taxonomy( $taxonomy );
+		if ( ! $tax ) {
+			/* translators: %s: taxonomy slug */
+			return $this->error_result( sprintf( __( 'Taxonomy "%s" does not exist. Run `taxonomy list` to see registered taxonomies.', 'vibe-ai' ), $taxonomy ) );
+		}
+		if ( isset( $flags['parent'] ) && empty( $tax->hierarchical ) ) {
+			// Same wrong-success guard as term update: core stores the parent
+			// invisibly on flat taxonomies.
+			/* translators: %s: taxonomy slug */
+			return $this->error_result( sprintf( __( '--parent has no effect: taxonomy "%s" is not hierarchical, and WordPress stores the value invisibly. Remove the flag.', 'vibe-ai' ), $taxonomy ) );
+		}
+		// The allowlist cap (manage_categories) is the coarse entry gate; the
+		// taxonomy's own edit_terms cap is authoritative (custom taxonomies
+		// define their own), matching what core's REST term controller checks.
+		if ( ! current_user_can( $tax->cap->edit_terms ) ) {
+			/* translators: %s: WordPress capability name */
+			return new WP_Error( 'insufficient_cap', sprintf( __( 'You do not have the required capability (%s) to create terms in this taxonomy.', 'vibe-ai' ), $tax->cap->edit_terms ), WPVibe_Error_Contract::data( 'capability_role', false, array( 'status' => 403, 'capability' => $tax->cap->edit_terms ) ) );
+		}
+		$args = array();
+		if ( isset( $flags['slug'] ) ) {
+			$args['slug'] = sanitize_title( (string) $flags['slug'] );
+		}
+		if ( isset( $flags['description'] ) ) {
+			$args['description'] = sanitize_text_field( (string) $flags['description'] );
+		}
+		if ( isset( $flags['parent'] ) ) {
+			$args['parent'] = (int) $flags['parent'];
+		}
+		$result = wp_insert_term( wp_slash( $name ), $taxonomy, wp_slash( $args ) );
+		if ( is_wp_error( $result ) ) {
+			return $this->error_result( $result->get_error_message() );
+		}
+		$term_id = is_array( $result ) ? (int) ( $result['term_id'] ?? 0 ) : (int) $result;
+		WPVibe_Change_Tracker::mark( array(
+			'summary'      => "Term created: {$name} ({$taxonomy})",
+			'action_label' => 'Refresh',
+		) );
+		if ( ! empty( $flags['porcelain'] ) ) {
+			return $this->success_result( $term_id );
+		}
+		return $this->success_result( array(
+			/* translators: 1: term name, 2: taxonomy slug, 3: term ID */
+			'message' => sprintf( __( 'Created term "%1$s" in "%2$s" (term ID %3$d).', 'vibe-ai' ), $name, $taxonomy, $term_id ),
+			'term_id' => $term_id,
+		) );
+	}
+
+
+	private function handle_term_update( $positional, $flags ) {
+		$reject = $this->reject_unknown_flags( 'term update', $flags, array( 'by', 'name', 'slug', 'description', 'parent' ) );
+		if ( $reject ) {
+			return $reject;
+		}
+		$taxonomy = isset( $positional[0] ) ? (string) $positional[0] : '';
+		$ident    = isset( $positional[1] ) ? (string) $positional[1] : '';
+		if ( '' === $taxonomy || '' === $ident ) {
+			return $this->error_result( __( 'Usage: term update <taxonomy> <term> [--by=<id|slug>] [--name=<name>] [--slug=<slug>] [--description=<text>] [--parent=<term-id>]', 'vibe-ai' ) );
+		}
+		if ( 'nav_menu' === $taxonomy ) {
+			return $this->error_result( __( 'Navigation menus are managed with the menu commands (`menu list`, `menu item update`), not term commands: nav menus carry item posts and theme locations that term writes would leave inconsistent.', 'vibe-ai' ) );
+		}
+		$tax = get_taxonomy( $taxonomy );
+		if ( ! $tax ) {
+			/* translators: %s: taxonomy slug */
+			return $this->error_result( sprintf( __( 'Taxonomy "%s" does not exist. Run `taxonomy list` to see registered taxonomies.', 'vibe-ai' ), $taxonomy ) );
+		}
+		if ( ! current_user_can( $tax->cap->edit_terms ) ) {
+			/* translators: %s: WordPress capability name */
+			return new WP_Error( 'insufficient_cap', sprintf( __( 'You do not have the required capability (%s) to edit terms in this taxonomy.', 'vibe-ai' ), $tax->cap->edit_terms ), WPVibe_Error_Contract::data( 'capability_role', false, array( 'status' => 403, 'capability' => $tax->cap->edit_terms ) ) );
+		}
+		$term = $this->resolve_term( $taxonomy, $ident, $flags );
+		if ( is_array( $term ) ) {
+			return $term; // error_result from the resolver
+		}
+		if ( ! $term ) {
+			// Upstream Term_Command::update error text and exit code.
+			return $this->error_result( __( 'Term doesn\'t exist.', 'vibe-ai' ) );
+		}
+		$args = array();
+		if ( isset( $flags['name'] ) ) {
+			$args['name'] = (string) $flags['name'];
+		}
+		if ( isset( $flags['slug'] ) ) {
+			$args['slug'] = sanitize_title( (string) $flags['slug'] );
+		}
+		if ( isset( $flags['description'] ) ) {
+			// Same strip as term create: descriptions echo on archive pages.
+			$args['description'] = sanitize_text_field( (string) $flags['description'] );
+		}
+		if ( isset( $flags['parent'] ) ) {
+			if ( empty( $tax->hierarchical ) ) {
+				/* translators: %s: taxonomy slug */
+				return $this->error_result( sprintf( __( '--parent has no effect: taxonomy "%s" is not hierarchical, and WordPress stores the value invisibly. Remove the flag.', 'vibe-ai' ), $taxonomy ) );
+			}
+			$args['parent'] = (int) $flags['parent'];
+		}
+		if ( empty( $args ) ) {
+			return $this->error_result( __( 'Nothing to update: pass at least one of --name, --slug, --description, --parent.', 'vibe-ai' ) );
+		}
+		$prior  = array( 'name' => (string) $term->name, 'slug' => (string) $term->slug );
+		$result = wp_update_term( (int) $term->term_id, $taxonomy, wp_slash( $args ) );
+		if ( is_wp_error( $result ) ) {
+			return $this->error_result( $result->get_error_message() );
+		}
+		WPVibe_Change_Tracker::mark( array(
+			'summary'      => "Term updated: {$prior['name']} ({$taxonomy})",
+			'action_label' => 'Refresh',
+		) );
+		$data = array(
+			'message' => __( 'Term updated.', 'vibe-ai' ),
+			'term_id' => (int) $term->term_id,
+			'prior'   => $prior,
+		);
+		if ( isset( $args['slug'] ) && $args['slug'] !== $prior['slug'] ) {
+			$data['note'] = __( 'The slug changed, so the term\'s archive URL moved. Old links 404 unless a redirect is added.', 'vibe-ai' );
+		}
+		return $this->success_result( $data );
+	}
+
+
+	private function handle_term_delete( $positional, $flags ) {
+		$reject = $this->reject_unknown_flags( 'term delete', $flags, array( 'by' ) );
+		if ( $reject ) {
+			return $reject;
+		}
+		$taxonomy = isset( $positional[0] ) ? (string) $positional[0] : '';
+		$targets  = array_slice( $positional, 1 );
+		if ( '' === $taxonomy || empty( $targets ) ) {
+			return $this->error_result( __( 'Usage: term delete <taxonomy> <term>... [--by=<id|slug>]', 'vibe-ai' ) );
+		}
+		if ( 'nav_menu' === $taxonomy ) {
+			return $this->error_result( __( 'Navigation menus cannot be deleted through term commands: deleting the nav_menu term strands its menu-item posts and leaves stale theme locations. Delete the menu in wp-admin (Appearance > Menus).', 'vibe-ai' ) );
+		}
+		$tax = get_taxonomy( $taxonomy );
+		if ( ! $tax ) {
+			/* translators: %s: taxonomy slug */
+			return $this->error_result( sprintf( __( 'Taxonomy "%s" does not exist. Run `taxonomy list` to see registered taxonomies.', 'vibe-ai' ), $taxonomy ) );
+		}
+		if ( ! current_user_can( $tax->cap->delete_terms ) ) {
+			/* translators: %s: WordPress capability name */
+			return new WP_Error( 'insufficient_cap', sprintf( __( 'You do not have the required capability (%s) to delete terms in this taxonomy.', 'vibe-ai' ), $tax->cap->delete_terms ), WPVibe_Error_Contract::data( 'capability_role', false, array( 'status' => 403, 'capability' => $tax->cap->delete_terms ) ) );
+		}
+		if ( ! $this->skip_destructive ) {
+			// classify_destructive should have gated this; defense-in-depth.
+			return $this->error_result( __( 'term delete requires explicit approval.', 'vibe-ai' ) );
+		}
+		$deleted   = array();
+		$warnings  = array();
+		$successes = 0;
+		$errors    = 0;
+		foreach ( $targets as $ident ) {
+			$term = $this->resolve_term( $taxonomy, (string) $ident, $flags );
+			if ( is_array( $term ) ) {
+				return $term; // non-numeric without --by=slug: refuse the whole batch loudly
+			}
+			if ( ! $term ) {
+				// Upstream semantics: a missing term is a warning, not an error —
+				// the batch still reports success (term.feature "already deleted").
+				/* translators: 1: taxonomy slug, 2: term identifier */
+				$warnings[] = sprintf( __( '%1$s %2$s doesn\'t exist.', 'vibe-ai' ), $taxonomy, $ident );
+				continue;
+			}
+			if ( $this->is_default_term( $taxonomy, (int) $term->term_id ) ) {
+				// Core returns 0 here and upstream misreports "doesn't exist";
+				// we refuse honestly and count it as a real failure.
+				/* translators: 1: term name, 2: taxonomy slug */
+				$warnings[] = sprintf( __( '"%1$s" is the default term of "%2$s" and cannot be deleted. Change the default first (e.g. option update default_category <id>).', 'vibe-ai' ), $term->name, $taxonomy );
+				$errors++;
+				continue;
+			}
+			$result = wp_delete_term( (int) $term->term_id, $taxonomy );
+			if ( is_wp_error( $result ) ) {
+				$warnings[] = $result->get_error_message();
+				$errors++;
+			} elseif ( $result ) {
+				$deleted[] = array( 'term_id' => (int) $term->term_id, 'name' => (string) $term->name );
+				$successes++;
+			} else {
+				/* translators: 1: taxonomy slug, 2: term identifier */
+				$warnings[] = sprintf( __( '%1$s %2$s doesn\'t exist.', 'vibe-ai' ), $taxonomy, $ident );
+			}
+		}
+		if ( $successes > 0 ) {
+			WPVibe_Change_Tracker::mark( array(
+				'summary'      => "Terms deleted: {$successes} ({$taxonomy})",
+				'action_label' => 'Refresh',
+			) );
+		}
+		$notice = implode( "\n", $warnings );
+		if ( $errors > 0 ) {
+			// Deletions are permanent; a failing batch must still name what it
+			// destroyed or the AI cannot report it without re-querying.
+			$destroyed = $deleted
+				? "\n" . sprintf(
+					/* translators: %s: list of deleted terms */
+					__( 'Deleted before the failure: %s.', 'vibe-ai' ),
+					implode( ', ', array_map( static function ( $d ) {
+						return $d['name'] . ' (' . $d['term_id'] . ')';
+					}, $deleted ) )
+				)
+				: '';
+			/* translators: 1: success count, 2: total */
+			return $this->error_result( trim( sprintf( __( 'Only deleted %1$d of %2$d terms.', 'vibe-ai' ), $successes, count( $targets ) ) . $destroyed . "\n" . $notice ) );
+		}
+		return $this->success_result( array(
+			/* translators: 1: success count, 2: total */
+			'message' => sprintf( __( 'Deleted %1$d of %2$d terms.', 'vibe-ai' ), $successes, count( $targets ) ),
+			'deleted' => $deleted,
+		), $notice );
+	}
+
+
+	/**
+	 * Resolve a term identifier the way upstream's --by contract reads:
+	 * --by=slug resolves by slug; the default is id. A non-numeric identifier
+	 * without --by=slug is refused loudly (upstream casts it to 0 and reports
+	 * exit-0 "already deleted" — a wrong-success an AI caller can't detect).
+	 * Returns WP_Term|false, or an error_result array for the refusal.
+	 */
+	private function resolve_term( $taxonomy, $ident, $flags ) {
+		$by = isset( $flags['by'] ) ? (string) $flags['by'] : 'id';
+		if ( ! in_array( $by, array( 'id', 'slug' ), true ) ) {
+			return $this->error_result( __( '--by accepts "id" or "slug".', 'vibe-ai' ) );
+		}
+		if ( 'slug' === $by ) {
+			return get_term_by( 'slug', $ident, $taxonomy );
+		}
+		if ( ! is_numeric( $ident ) ) {
+			/* translators: %s: term identifier */
+			return $this->error_result( sprintf( __( '"%s" is not a numeric term ID. Pass --by=slug to address terms by slug.', 'vibe-ai' ), $ident ) );
+		}
+		return get_term_by( 'id', (int) $ident, $taxonomy );
+	}
+
+
+	/** Core refuses to delete a taxonomy's default term (returns 0, easy to misread). */
+	private function is_default_term( $taxonomy, $term_id ) {
+		$default = (int) get_option( 'default_term_' . $taxonomy, 0 );
+		if ( 'category' === $taxonomy ) {
+			$default = (int) get_option( 'default_category', $default );
+		}
+		return $default > 0 && $default === $term_id;
+	}
+
+
 	private function handle_media_list( $positional, $flags ) {
 		// Not a real WP-CLI command — maps to get_posts(type=attachment) for AI convenience.
 		$args = array(

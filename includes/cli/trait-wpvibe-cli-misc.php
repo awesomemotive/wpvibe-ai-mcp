@@ -65,6 +65,415 @@ trait WPVibe_CLI_Misc {
 	}
 
 
+	private function handle_menu_create( $positional, $flags ) {
+		$reject = $this->reject_unknown_flags( 'menu create', $flags, array( 'porcelain' ) );
+		if ( $reject ) {
+			return $reject;
+		}
+		$name = isset( $positional[0] ) ? trim( (string) $positional[0] ) : '';
+		if ( '' === $name ) {
+			return $this->error_result( __( 'Usage: menu create <menu-name> [--porcelain]', 'vibe-ai' ) );
+		}
+		$menu_id = wp_create_nav_menu( $name );
+		if ( is_wp_error( $menu_id ) ) {
+			return $this->error_result( $menu_id->get_error_message() );
+		}
+		WPVibe_Change_Tracker::mark( array(
+			'summary'      => "Menu created: {$name}",
+			'action_label' => 'Refresh',
+		) );
+		if ( ! empty( $flags['porcelain'] ) ) {
+			return $this->success_result( (int) $menu_id );
+		}
+		return $this->success_result( array(
+			/* translators: 1: menu name, 2: menu ID */
+			'message' => sprintf( __( 'Created menu "%1$s" (ID %2$d).', 'vibe-ai' ), $name, (int) $menu_id ),
+			'menu_id' => (int) $menu_id,
+		) );
+	}
+
+
+	/**
+	 * Shared handler for `menu item add-custom|add-post|add-term`. Mirrors
+	 * WP-CLI's Menu_Item_Command: builds the menu-item-* arg array and calls
+	 * wp_update_nav_menu_item(), which applies esc_url_raw to the URL. The
+	 * title is NOT sanitized downstream (kses is skipped for unfiltered_html
+	 * admins, and Walker_Nav_Menu renders titles unescaped), so every title
+	 * path here must sanitize_text_field before it reaches core.
+	 */
+	private function handle_menu_item_add( $positional, $flags ) {
+		$sub    = $this->current_command;
+		$known  = array( 'description', 'target', 'classes', 'parent_id', 'position', 'porcelain' );
+		if ( 'menu item add-custom' === $sub ) {
+			$reject = $this->reject_unknown_flags( $sub, $flags, $known, array(
+				'title' => __( 'For add-custom the title is the second positional argument: menu item add-custom <menu> <title> <link>.', 'vibe-ai' ),
+				'link'  => __( 'The link is the third positional argument: menu item add-custom <menu> <title> <link>.', 'vibe-ai' ),
+			) );
+		} else {
+			$reject = $this->reject_unknown_flags( $sub, $flags, array_merge( $known, array( 'title' ) ) );
+		}
+		if ( $reject ) {
+			return $reject;
+		}
+		$menu = isset( $positional[0] ) ? (string) $positional[0] : '';
+		if ( '' === trim( $menu ) ) {
+			return $this->error_result( __( 'Usage: menu item add-custom <menu> <title> <link> | add-post <menu> <post-id> | add-term <menu> <taxonomy> <term-id>', 'vibe-ai' ) );
+		}
+		$menu_obj = wp_get_nav_menu_object( $menu );
+		if ( ! $menu_obj ) {
+			/* translators: %s: menu name/slug/ID */
+			return $this->error_result( sprintf( __( 'Menu "%s" not found. Run `menu list` to see menus, or create it first with `menu create`.', 'vibe-ai' ), $menu ) );
+		}
+
+		$item = array( 'menu-item-status' => 'publish' );
+		if ( isset( $flags['description'] ) ) {
+			$item['menu-item-description'] = sanitize_text_field( (string) $flags['description'] );
+		}
+		if ( isset( $flags['target'] ) ) {
+			$item['menu-item-target'] = '_blank' === $flags['target'] ? '_blank' : '';
+		}
+		if ( isset( $flags['classes'] ) ) {
+			$item['menu-item-classes'] = implode( ' ', array_map( 'sanitize_html_class', preg_split( '/\s+/', (string) $flags['classes'] ) ) );
+		}
+		if ( isset( $flags['parent_id'] ) ) {
+			$item['menu-item-parent-id'] = (int) $flags['parent_id'];
+		}
+		if ( isset( $flags['position'] ) ) {
+			$item['menu-item-position'] = (int) $flags['position'];
+		}
+
+		if ( 'menu item add-custom' === $sub ) {
+			$title = isset( $positional[1] ) ? (string) $positional[1] : '';
+			$link  = isset( $positional[2] ) ? (string) $positional[2] : '';
+			if ( '' === trim( $title ) || '' === trim( $link ) ) {
+				return $this->error_result( __( 'Usage: menu item add-custom <menu> <title> <link>', 'vibe-ai' ) );
+			}
+			$item['menu-item-type']  = 'custom';
+			$item['menu-item-title'] = sanitize_text_field( $title );
+			$item['menu-item-url']   = $link; // wp_update_nav_menu_item runs esc_url_raw on this.
+		} elseif ( 'menu item add-post' === $sub ) {
+			$post_id = isset( $positional[1] ) ? (int) $positional[1] : 0;
+			$post    = $post_id ? get_post( $post_id ) : null;
+			if ( ! $post ) {
+				/* translators: %s: post ID */
+				return $this->error_result( sprintf( __( 'Usage: menu item add-post <menu> <post-id> (post %s not found).', 'vibe-ai' ), $positional[1] ?? '' ) );
+			}
+			$item['menu-item-type']      = 'post_type';
+			$item['menu-item-object']    = $post->post_type;
+			$item['menu-item-object-id'] = $post_id;
+			if ( isset( $flags['title'] ) ) {
+				$item['menu-item-title'] = sanitize_text_field( (string) $flags['title'] );
+			}
+		} else { // menu item add-term
+			$taxonomy = isset( $positional[1] ) ? (string) $positional[1] : '';
+			$term_id  = isset( $positional[2] ) ? (int) $positional[2] : 0;
+			$tax      = $taxonomy ? get_taxonomy( $taxonomy ) : false;
+			if ( ! $tax ) {
+				/* translators: %s: taxonomy slug */
+				return $this->error_result( sprintf( __( 'Taxonomy "%s" does not exist. Run `taxonomy list`.', 'vibe-ai' ), $taxonomy ) );
+			}
+			if ( $term_id <= 0 || ! get_term_by( 'id', $term_id, $taxonomy ) ) {
+				/* translators: 1: term ID, 2: taxonomy slug */
+				return $this->error_result( sprintf( __( 'Term %1$s not found in taxonomy "%2$s". Run `term list %2$s`.', 'vibe-ai' ), $positional[2] ?? '', $taxonomy ) );
+			}
+			$item['menu-item-type']      = 'taxonomy';
+			$item['menu-item-object']    = $taxonomy;
+			$item['menu-item-object-id'] = $term_id;
+			if ( isset( $flags['title'] ) ) {
+				$item['menu-item-title'] = sanitize_text_field( (string) $flags['title'] );
+			}
+		}
+
+		$item_id = wp_update_nav_menu_item( (int) $menu_obj->term_id, 0, $item );
+		if ( is_wp_error( $item_id ) ) {
+			return $this->error_result( $item_id->get_error_message() );
+		}
+		// Upstream recalculates sibling positions on insertion at a taken slot
+		// (menu-item.feature); without this two items share a menu_order.
+		if ( isset( $flags['position'] ) && (int) $flags['position'] > 0 ) {
+			$this->place_menu_item( (int) $menu_obj->term_id, (int) $item_id, (int) $flags['position'] );
+		}
+		// wp-admin fires this on every menu save and cache engines purge on it;
+		// wp_update_nav_menu_item alone never does (real WP-CLI shares that
+		// staleness bug — deliberate divergence).
+		do_action( 'wp_update_nav_menu', (int) $menu_obj->term_id );
+		WPVibe_Change_Tracker::mark( array(
+			'summary'      => "Menu item added to {$menu_obj->name}",
+			'action_label' => 'Refresh',
+		) );
+		if ( ! empty( $flags['porcelain'] ) ) {
+			return $this->success_result( (int) $item_id );
+		}
+		return $this->success_result( array(
+			/* translators: 1: menu name, 2: menu item ID */
+			'message'      => sprintf( __( 'Added item to menu "%1$s" (item ID %2$d).', 'vibe-ai' ), $menu_obj->name, (int) $item_id ),
+			'menu_item_id' => (int) $item_id,
+		) );
+	}
+
+
+	private function handle_menu_location_assign( $positional, $flags ) {
+		$reject = $this->reject_unknown_flags( 'menu location assign', $flags, array() );
+		if ( $reject ) {
+			return $reject;
+		}
+		$menu     = isset( $positional[0] ) ? (string) $positional[0] : '';
+		$location = isset( $positional[1] ) ? (string) $positional[1] : '';
+		if ( '' === trim( $menu ) || '' === trim( $location ) ) {
+			return $this->error_result( __( 'Usage: menu location assign <menu> <location>', 'vibe-ai' ) );
+		}
+		$menu_obj = wp_get_nav_menu_object( $menu );
+		if ( ! $menu_obj ) {
+			/* translators: %s: menu name/slug/ID */
+			return $this->error_result( sprintf( __( 'Menu "%s" not found. Run `menu list`.', 'vibe-ai' ), $menu ) );
+		}
+		$registered = get_registered_nav_menus();
+		if ( ! isset( $registered[ $location ] ) ) {
+			$known = ! empty( $registered ) ? implode( ', ', array_keys( $registered ) ) : __( '(the active theme registers none)', 'vibe-ai' );
+			/* translators: 1: location slug, 2: registered location slugs */
+			return $this->error_result( sprintf( __( 'Location "%1$s" is not registered by the active theme. Registered locations: %2$s. Run `menu location list`.', 'vibe-ai' ), $location, $known ) );
+		}
+		$locations = get_nav_menu_locations();
+		if ( ! is_array( $locations ) ) {
+			$locations = array();
+		}
+		$locations[ $location ] = (int) $menu_obj->term_id;
+		set_theme_mod( 'nav_menu_locations', $locations );
+		do_action( 'wp_update_nav_menu', (int) $menu_obj->term_id );
+		WPVibe_Change_Tracker::mark( array(
+			'summary'      => "Menu '{$menu_obj->name}' assigned to '{$location}'",
+			'action_label' => 'Refresh',
+		) );
+		return $this->success_result( array(
+			/* translators: 1: menu name, 2: location slug */
+			'message' => sprintf( __( 'Assigned menu "%1$s" to theme location "%2$s".', 'vibe-ai' ), $menu_obj->name, $location ),
+		) );
+	}
+
+
+	private function handle_menu_item_update( $positional, $flags ) {
+		$reject = $this->reject_unknown_flags( 'menu item update', $flags, array( 'title', 'link', 'description', 'target', 'classes', 'parent_id', 'position' ), array(
+			'attr_title' => __( 'The title attribute is outside the emulated subset; edit it in wp-admin (Appearance > Menus).', 'vibe-ai' ),
+			'xfn'        => __( 'XFN relationships are outside the emulated subset; edit them in wp-admin (Appearance > Menus).', 'vibe-ai' ),
+		) );
+		if ( $reject ) {
+			return $reject;
+		}
+		$id = isset( $positional[0] ) ? (int) $positional[0] : 0;
+		if ( $id <= 0 ) {
+			return $this->error_result( __( 'Usage: menu item update <db-id> [--title=<title>] [--link=<url>] [--description=<text>] [--target=<_blank>] [--classes=<classes>] [--parent-id=<id>] [--position=<n>]', 'vibe-ai' ) );
+		}
+		$post = get_post( $id );
+		if ( ! $post || 'nav_menu_item' !== $post->post_type ) {
+			// Upstream Menu_Item_Command::get error text and exit code.
+			return $this->error_result( __( 'Invalid menu item.', 'vibe-ai' ) );
+		}
+		$terms    = get_the_terms( $id, 'nav_menu' );
+		$menu_obj = ( is_array( $terms ) && ! empty( $terms ) && ! is_wp_error( $terms ) ) ? wp_get_nav_menu_object( (int) $terms[0]->term_id ) : false;
+		if ( ! $menu_obj ) {
+			// Orphaned item: passing menu 0 into core "succeeds" while assigning
+			// the item to no menu — a wrong-success. Upstream errors here too.
+			return $this->error_result( __( 'Invalid menu.', 'vibe-ai' ) );
+		}
+		// _menu_item_type comes from meta, NOT wp_setup_nav_menu_item — missing
+		// it rewrites a post/term item as `custom`, breaking the link silently.
+		$type  = (string) get_post_meta( $id, '_menu_item_type', true );
+		$setup = wp_setup_nav_menu_item( $post );
+		// Core blanks every menu-item-* field not passed (the #28138 quirk), so
+		// current values are the defaults and flags override. Position 0 makes
+		// core append (#28140), so the current order maps to at least 1.
+		$current_position = ( 0 === (int) $setup->menu_order ) ? 1 : (int) $setup->menu_order;
+		$item = array(
+			'menu-item-status'      => $setup->post_status ? $setup->post_status : 'publish',
+			'menu-item-type'        => '' !== $type ? $type : (string) $setup->type,
+			'menu-item-object'      => (string) $setup->object,
+			'menu-item-object-id'   => (int) $setup->object_id,
+			'menu-item-parent-id'   => (int) $setup->menu_item_parent,
+			'menu-item-position'    => $current_position,
+			'menu-item-title'       => (string) $setup->title,
+			'menu-item-url'         => (string) $setup->url,
+			'menu-item-description' => (string) $setup->description,
+			'menu-item-attr-title'  => (string) $setup->attr_title,
+			'menu-item-target'      => (string) $setup->target,
+			'menu-item-classes'     => implode( ' ', (array) $setup->classes ),
+			'menu-item-xfn'         => (string) $setup->xfn,
+		);
+		$prior = array( 'title' => $item['menu-item-title'], 'url' => $item['menu-item-url'] );
+		if ( isset( $flags['title'] ) ) {
+			$item['menu-item-title'] = sanitize_text_field( (string) $flags['title'] );
+		}
+		if ( isset( $flags['link'] ) ) {
+			$item['menu-item-url'] = (string) $flags['link']; // wp_update_nav_menu_item runs esc_url_raw on this.
+		}
+		if ( isset( $flags['description'] ) ) {
+			$item['menu-item-description'] = sanitize_text_field( (string) $flags['description'] );
+		}
+		if ( isset( $flags['target'] ) ) {
+			$item['menu-item-target'] = '_blank' === $flags['target'] ? '_blank' : '';
+		}
+		if ( isset( $flags['classes'] ) ) {
+			$item['menu-item-classes'] = implode( ' ', array_map( 'sanitize_html_class', preg_split( '/\s+/', (string) $flags['classes'] ) ) );
+		}
+		if ( isset( $flags['parent_id'] ) ) {
+			$item['menu-item-parent-id'] = (int) $flags['parent_id'];
+		}
+		$result = wp_update_nav_menu_item( (int) $menu_obj->term_id, $id, $item );
+		if ( is_wp_error( $result ) ) {
+			return $this->error_result( $result->get_error_message() );
+		}
+		if ( isset( $flags['position'] ) && (int) $flags['position'] > 0 ) {
+			$this->place_menu_item( (int) $menu_obj->term_id, $id, (int) $flags['position'] );
+		}
+		do_action( 'wp_update_nav_menu', (int) $menu_obj->term_id );
+		$url_changed = $item['menu-item-url'] !== $prior['url'];
+		WPVibe_Change_Tracker::mark( array(
+			// A repointed link is invisible in the nav (same title, new
+			// destination) — the mark is where the old->new URL stays visible.
+			'summary'      => $url_changed
+				? "Menu item link changed: {$prior['url']} -> {$item['menu-item-url']}"
+				: "Menu item updated in {$menu_obj->name}",
+			'action_label' => 'Refresh',
+		) );
+		return $this->success_result( array(
+			'message' => __( 'Menu item updated.', 'vibe-ai' ),
+			'prior'   => $prior,
+		) );
+	}
+
+
+	private function handle_menu_item_delete( $positional, $flags ) {
+		$reject = $this->reject_unknown_flags( 'menu item delete', $flags, array() );
+		if ( $reject ) {
+			return $reject;
+		}
+		if ( empty( $positional ) ) {
+			return $this->error_result( __( 'Usage: menu item delete <db-id> [<db-id>...]', 'vibe-ai' ) );
+		}
+		$count         = 0;
+		$errors        = 0;
+		$warnings      = array();
+		$deleted_names = array();
+		$menus_touched = array();
+		foreach ( $positional as $arg ) {
+			$id   = (int) $arg;
+			$post = $id > 0 ? get_post( $id ) : null;
+			// Title read pre-delete (the row is gone afterwards), recorded only on success.
+			$title = ( $post && 'nav_menu_item' === $post->post_type )
+				? (string) ( wp_setup_nav_menu_item( $post )->title ?? '' ) . ' (' . $id . ')'
+				: '';
+			// Upstream force-deletes whatever post the ID names. This type check
+			// is the security boundary: without it, `menu item delete <page-id>`
+			// is an ungated permanent delete of any post, bypassing the
+			// `post delete --force` approval gate.
+			if ( ! $post || 'nav_menu_item' !== $post->post_type ) {
+				/* translators: %s: menu item ID */
+				$warnings[] = sprintf( __( 'Couldn\'t delete menu item %s: not a menu item.', 'vibe-ai' ), $arg );
+				$errors++;
+				continue;
+			}
+			$terms        = get_the_terms( $id, 'nav_menu' );
+			$menu_term_id = ( is_array( $terms ) && ! empty( $terms ) && ! is_wp_error( $terms ) ) ? (int) $terms[0]->term_id : 0;
+			$parent_id    = (int) get_post_meta( $id, '_menu_item_menu_item_parent', true );
+			$result       = wp_delete_post( $id, true );
+			if ( ! $result ) {
+				/* translators: %s: menu item ID */
+				$warnings[] = sprintf( __( 'Couldn\'t delete menu item %s.', 'vibe-ai' ), $arg );
+				$errors++;
+				continue;
+			}
+			$count++;
+			$deleted_names[] = $title;
+			// Reparent children to the grandparent (upstream parity: the
+			// subtree survives the middle item's deletion).
+			$children = get_posts( array(
+				'post_type'   => 'nav_menu_item',
+				'numberposts' => -1,
+				'post_status' => 'any',
+				'fields'      => 'ids',
+				'meta_key'    => '_menu_item_menu_item_parent',
+				'meta_value'  => (string) $id,
+			) );
+			foreach ( (array) $children as $child_id ) {
+				update_post_meta( (int) $child_id, '_menu_item_menu_item_parent', $parent_id );
+				clean_post_cache( (int) $child_id );
+			}
+			if ( $menu_term_id ) {
+				$menus_touched[ $menu_term_id ] = true;
+			}
+		}
+		foreach ( array_keys( $menus_touched ) as $mid ) {
+			$this->renumber_menu_items( $this->menu_sibling_ids( $mid ) );
+			do_action( 'wp_update_nav_menu', $mid );
+		}
+		if ( $count > 0 ) {
+			WPVibe_Change_Tracker::mark( array(
+				'summary'      => "Menu items deleted: {$count}",
+				'action_label' => 'Refresh',
+			) );
+		}
+		$notice = implode( "\n", $warnings );
+		if ( $errors > 0 ) {
+			// Force-deletes are permanent; the failing batch still names what it destroyed.
+			$destroyed = $deleted_names
+				/* translators: %s: list of deleted menu items */
+				? "\n" . sprintf( __( 'Deleted before the failure: %s.', 'vibe-ai' ), implode( ', ', $deleted_names ) )
+				: '';
+			/* translators: 1: success count, 2: total */
+			return $this->error_result( trim( sprintf( __( 'Only deleted %1$d of %2$d menu items.', 'vibe-ai' ), $count, count( $positional ) ) . $destroyed . "\n" . $notice ) );
+		}
+		return $this->success_result( array(
+			/* translators: 1: success count, 2: total */
+			'message' => sprintf( __( 'Deleted %1$d of %2$d menu items.', 'vibe-ai' ), $count, count( $positional ) ),
+		), $notice );
+	}
+
+
+	/**
+	 * IDs of a menu's items in menu_order. Filters the nav_menu tax by term_id —
+	 * upstream filters term_taxonomy_id with a term_id value, which reorders the
+	 * wrong menu on sites where the IDs diverge. Deliberate divergence.
+	 */
+	private function menu_sibling_ids( $menu_term_id ) {
+		$ids = get_posts( array(
+			'post_type'   => 'nav_menu_item',
+			'numberposts' => -1,
+			'orderby'     => 'menu_order',
+			'order'       => 'ASC',
+			'post_status' => 'any',
+			'fields'      => 'ids',
+			'tax_query'   => array(
+				array(
+					'taxonomy' => 'nav_menu',
+					'field'    => 'term_id',
+					'terms'    => (int) $menu_term_id,
+				),
+			),
+		) );
+		return array_map( 'intval', (array) $ids );
+	}
+
+
+	/** Splice an item into a menu at a 1-indexed position (clamped) and renumber. */
+	private function place_menu_item( $menu_term_id, $item_id, $position ) {
+		$ids      = array_values( array_diff( $this->menu_sibling_ids( $menu_term_id ), array( (int) $item_id ) ) );
+		$position = max( 1, min( (int) $position, count( $ids ) + 1 ) );
+		array_splice( $ids, $position - 1, 0, array( (int) $item_id ) );
+		$this->renumber_menu_items( $ids );
+	}
+
+
+	/** Write contiguous 1..N menu_order following the given ID order, touching only changed rows. */
+	private function renumber_menu_items( $ordered_ids ) {
+		foreach ( array_values( (array) $ordered_ids ) as $idx => $id ) {
+			$target = $idx + 1;
+			$post   = get_post( $id );
+			if ( $post && (int) $post->menu_order !== $target ) {
+				wp_update_post( array( 'ID' => (int) $id, 'menu_order' => $target ) );
+			}
+		}
+	}
+
+
 	private function handle_widget_list( $positional, $flags ) {
 		global $wp_registered_sidebars;
 		// Not the raw option: core strips the legacy array_version key and
@@ -216,6 +625,53 @@ trait WPVibe_CLI_Misc {
 			'action_label' => 'Refresh',
 		) );
 		return $this->success_result( array( 'message' => __( 'Rewrite rules flushed.', 'vibe-ai' ) ) );
+	}
+
+
+	private function handle_rewrite_structure( $positional, $flags ) {
+		global $wp_rewrite;
+		$reject = $this->reject_unknown_flags( 'rewrite structure', $flags, array( 'category_base', 'tag_base', 'hard' ) );
+		if ( $reject ) {
+			return $reject;
+		}
+		$structure = isset( $positional[0] ) ? (string) $positional[0] : '';
+		if ( '' === $structure ) {
+			return $this->error_result( __( 'Usage: rewrite structure <permastruct> [--category-base=<base>] [--tag-base=<base>] [--hard]', 'vibe-ai' ) );
+		}
+		if ( ! $this->skip_destructive ) {
+			// classify_destructive should have gated this; defense-in-depth.
+			return $this->error_result( __( 'rewrite structure requires explicit approval.', 'vibe-ai' ) );
+		}
+		$wp_rewrite->set_permalink_structure( $structure );
+		if ( isset( $flags['category_base'] ) ) {
+			$wp_rewrite->set_category_base( (string) $flags['category_base'] );
+		}
+		if ( isset( $flags['tag_base'] ) ) {
+			$wp_rewrite->set_tag_base( (string) $flags['tag_base'] );
+		}
+		// --hard also rewrites .htaccess; soft flush otherwise. Matches upstream,
+		// which shells out to `rewrite flush [--hard]` after setting structure.
+		// The .htaccess writer (save_mod_rewrite_rules) lives in wp-admin, which
+		// the REST context doesn't bootstrap — load it so --hard isn't a silent
+		// soft flush that still reports success.
+		$hard = ! empty( $flags['hard'] );
+		if ( $hard && ! function_exists( 'save_mod_rewrite_rules' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/misc.php';
+		}
+		flush_rewrite_rules( $hard );
+		WPVibe_Change_Tracker::mark( array(
+			'summary'      => 'Permalink structure updated',
+			'action_label' => 'Refresh',
+		) );
+		// Upstream parity: multisite can't generate .htaccess, warn but exit 0.
+		$notice = ( $hard && is_multisite() )
+			? __( "WordPress can't generate .htaccess file for a multisite install.", 'vibe-ai' )
+			: '';
+		return $this->success_result( array(
+			/* translators: %s: permalink structure */
+			'message'   => sprintf( __( 'Permalink structure set to "%s" and rewrite rules flushed.', 'vibe-ai' ), $structure ),
+			'structure' => $structure,
+		), $notice );
 	}
 
 

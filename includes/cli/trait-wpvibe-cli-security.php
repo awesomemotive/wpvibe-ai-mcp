@@ -110,6 +110,98 @@ trait WPVibe_CLI_Security {
 			}
 		}
 
+		// Terms have no trash: deletion permanently detaches the term from every
+		// post, reparents child terms, and reassigns orphaned objects to the
+		// taxonomy's default term. The preview resolves each target exactly the
+		// way the handler will and shows the attached-post and child counts —
+		// that's what makes the approval informed. Deliberately NOT registered
+		// in drift_sensitive_fields: $term->count changes legitimately between
+		// approval and execution (a cron publishes a post), and pinning it
+		// would fail-close approved deletes.
+		if ( 'term delete' === $command_key ) {
+			$taxonomy = (string) ( $positional[0] ?? '' );
+			$targets  = array_slice( $positional, 1 );
+			// Anything the handler will refuse outright must not burn an
+			// approval click first: usage errors, nav_menu, unknown taxonomy,
+			// missing per-taxonomy delete cap.
+			if ( '' === $taxonomy || empty( $targets ) || 'nav_menu' === $taxonomy ) {
+				return null;
+			}
+			$tax = get_taxonomy( $taxonomy );
+			if ( ! $tax || ! current_user_can( $tax->cap->delete_terms ) ) {
+				return null;
+			}
+			$previews = array();
+			foreach ( $targets as $t ) {
+				$previews[] = $this->build_term_delete_target_preview( $taxonomy, (string) $t, $flags );
+			}
+			$reason = __( 'Terms are deleted permanently (WordPress has no trash for them). Posts attached to a deleted term lose that categorization, child terms are reparented, and posts left with no term in the taxonomy are reassigned to its default term. Review the attached-post counts before approving.', 'vibe-ai' );
+			if ( 1 === count( $previews ) ) {
+				return array(
+					'operation' => 'term delete:' . $taxonomy . ':' . $targets[0],
+					'reason'    => $reason,
+					'dry_run'   => $previews[0],
+				);
+			}
+			return array(
+				'operation' => 'term delete:' . $taxonomy . ':bulk:' . implode( ',', $targets ),
+				'reason'    => $reason,
+				'dry_run'   => array(
+					'command'  => 'wp term delete ' . $taxonomy,
+					'taxonomy' => $taxonomy,
+					'count'    => count( $previews ),
+					'targets'  => $previews,
+				),
+			);
+		}
+
+		// rewrite structure rewrites every URL on the site. Technically reversible
+		// (set the old structure back), but on hosts without writable rewrite
+		// support (nginx, locked .htaccess) it half-applies to site-wide 404s the
+		// AI can't detect from a success response — irreversible in practice, like
+		// search-replace. Approval-gated with an old->new preview.
+		if ( 'rewrite structure' === $command_key ) {
+			$new = $positional[0] ?? '';
+			if ( '' === $new ) {
+				return null; // Handler will return a usage error.
+			}
+			$current = get_option( 'permalink_structure' );
+			$dry     = array(
+				'command' => 'wp rewrite structure ' . $new,
+				'from'    => '' === (string) $current ? __( '(plain / default)', 'vibe-ai' ) : (string) $current,
+				'to'      => $new,
+			);
+			// The handler also applies these; an approval that hides them is
+			// approving a smaller change than the one that runs.
+			if ( isset( $flags['category_base'] ) ) {
+				$dry['category_base_from'] = (string) get_option( 'category_base' );
+				$dry['category_base_to']   = (string) $flags['category_base'];
+			}
+			if ( isset( $flags['tag_base'] ) ) {
+				$dry['tag_base_from'] = (string) get_option( 'tag_base' );
+				$dry['tag_base_to']   = (string) $flags['tag_base'];
+			}
+			return array(
+				'operation' => 'rewrite_structure',
+				'reason'    => __( 'Changes the permalink structure for every URL on the site. Existing inbound links and search-engine-indexed URLs to the old structure will break unless redirects are in place, and on servers without writable rewrite support (some nginx or locked-down hosts) pretty permalinks may not fully apply. Review the change before approving.', 'vibe-ai' ),
+				'dry_run'   => $dry + array(
+					'note' => is_multisite()
+						? __( 'This is a multisite install: permalink behavior can differ from single-site, and this path is not covered by WPVibe testing on multisite. Verify URLs after applying.', 'vibe-ai' )
+						: __( 'Pretty permalinks depend on the server rewriting URLs (mod_rewrite/.htaccess on Apache, equivalent config on nginx). If the site 404s after this, the server lacks writable rewrite support.', 'vibe-ai' ),
+				),
+			);
+		}
+
+		// User account & role writes (issue #37). Not flagged destructive in the
+		// ALLOWLIST because gating is CONDITIONAL: only password/email changes and
+		// changes that flip a user's administrator-equivalence need approval, so
+		// routine subscriber creation and cosmetic edits run freely. The dedicated
+		// branch resolves the effective role (incl. default_role) exactly as the
+		// handler will and never puts a password in the operation key or preview.
+		if ( in_array( $command_key, array( 'user create', 'user update', 'user set-role', 'user add-role', 'user remove-role' ), true ) ) {
+			return $this->classify_user_write( $command_key, $positional, $flags );
+		}
+
 		// db query: mutating SQL needs approval. Bare-word verbs, plus REPLACE
 		// matched only as a statement so the REPLACE() string function inside a
 		// read-only SELECT is not misread as a write.
@@ -383,6 +475,11 @@ trait WPVibe_CLI_Security {
 			'role reset'        => __( 'Resets the role to its WordPress-default capabilities: custom grants are removed and removed defaults restored.', 'vibe-ai' ),
 			'user add-cap'      => __( 'Grants a capability directly to one user, on top of what their role provides.', 'vibe-ai' ),
 			'user remove-cap'   => __( 'Removes a capability granted directly to this user (role-derived capabilities are unaffected).', 'vibe-ai' ),
+			'user create'       => __( 'Creates a new user with administrator-equivalent access. A new privileged account is a common prompt-injection takeover step, so review the login, email and role before approving.', 'vibe-ai' ),
+			'user update'       => __( 'Changes a password, email address, or role in a way that affects account access: a password or email change can take over an account, and a role change can grant or remove administrator access. Review the change before approving.', 'vibe-ai' ),
+			'user set-role'     => __( 'Changes a user\'s role in a way that grants or removes administrator-equivalent access. Review the target and role before approving.', 'vibe-ai' ),
+			'user add-role'     => __( 'Adds an administrator-equivalent role to a user. Review the target and role before approving.', 'vibe-ai' ),
+			'user remove-role'  => __( 'Removes administrator-equivalent access from a user. Review the target before approving.', 'vibe-ai' ),
 		);
 		return $reasons[ $command_key ] ?? __( 'This operation is classified as destructive and requires explicit approval.', 'vibe-ai' );
 	}
@@ -517,6 +614,184 @@ trait WPVibe_CLI_Security {
 
 
 	/**
+	 * Approval decision for the user account/role write verbs. Returns null to
+	 * auto-execute, or {operation, reason, dry_run}. Gates on a CHANGE in the
+	 * target's administrator-equivalence (elevation OR demotion), plus any
+	 * password/email change on update. Operation keys use the resolved user ID
+	 * and a non-sensitive field signature — never the password value.
+	 */
+	private function classify_user_write( $command_key, $positional, $flags ) {
+		// A value-required flag in the bare space form (`--user_pass hunter2`)
+		// leaves its value as a stray positional; building an operation/dry-run
+		// here would embed that cleartext password in the pending op, approval
+		// page, and audit log. Skip gating: every handler refuses the bare form
+		// (require_flag_value / reject_unknown_flags) before any write runs.
+		foreach ( array( 'user_pass', 'user_email', 'role' ) as $vf ) {
+			if ( isset( $flags[ $vf ] ) && true === $flags[ $vf ] ) {
+				return null;
+			}
+		}
+		if ( 'user create' === $command_key ) {
+			$role = ( isset( $flags['role'] ) && true !== $flags['role'] && '' !== (string) $flags['role'] ) ? (string) $flags['role'] : (string) get_option( 'default_role' );
+			if ( ! $this->role_is_admin_equivalent( $role ) ) {
+				return null;
+			}
+			$login = isset( $positional[0] ) ? (string) $positional[0] : '?';
+			return array(
+				'operation' => 'user create:' . $login . ':role=' . $role,
+				'reason'    => $this->reason_for_command( 'user create' ),
+				'dry_run'   => $this->build_user_write_dry_run( 'user create', $positional, $flags, null, $role ),
+			);
+		}
+
+		$user = ! empty( $positional[0] ) ? $this->resolve_user( $positional[0] ) : null;
+
+		if ( 'user update' === $command_key ) {
+			$triggers = array();
+			if ( isset( $flags['user_pass'] ) ) {
+				$triggers[] = 'pass';
+			}
+			if ( isset( $flags['user_email'] ) ) {
+				$triggers[] = 'email';
+			}
+			$role = ( isset( $flags['role'] ) && true !== $flags['role'] ) ? (string) $flags['role'] : null;
+			if ( null !== $role ) {
+				// Every positional target gets --role applied, so the gate must
+				// inspect EACH one: gating only on $positional[0] lets a role
+				// change to a later target ride in unapproved. Gate if the change
+				// flips admin-equivalence for any target (elevation OR demotion),
+				// or if a target can't be resolved and the role is admin-grade
+				// (fail safe).
+				$will = $this->role_is_admin_equivalent( $role );
+				foreach ( $positional as $ident ) {
+					$u   = $this->resolve_user( $ident );
+					$was = $u ? $this->roles_include_admin_equivalent( (array) $u->roles ) : false;
+					if ( ! $u ? $will : ( $was !== $will ) ) {
+						$triggers[] = 'role=' . $role;
+						break;
+					}
+				}
+			}
+			if ( empty( $triggers ) ) {
+				return null;
+			}
+			sort( $triggers );
+			$ids = array();
+			foreach ( $positional as $ident ) {
+				$u     = $this->resolve_user( $ident );
+				$ids[] = $u ? (int) $u->ID : (string) $ident;
+			}
+			return array(
+				'operation' => 'user update:' . implode( ',', $ids ) . ':' . implode( ';', $triggers ),
+				'reason'    => $this->reason_for_command( 'user update' ),
+				'dry_run'   => $this->build_user_write_dry_run( 'user update', $positional, $flags, $user, $role ),
+			);
+		}
+
+		if ( 'user set-role' === $command_key ) {
+			$role = ( isset( $positional[1] ) && '' !== (string) $positional[1] ) ? (string) $positional[1] : (string) get_option( 'default_role' );
+			$was  = $user ? $this->roles_include_admin_equivalent( (array) $user->roles ) : false;
+			$will = $this->role_is_admin_equivalent( $role );
+			if ( $was === $will ) {
+				return null;
+			}
+			$target = $user ? (int) $user->ID : (string) $positional[0];
+			return array(
+				'operation' => 'user set-role:' . $target . ':' . $role,
+				'reason'    => $this->reason_for_command( 'user set-role' ),
+				'dry_run'   => $this->build_user_write_dry_run( 'user set-role', $positional, $flags, $user, $role ),
+			);
+		}
+
+		if ( 'user add-role' === $command_key ) {
+			$roles = array_slice( $positional, 1 );
+			if ( ! $this->roles_include_admin_equivalent( $roles ) ) {
+				return null;
+			}
+			$target = $user ? (int) $user->ID : (string) $positional[0];
+			return array(
+				'operation' => 'user add-role:' . $target . ':' . implode( ',', $roles ),
+				'reason'    => $this->reason_for_command( 'user add-role' ),
+				'dry_run'   => $this->build_user_write_dry_run( 'user add-role', $positional, $flags, $user, implode( ',', $roles ) ),
+			);
+		}
+
+		if ( 'user remove-role' === $command_key ) {
+			$roles     = array_slice( $positional, 1 );
+			$remaining = $user ? array_values( array_diff( (array) $user->roles, $roles ) ) : array();
+			$was       = $user ? $this->roles_include_admin_equivalent( (array) $user->roles ) : false;
+			$will      = $this->roles_include_admin_equivalent( $remaining );
+			if ( ! $was || $will ) {
+				return null;
+			}
+			$target = $user ? (int) $user->ID : (string) $positional[0];
+			return array(
+				'operation' => 'user remove-role:' . $target . ':' . implode( ',', $roles ),
+				'reason'    => $this->reason_for_command( 'user remove-role' ),
+				'dry_run'   => $this->build_user_write_dry_run( 'user remove-role', $positional, $flags, $user, implode( ',', $roles ) ),
+			);
+		}
+
+		return null;
+	}
+
+
+	/** Approval preview for a user write. Passwords are never echoed; roles/emails are shown for review. */
+	private function build_user_write_dry_run( $command_key, $positional, $flags, $user, $role ) {
+		$dry = array( 'command' => 'wp ' . $command_key );
+		// Multi-target update: enumerate every affected user so the approval shows
+		// the full set the command applies --role/password/email to, not just the first.
+		if ( 'user update' === $command_key && count( $positional ) > 1 ) {
+			$dry['targets'] = array();
+			foreach ( $positional as $ident ) {
+				$u = $this->resolve_user( $ident );
+				$dry['targets'][] = $u
+					? array( 'user' => $u->user_login, 'user_id' => (int) $u->ID, 'current_roles' => array_values( (array) $u->roles ) )
+					: array( 'user' => (string) $ident, 'note' => __( 'not found; execution will report it', 'vibe-ai' ) );
+			}
+		} elseif ( $user ) {
+			$dry['user']          = $user->user_login;
+			$dry['user_id']       = (int) $user->ID;
+			$dry['current_roles'] = array_values( (array) $user->roles );
+		} elseif ( 'user create' === $command_key ) {
+			$dry['user']  = isset( $positional[0] ) ? (string) $positional[0] : '?';
+			$dry['email'] = isset( $positional[1] ) ? (string) $positional[1] : '?';
+		} else {
+			$dry['user'] = isset( $positional[0] ) ? (string) $positional[0] : '?';
+			$dry['note'] = __( 'User not found; execution will fail.', 'vibe-ai' );
+		}
+
+		if ( isset( $flags['user_pass'] ) ) {
+			$dry['password_change'] = true;
+			$dry['password']        = __( '(hidden; not shown in the approval)', 'vibe-ai' );
+		}
+		if ( isset( $flags['user_email'] ) ) {
+			$dry['email_change_to'] = (string) $flags['user_email'];
+			if ( $user ) {
+				$dry['email_change_from'] = $user->user_email;
+			}
+		}
+		if ( null !== $role && '' !== (string) $role ) {
+			$verb = ( 'user remove-role' === $command_key ) ? 'remove' : 'to';
+			$dry[ 'remove' === $verb ? 'roles_removed' : 'role_to' ] = (string) $role;
+			$high = array();
+			foreach ( explode( ',', (string) $role ) as $r ) {
+				$high = array_merge( $high, $this->role_high_risk_caps( trim( $r ) ) );
+			}
+			$high = array_values( array_unique( $high ) );
+			if ( $high && 'user remove-role' !== $command_key ) {
+				$dry['high_risk_capabilities'] = $high;
+				/* translators: %s: capability list */
+				$dry['warning'] = sprintf( __( 'This role grants administrator-equivalent power (%s). A user with it can take over the site.', 'vibe-ai' ), implode( ', ', $high ) );
+			} elseif ( $user && $this->roles_include_admin_equivalent( (array) $user->roles ) ) {
+				$dry['warning'] = __( 'This removes administrator-equivalent access from an existing admin account. Execution refuses if it would strip the connected account or the last user holding the built-in administrator role. If the site\'s only admins use a custom admin-capable role instead, that last-admin check does not see them, so approving this can leave the site with no administrator; confirm another administrator remains before approving.', 'vibe-ai' );
+			}
+		}
+		return $dry;
+	}
+
+
+	/**
 	 * Build the enumerated preview for a bulk op. Generic across target types
 	 * (post / user / plugin); the per-target labeling lives in describe_target.
 	 * Capped so a 5,000-id bulk doesn't produce a 5,000-row preview.
@@ -625,6 +900,47 @@ trait WPVibe_CLI_Security {
 		$dry['value_preview']    = mb_substr( $str, 0, 200 ) . ( strlen( $str ) > 200 ? '… [truncated]' : '' );
 		if ( in_array( $key, self::BLOCKED_OPTIONS, true ) ) {
 			$dry['warning'] = __( 'This option is permanently protected by WPVibe; execution will refuse even after approval.', 'vibe-ai' );
+		}
+		return $dry;
+	}
+
+
+	/**
+	 * Approval preview for one term delete target. Resolves via the SAME
+	 * resolve_term()/is_default_term() the handler uses, so the preview can
+	 * never describe a different term than the one that gets deleted.
+	 */
+	private function build_term_delete_target_preview( $taxonomy, $ident, $flags ) {
+		$dry  = array( 'taxonomy' => $taxonomy, 'target' => $ident );
+		$term = $this->resolve_term( $taxonomy, $ident, $flags );
+		if ( is_array( $term ) && isset( $term['exit_code'] ) ) {
+			/* translators: %s: the refusal the handler will produce */
+			$dry['note'] = sprintf( __( 'Execution will refuse this target: %s', 'vibe-ai' ), $term['stderr'] );
+			return $dry;
+		}
+		if ( ! $term ) {
+			$dry['note'] = __( 'Term not found; execution will report it as already deleted.', 'vibe-ai' );
+			return $dry;
+		}
+		if ( $this->is_default_term( $taxonomy, (int) $term->term_id ) ) {
+			$dry['term_id'] = (int) $term->term_id;
+			$dry['name']    = (string) $term->name;
+			$dry['warning'] = __( 'This is the taxonomy\'s default term; execution will refuse it even after approval.', 'vibe-ai' );
+			return $dry;
+		}
+		$dry['term_id']        = (int) $term->term_id;
+		$dry['name']           = (string) $term->name;
+		$dry['slug']           = (string) $term->slug;
+		$dry['attached_posts'] = isset( $term->count ) ? (int) $term->count : 0;
+		$children              = get_terms( array(
+			'taxonomy'   => $taxonomy,
+			'parent'     => (int) $term->term_id,
+			'hide_empty' => false,
+			'fields'     => 'ids',
+		) );
+		$dry['child_terms'] = is_array( $children ) ? count( $children ) : 0;
+		if ( $dry['child_terms'] > 0 ) {
+			$dry['note'] = __( 'Child terms will be reparented to this term\'s parent.', 'vibe-ai' );
 		}
 		return $dry;
 	}

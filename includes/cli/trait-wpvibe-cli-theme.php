@@ -384,4 +384,85 @@ trait WPVibe_CLI_Theme {
 		return $this->success_result( $results );
 	}
 
+
+	private function handle_theme_mod_set( $positional, $flags ) {
+		$reject = $this->reject_unknown_flags( 'theme mod set', $flags, array() );
+		if ( $reject ) {
+			return $reject;
+		}
+		$mod = isset( $positional[0] ) ? (string) $positional[0] : '';
+		if ( '' === $mod || ! isset( $positional[1] ) ) {
+			return $this->error_result( __( 'Usage: theme mod set <mod> <value>', 'vibe-ai' ) );
+		}
+		if ( in_array( $mod, self::THEME_MOD_OPTION_KEYS, true ) ) {
+			// set_theme_mod() on these writes where nothing reads: exit-0 no-op.
+			/* translators: 1: key name, 2: key name */
+			return $this->error_result( sprintf( __( '"%1$s" is a core option, not a theme mod; setting it as a theme mod would report success while changing nothing. Use `option update %2$s <value>` instead.', 'vibe-ai' ), $mod, $mod ) );
+		}
+		if ( ! in_array( $mod, self::THEME_MOD_SET_ALLOWED, true ) ) {
+			/* translators: 1: theme mod name, 2: allowed mod names */
+			return $this->error_result( sprintf( __( 'theme mod "%1$s" cannot be set via AI. Only scalar, non-markup mods are allowed: %2$s. Theme mods that hold HTML or scripts (header/footer code, custom HTML) must go through the code_snippet tool, which routes code through the approval panel; other options can be changed in the WordPress Customizer.', 'vibe-ai' ), $mod, implode( ', ', self::THEME_MOD_SET_ALLOWED ) ) );
+		}
+		$clean = $this->sanitize_theme_mod_value( $mod, (string) $positional[1] );
+		if ( null === $clean ) {
+			// Coercing bad input into a plausible value ("blank" -> "ba") is a
+			// stored wrong-success the AI cannot detect; refuse instead.
+			/* translators: 1: theme mod name, 2: expected format */
+			return $this->error_result( sprintf( __( 'Invalid value for theme mod "%1$s". Expected %2$s.', 'vibe-ai' ), $mod, $this->theme_mod_expected_format( $mod ) ) );
+		}
+		set_theme_mod( $mod, $clean );
+		WPVibe_Change_Tracker::mark( array(
+			'summary'      => "Theme mod set: {$mod}",
+			'action_label' => 'Refresh',
+		) );
+		return $this->success_result( array(
+			/* translators: 1: theme mod name, 2: stored value */
+			'message' => sprintf( __( 'Theme mod %1$s set to %2$s.', 'vibe-ai' ), $mod, (string) $clean ),
+		) );
+	}
+
+
+	/** Validate a safelisted theme mod to its expected scalar shape; null = refuse. */
+	private function sanitize_theme_mod_value( $mod, $value ) {
+		$value = (string) $value;
+		switch ( $mod ) {
+			case 'custom_logo':
+			case 'custom_css_post_id':
+				return ctype_digit( $value ) ? (int) $value : null;
+			case 'header_textcolor':
+				// 'blank' is core's sentinel for hiding header text (display_header_text()).
+				if ( 'blank' === $value ) {
+					return 'blank';
+				}
+				// Fall through to hex validation.
+			case 'background_color':
+				return preg_match( '/^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/', $value ) ? ltrim( $value, '#' ) : null;
+			case 'background_image':
+			case 'header_image':
+				$url = esc_url_raw( $value );
+				return '' !== $url ? $url : null;
+			default:
+				return sanitize_text_field( $value );
+		}
+	}
+
+
+	/** Human-readable expected format per safelisted mod, for the refusal text. */
+	private function theme_mod_expected_format( $mod ) {
+		switch ( $mod ) {
+			case 'custom_logo':
+			case 'custom_css_post_id':
+				return __( 'a numeric attachment/post ID', 'vibe-ai' );
+			case 'header_textcolor':
+				return __( 'a 3- or 6-digit hex color (with or without #), or "blank" to hide header text', 'vibe-ai' );
+			case 'background_color':
+				return __( 'a 3- or 6-digit hex color, with or without #', 'vibe-ai' );
+			case 'background_image':
+			case 'header_image':
+				return __( 'a valid http(s) URL', 'vibe-ai' );
+			default:
+				return __( 'a plain scalar value', 'vibe-ai' );
+		}
+	}
+
 }

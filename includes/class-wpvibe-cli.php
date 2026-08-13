@@ -157,6 +157,28 @@ class WPVibe_CLI {
 		'option patch'         => array( 'tier' => 'write', 'cap' => 'manage_options' ),
 		'rewrite flush'        => array( 'tier' => 'write', 'cap' => 'manage_options' ),
 		'search-replace'       => array( 'tier' => 'write', 'cap' => 'manage_options' ),
+		// Navigation, terms, theme mods, permalinks — thin wrappers over the same
+		// core functions WP-CLI calls (wp_create_nav_menu, wp_update_nav_menu_item,
+		// wp_insert_term, set_theme_mod, $wp_rewrite). The coarse cap here is the
+		// entry gate; term create additionally checks the taxonomy's own edit cap
+		// in its handler. rewrite structure is approval-gated in classify_destructive.
+		'menu create'          => array( 'tier' => 'write', 'cap' => 'edit_theme_options' ),
+		'menu item add-custom' => array( 'tier' => 'write', 'cap' => 'edit_theme_options' ),
+		'menu item add-post'   => array( 'tier' => 'write', 'cap' => 'edit_theme_options' ),
+		'menu item add-term'   => array( 'tier' => 'write', 'cap' => 'edit_theme_options' ),
+		'menu location assign' => array( 'tier' => 'write', 'cap' => 'edit_theme_options' ),
+		'term create'          => array( 'tier' => 'write', 'cap' => 'manage_categories' ),
+		'term update'          => array( 'tier' => 'write', 'cap' => 'manage_categories' ),
+		// term delete is approval-gated via a dedicated classify_destructive
+		// branch (terms have no trash), so no generic destructive meta here.
+		'term delete'          => array( 'tier' => 'write', 'cap' => 'manage_categories' ),
+		'menu item update'     => array( 'tier' => 'write', 'cap' => 'edit_theme_options' ),
+		// Deliberately ungated (2026-08 adversarial plan review) despite the
+		// permanent delete: one nav row, type-guarded to nav_menu_item in the
+		// handler, Change Tracker mark. Not an oversight vs post delete --force.
+		'menu item delete'     => array( 'tier' => 'write', 'cap' => 'edit_theme_options' ),
+		'theme mod set'        => array( 'tier' => 'write', 'cap' => 'edit_theme_options' ),
+		'rewrite structure'    => array( 'tier' => 'write', 'cap' => 'manage_options' ),
 		// Gate-era writes (2026-07: the 1.5.0 approval gate makes these safe).
 		'cron event run'    => array( 'tier' => 'write', 'cap' => 'manage_options', 'destructive' => true, 'bulk' => array( 'label' => 'cron_hook' ) ),
 		'cron event delete' => array( 'tier' => 'write', 'cap' => 'manage_options', 'destructive' => true, 'bulk' => array( 'label' => 'cron_hook' ) ),
@@ -172,6 +194,21 @@ class WPVibe_CLI {
 		'role reset'        => array( 'tier' => 'write', 'cap' => 'manage_options', 'destructive' => true ),
 		'user add-cap'      => array( 'tier' => 'write', 'cap' => 'promote_users', 'destructive' => true ),
 		'user remove-cap'   => array( 'tier' => 'write', 'cap' => 'promote_users', 'destructive' => true ),
+		// User account & meta writes (issue #37). Approval for password/email/role
+		// elevation comes from a dedicated classify_destructive branch (conditional
+		// on the field/role), NOT the generic destructive meta flag — gating every
+		// user write would recreate approval fatigue. Role assignment additionally
+		// checks promote_users inside the handler (term-create precedent).
+		'user create'       => array( 'tier' => 'write', 'cap' => 'create_users' ),
+		'user update'       => array( 'tier' => 'write', 'cap' => 'edit_users' ),
+		'user set-role'     => array( 'tier' => 'write', 'cap' => 'promote_users' ),
+		'user add-role'     => array( 'tier' => 'write', 'cap' => 'promote_users' ),
+		'user remove-role'  => array( 'tier' => 'write', 'cap' => 'promote_users' ),
+		'user meta get'     => array( 'tier' => 'read',  'cap' => 'list_users' ),
+		'user meta list'    => array( 'tier' => 'read',  'cap' => 'list_users' ),
+		'user meta add'     => array( 'tier' => 'write', 'cap' => 'edit_users' ),
+		'user meta update'  => array( 'tier' => 'write', 'cap' => 'edit_users' ),
+		'user meta delete'  => array( 'tier' => 'write', 'cap' => 'edit_users' ),
 	);
 
 	/** Administrator-equivalent power: allowed, but the approval preview flags them. */
@@ -187,6 +224,58 @@ class WPVibe_CLI {
 		'unfiltered_html',
 		'unfiltered_upload',
 		'update_core',
+	);
+
+	/**
+	 * HIGH_RISK_CAPS members excluded from the user-write approval GATE (they
+	 * still drive the preview's high_risk_capabilities warning): Editor holds
+	 * these on single-site, so gating on them would turn routine editor creation
+	 * into an approval click. The gate predicate is derived as HIGH_RISK_CAPS
+	 * minus this list (admin_equivalent_caps()), so a cap added to
+	 * HIGH_RISK_CAPS automatically gates unless deliberately listed here.
+	 */
+	const UNGATED_EDITOR_CAPS = array(
+		'unfiltered_html',
+		'unfiltered_upload',
+	);
+
+	/**
+	 * User-meta keys that ARE the capability/session system's storage. Writing
+	 * them via `user meta` would grant roles or forge sessions around every cap
+	 * check, so they are refused unconditionally — no --force escape, refused
+	 * even on the approved path. Matching is case-insensitive (wp_usermeta
+	 * meta_key collation is _ci) and by suffix so cross-blog/custom-prefix
+	 * variants (wp_5_capabilities, customprefix_user_level) are all caught.
+	 */
+	const USER_META_HARD_DENY_PATTERNS = array(
+		'/(^|_)capabilities$/',
+		'/(^|_)user_level$/',
+	);
+	/**
+	 * Credential-bearing user-meta keys: writes hard-denied AND values withheld
+	 * on read. One constant feeds both checks so the deny and withhold lists
+	 * cannot drift apart.
+	 */
+	const USER_META_CREDENTIAL_KEYS = array(
+		'session_tokens',
+		'_application_passwords',
+	);
+	/**
+	 * Key patterns whose VALUES are withheld on read (write stays allowed):
+	 * plugin-stored secrets — 2FA/TOTP seeds, backup codes, API keys — must not
+	 * enter the model transcript. Best-effort by naming convention; matched
+	 * against the lowercased key. A false positive only hides a value the user
+	 * can still see in wp-admin, so patterns lean broad.
+	 */
+	const USER_META_SECRET_VALUE_PATTERNS = array(
+		'/secret/',
+		'/totp/',
+		'/two[_-]?factor/',
+		'/2fa/',
+		'/backup[_-]?codes/',
+		'/api[_-]?(key|token)/',
+		'/private[_-]?key/',
+		'/password/',
 	);
 
 	/** WP core default capabilities (populate_roles). Never removable from the administrator role. */
@@ -339,7 +428,49 @@ class WPVibe_CLI {
 		'role reset'        => 'handle_role_reset',
 		'user add-cap'      => 'handle_user_add_cap',
 		'user remove-cap'   => 'handle_user_remove_cap',
+		'user create'       => 'handle_user_create',
+		'user update'       => 'handle_user_update',
+		'user set-role'     => 'handle_user_set_role',
+		'user add-role'     => 'handle_user_add_role',
+		'user remove-role'  => 'handle_user_remove_role',
+		'user meta get'     => 'handle_user_meta_get',
+		'user meta list'    => 'handle_user_meta_list',
+		'user meta add'     => 'handle_user_meta_add',
+		'user meta update'  => 'handle_user_meta_update',
+		'user meta delete'  => 'handle_user_meta_delete',
+		'menu create'          => 'handle_menu_create',
+		'menu item add-custom' => 'handle_menu_item_add',
+		'menu item add-post'   => 'handle_menu_item_add',
+		'menu item add-term'   => 'handle_menu_item_add',
+		'menu location assign' => 'handle_menu_location_assign',
+		'term create'          => 'handle_term_create',
+		'term update'          => 'handle_term_update',
+		'term delete'          => 'handle_term_delete',
+		'menu item update'     => 'handle_menu_item_update',
+		'menu item delete'     => 'handle_menu_item_delete',
+		'theme mod set'        => 'handle_theme_mod_set',
+		'rewrite structure'    => 'handle_rewrite_structure',
 	);
+
+	/**
+	 * Theme mods safe to set via AI: scalar values a theme reads as data, never
+	 * as markup echoed into the page. Anything not here is refused — a general
+	 * set_theme_mod() is a stored-XSS sink because many themes print mods (header
+	 * scripts, footer HTML) unescaped, and the CLI gate passes quoted markup as
+	 * data. Script/HTML slots must go through code_snippet's approval panel.
+	 */
+	const THEME_MOD_SET_ALLOWED = array(
+		'custom_logo',            // attachment ID (int)
+		'background_color',       // hex, no #
+		'header_textcolor',       // hex, or 'blank' to hide header text
+		'background_image',       // URL (esc_url_raw'd)
+		'header_image',           // URL
+		'custom_css_post_id',     // post ID (int)
+	);
+
+	// Keys AIs guess as theme mods that are actually core OPTIONS: set_theme_mod
+	// would write where nothing reads (exit-0 no-op). Redirected to option update.
+	const THEME_MOD_OPTION_KEYS = array( 'page_for_posts', 'page_on_front', 'show_on_front' );
 
 	const EMULATOR_NAME = 'WPVibe CLI emulation (vibe-ai plugin)';
 
@@ -439,7 +570,29 @@ class WPVibe_CLI {
 		'role reset'              => 'role reset <role-key>... | --all',
 		'user add-cap'            => 'user add-cap <id|login|email> <cap>',
 		'user remove-cap'         => 'user remove-cap <id|login|email> <cap>',
+		'user create'             => 'user create <user-login> <user-email> [--role=<role>] [--user_pass=<password>] [--display_name=<name>] [--first_name=<name>] [--last_name=<name>] [--user_url=<url>] [--send-email] [--porcelain] (omit --user_pass to auto-generate a hidden password and use --send-email to send the user a set-password link; --user_pass=<pw> is a last resort since it enters the raw command; creating an admin-capable role needs approval)',
+		'user update'             => 'user update <id|login|email>... [--user_email=<email>] [--role=<role>] [--display_name=<name>] [--first_name=<name>] [--last_name=<name>] [--user_url=<url>] [--user_pass=<password>] [--skip-email] (password, email, and admin role changes need approval; prefer letting the user reset their own password over --user_pass)',
+		'user set-role'           => 'user set-role <id|login|email> [<role>] (replaces all roles; granting or removing admin access needs approval)',
+		'user add-role'           => 'user add-role <id|login|email> <role> [<role>...] (adds roles; granting an admin-capable role needs approval)',
+		'user remove-role'        => 'user remove-role <id|login|email> <role> [<role>...] (removing admin access needs approval; the last admin is protected)',
+		'user meta get'           => 'user meta get <id|login|email> <key>',
+		'user meta list'          => 'user meta list <id|login|email> [--keys=<key,key>]',
+		'user meta add'           => 'user meta add <id|login|email> <key> <value> [--force] (appends a row; --force overrides protected _-prefixed keys)',
+		'user meta update'        => 'user meta update <id|login|email> <key> <value> [--force] (replaces the key; capability/session keys are never writable)',
+		'user meta delete'        => 'user meta delete <id|login|email> <key> [<value>] [--force] (with <value>: removes only the matching row)',
 		'search-replace'          => 'search-replace <old> <new> [<table>...] [--dry-run] [--skip-tables=<tables>] [--skip-columns=<cols>] [--include-guids] [--all-tables]',
+		'menu create'             => 'menu create <menu-name> [--porcelain]',
+		'menu item add-custom'    => 'menu item add-custom <menu> <title> <link> [--description=<text>] [--target=<_blank>] [--classes=<classes>] [--parent-id=<id>] [--position=<n>] [--porcelain]',
+		'menu item add-post'      => 'menu item add-post <menu> <post-id> [--title=<title>] [--description=<text>] [--parent-id=<id>] [--position=<n>] [--porcelain]',
+		'menu item add-term'      => 'menu item add-term <menu> <taxonomy> <term-id> [--title=<title>] [--description=<text>] [--parent-id=<id>] [--position=<n>] [--porcelain]',
+		'menu location assign'    => 'menu location assign <menu> <location> (location must be registered by the active theme; see `menu location list`)',
+		'term create'             => 'term create <taxonomy> <term> [--slug=<slug>] [--description=<text>] [--parent=<term-id>] [--porcelain]',
+		'term update'             => 'term update <taxonomy> <term> [--by=<id|slug>] [--name=<name>] [--slug=<slug>] [--description=<text>] [--parent=<term-id>]',
+		'term delete'             => 'term delete <taxonomy> <term>... [--by=<id|slug>] (permanent, no trash; requires approval)',
+		'menu item update'        => 'menu item update <db-id> [--title=<title>] [--link=<url>] [--description=<text>] [--target=<_blank>] [--classes=<classes>] [--parent-id=<id>] [--position=<n>]',
+		'menu item delete'        => 'menu item delete <db-id> [<db-id>...]',
+		'theme mod set'           => 'theme mod set <mod> <value> (scalar mods only: custom_logo, background_color, header_textcolor, background_image, header_image, custom_css_post_id; HTML/script mods must use the code_snippet tool; homepage settings are options, use `option update page_on_front <id>` etc.)',
+		'rewrite structure'       => 'rewrite structure <permastruct> [--category-base=<base>] [--tag-base=<base>] [--hard] (changes every URL on the site; requires approval)',
 	);
 
 	const CACHE_PURGE_ALIASES = array(
@@ -595,7 +748,7 @@ class WPVibe_CLI {
 			WPVibe_Audit_Log::log_execution( array(
 				'operation'      => $destructive['operation'],
 				'command'        => 'wp ' . $command_key,
-				'params'         => array( 'positional' => $args, 'key_length' => $key_length ),
+				'params'         => array( 'positional' => $this->redact_sensitive_flags( $args ), 'key_length' => $key_length ),
 				'dry_run'        => $destructive['dry_run'],
 				'result_summary' => isset( $result['stdout'] ) ? mb_substr( (string) $result['stdout'], 0, 500 ) : '',
 			) );

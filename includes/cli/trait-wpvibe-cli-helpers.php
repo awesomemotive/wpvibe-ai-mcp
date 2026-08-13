@@ -96,6 +96,37 @@ trait WPVibe_CLI_Helpers {
 	}
 
 
+	/**
+	 * Strip credential values from the raw token list before it is persisted to
+	 * the Approval Log. `user update --user_pass=x` would otherwise write the
+	 * cleartext password into an admin-readable row. Handles both the `=value`
+	 * token and (defensively) a bare `--user_pass` followed by a value token,
+	 * though the parser only accepts the `=` form for a live write.
+	 */
+	private function redact_sensitive_flags( $tokens ) {
+		$tokens = array_values( (array) $tokens );
+		$out    = array();
+		$count  = count( $tokens );
+		for ( $i = 0; $i < $count; $i++ ) {
+			$t = $tokens[ $i ];
+			if ( is_string( $t ) && preg_match( '/^--user[-_]pass=/i', $t ) ) {
+				$out[] = '--user_pass=<redacted>';
+				continue;
+			}
+			if ( is_string( $t ) && preg_match( '/^--user[-_]pass$/i', $t ) ) {
+				$out[] = '--user_pass';
+				if ( $i + 1 < $count && is_string( $tokens[ $i + 1 ] ) && 0 !== strpos( $tokens[ $i + 1 ], '-' ) ) {
+					$out[] = '<redacted>';
+					$i++;
+				}
+				continue;
+			}
+			$out[] = $t;
+		}
+		return $out;
+	}
+
+
 	private function error_result( $message, $exit_code = 1 ) {
 		return array(
 			'exit_code' => $exit_code,
