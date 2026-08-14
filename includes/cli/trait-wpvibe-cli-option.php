@@ -15,12 +15,12 @@ trait WPVibe_CLI_Option {
 			return $this->error_result( __( 'Option key required.', 'vibe-ai' ) );
 		}
 
-		if ( in_array( $positional[0], self::READABLE_BLOCKED_OPTIONS, true ) ) {
+		if ( null !== self::match_option_name( $positional[0], self::READABLE_BLOCKED_OPTIONS ) ) {
 			$value = get_option( $positional[0], null );
 			return $this->success_result( array( 'value' => $value ) );
 		}
 
-		if ( in_array( $positional[0], self::BLOCKED_OPTIONS, true ) ) {
+		if ( null !== self::match_option_name( $positional[0], self::BLOCKED_OPTIONS ) ) {
 			return $this->error_result(
 				sprintf(
 					/* translators: %s: option key */
@@ -58,7 +58,7 @@ trait WPVibe_CLI_Option {
 		}
 
 		$key = $positional[0];
-		if ( ! in_array( $key, self::READABLE_BLOCKED_OPTIONS, true ) && in_array( $key, self::BLOCKED_OPTIONS, true ) ) {
+		if ( null === self::match_option_name( $key, self::READABLE_BLOCKED_OPTIONS ) && null !== self::match_option_name( $key, self::BLOCKED_OPTIONS ) ) {
 			return $this->error_result(
 				sprintf(
 					/* translators: %s: option key */
@@ -215,7 +215,7 @@ trait WPVibe_CLI_Option {
 		}
 		$key   = $positional[0];
 
-		if ( in_array( $key, self::BLOCKED_OPTIONS, true ) ) {
+		if ( null !== self::match_option_name( $key, self::BLOCKED_OPTIONS ) ) {
 			return $this->error_result(
 				sprintf(
 					/* translators: %s: option key */
@@ -223,6 +223,11 @@ trait WPVibe_CLI_Option {
 					$key
 				)
 			);
+		}
+
+		$boundary = $this->reject_bad_option_name( $key );
+		if ( $boundary ) {
+			return $boundary;
 		}
 
 		$parsed = $this->parse_option_value( $positional[1], $flags, $key );
@@ -280,8 +285,13 @@ trait WPVibe_CLI_Option {
 		}
 		$key = $positional[0];
 
-		if ( in_array( $key, self::BLOCKED_OPTIONS, true ) ) {
+		if ( null !== self::match_option_name( $key, self::BLOCKED_OPTIONS ) ) {
 			return $this->error_result( $this->blocked_option_message( $key, 'added' ) );
+		}
+
+		$boundary = $this->reject_bad_option_name( $key );
+		if ( $boundary ) {
+			return $boundary;
 		}
 
 		// Don't overwrite existing — match real wp-cli option add behavior.
@@ -327,8 +337,12 @@ trait WPVibe_CLI_Option {
 		// workflow needs to delete them. Checked across the whole list before any
 		// write, so a blocked key cannot ride along behind a permitted one.
 		foreach ( $keys as $key ) {
-			if ( in_array( $key, self::BLOCKED_OPTIONS, true ) ) {
+			if ( null !== self::match_option_name( $key, self::BLOCKED_OPTIONS ) ) {
 				return $this->error_result( $this->blocked_option_message( $key, 'deleted' ) );
+			}
+			$boundary = $this->reject_bad_option_name( $key );
+			if ( $boundary ) {
+				return $boundary;
 			}
 		}
 
@@ -489,8 +503,12 @@ trait WPVibe_CLI_Option {
 			return $this->error_result( __( 'Usage: option patch <insert|update|delete> <option> <key-path>... [<value>]', 'vibe-ai' ) );
 		}
 		$key = $positional[1];
-		if ( in_array( $key, self::BLOCKED_OPTIONS, true ) ) {
+		if ( null !== self::match_option_name( $key, self::BLOCKED_OPTIONS ) ) {
 			return $this->error_result( $this->blocked_option_message( $key, 'patched' ) );
+		}
+		$boundary = $this->reject_bad_option_name( $key );
+		if ( $boundary ) {
+			return $boundary;
 		}
 
 		$rest  = array_slice( $positional, 2 );
@@ -523,6 +541,21 @@ trait WPVibe_CLI_Option {
 			return $this->error_result( sprintf( __( 'Option \'%s\' is not an array or object; use `option update` for scalar values.', 'vibe-ai' ), $key ) );
 		}
 
+		if ( 'update' === $action ) {
+			$leaf_found = false;
+			$leaf       = $this->option_leaf_at( $current, $path, $leaf_found );
+			if ( $leaf_found && $this->patch_leaf_shape_conflict( $leaf, $value ) ) {
+				return $this->error_result( sprintf(
+					/* translators: 1: key path, 2: option key, 3: current shape, 4: new shape */
+					__( 'Key path \'%1$s\' in option \'%2$s\' currently stores %3$s; writing %4$s would silently change its stored shape and can break the plugin that owns it. Write the same shape (--format=json for structures, --format=plaintext for literal text), or use `option patch delete` then `option patch insert` if the shape change is intentional.', 'vibe-ai' ),
+					implode( '.', $path ),
+					$key,
+					( is_array( $leaf ) || is_object( $leaf ) ) ? __( 'an array/object', 'vibe-ai' ) : __( 'a scalar', 'vibe-ai' ),
+					( is_array( $value ) || is_object( $value ) ) ? __( 'an array/object', 'vibe-ai' ) : __( 'a scalar', 'vibe-ai' )
+				) );
+			}
+		}
+
 		$error   = null;
 		$patched = $this->patch_structure( $current, $path, $action, $value, $error );
 		if ( null !== $error ) {
@@ -543,6 +576,48 @@ trait WPVibe_CLI_Option {
 
 		/* translators: 1: action, 2: key path, 3: option key */
 		return $this->success_result( array( 'message' => sprintf( __( 'Patched (%1$s) \'%2$s\' in option \'%3$s\'.', 'vibe-ai' ), $action, implode( '.', $path ), $key ) ) );
+	}
+
+
+	/**
+	 * Walk a nested array/stdClass along a key path and return the leaf value.
+	 * Mirrors patch_structure's segment resolution exactly (numeric segments
+	 * cast to int) so the guard and classifier see the leaf the patch will hit.
+	 */
+	private function option_leaf_at( $data, $path, &$found ) {
+		$found = true;
+		$node  = $data;
+		foreach ( $path as $segment ) {
+			$seg = is_numeric( $segment ) ? (int) $segment : $segment;
+			if ( is_object( $node ) && property_exists( $node, (string) $seg ) ) {
+				$node = $node->{$seg};
+			} elseif ( is_array( $node ) && array_key_exists( $seg, $node ) ) {
+				$node = $node[ $seg ];
+			} else {
+				$found = false;
+				return null;
+			}
+		}
+		return $node;
+	}
+
+
+	/**
+	 * Leaf-level twin of handle_option_update's type-shape guard. Upstream
+	 * WP-CLI permits leaf type changes (entity-command's option-pluck-patch
+	 * feature has no shape scenario); refusing non-empty flips is a deliberate
+	 * divergence — a scalar silently replacing a builder preset subtree (or
+	 * vice versa) corrupts the owning plugin the same way it does whole-option.
+	 * Empty defaults ('', 0, false, null, []) are exempt: settings frameworks
+	 * seed those and later write structures over them.
+	 */
+	private function patch_leaf_shape_conflict( $leaf, $value ) {
+		if ( '' === $leaf || 0 === $leaf || false === $leaf || null === $leaf || array() === $leaf ) {
+			return false;
+		}
+		$leaf_structured  = is_array( $leaf ) || is_object( $leaf );
+		$value_structured = is_array( $value ) || is_object( $value );
+		return $leaf_structured !== $value_structured;
 	}
 
 
@@ -628,6 +703,24 @@ trait WPVibe_CLI_Option {
 	 * suggesting bypass workarounds (wp-cli on the server, direct SQL, etc.).
 	 * Same pattern as the cap and review-nudge directives elsewhere in WPVibe.
 	 */
+	/**
+	 * Boundary refusal for a write to an option whose name carries non-ASCII
+	 * bytes (evasion backstop, collation-independent). Returns error_result or
+	 * null. Runs AFTER the BLOCKED check so a padded protected name still gets
+	 * the specific "protected" message.
+	 */
+	private function reject_bad_option_name( $key ) {
+		if ( ! WPVibe_CLI::option_name_not_printable_ascii( $key ) ) {
+			return null;
+		}
+		return $this->error_result( sprintf(
+			/* translators: %s: option key */
+			__( 'Option name \'%s\' must be printable ASCII with no spaces. WordPress option names are plain slugs, and a padded or disguised name can resolve to a different (possibly protected) option than it appears to, so it is refused. Re-run with the exact option name.', 'vibe-ai' ),
+			$key
+		) );
+	}
+
+
 	private function blocked_option_message( $key, $verb ) {
 		return implode( "\n", array(
 			'<wpvibe-blocked-option>',

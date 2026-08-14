@@ -328,6 +328,24 @@ class WPVibe_CLI {
 		'nonce_salt',
 	);
 
+	/**
+	 * Builder-critical options: writes are approval-gated, not hard-blocked.
+	 * Divi stores its theme options and global presets in these blobs; a
+	 * malformed direct write bypasses the builder's validation and corrupts
+	 * every page at once, and options have no revisions. EXACT names only —
+	 * a prefix/family match would gate flows the skills teach approval-free
+	 * (theme_mods_kadence, generate_settings) and repair writes on derived
+	 * caches, turning the gate into a dead-end. The Worker's
+	 * BUILDER_CRITICAL_OPTIONS (src/lib/wp-cli-gate.ts) is the advisory
+	 * mirror of this list; this one is the enforcement.
+	 */
+	const GATED_OPTIONS = array(
+		'et_divi',
+		'et_divi_builder',
+		'et_divi_builder_global_presets',
+		'et_divi_builder_global_presets_d5',
+	);
+
 	const BLOCKED_FLAGS = array( '--require', '--exec', '--ssh', '--http', '--url', '--path', '--skip-plugins', '--skip-themes' );
 	const SHELL_CHARS   = array( ';', '&&', '||', '|', '`', '$(', '>', '<', "\n", "\r" );
 
@@ -606,6 +624,68 @@ class WPVibe_CLI {
 		'breeze purge'         => 'breeze',
 	);
 
+
+	/**
+	 * Match an option name against a list the way WordPress actually resolves
+	 * it. Core trim()s the name and wp_options.option_name uses a
+	 * case-insensitive collation whose equality class is far larger than ASCII
+	 * whitespace + case — a trailing NBSP/ZWSP/BOM/ideographic-space resolves
+	 * to the real row under utf8mb4 collations, and which characters collapse
+	 * DIFFERS per collation, so stripping a hand-picked set is unwinnable.
+	 * Correct-by-construction: for the common pure-ASCII case, trim + case
+	 * fold; for anything carrying a non-ASCII byte, ask the DB which row the
+	 * name actually resolves to and match THAT canonical name. Returns the
+	 * canonical list entry, or null.
+	 */
+	public static function match_option_name( $name, $list ) {
+		$name = trim( (string) $name );
+		foreach ( $list as $candidate ) {
+			if ( 0 === strcasecmp( $name, (string) $candidate ) ) {
+				return $candidate;
+			}
+		}
+		// Pure printable ASCII: the collation can only differ by case (already
+		// folded above), so it is genuinely not in the list.
+		if ( '' === $name || preg_match( '/^[\x21-\x7E]+$/', $name ) ) {
+			return null;
+		}
+		// Non-ASCII bytes present. Ask the DB which row MySQL's collation binds
+		// this name to, then gate on that canonical row name.
+		$canonical = self::resolve_option_row_name( $name );
+		if ( null === $canonical ) {
+			return null;
+		}
+		foreach ( $list as $candidate ) {
+			if ( 0 === strcasecmp( (string) $canonical, (string) $candidate ) ) {
+				return $candidate;
+			}
+		}
+		return null;
+	}
+
+	/** Ask the DB which stored option_name a given name resolves to under the live collation, or null. */
+	private static function resolve_option_row_name( $name ) {
+		global $wpdb;
+		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) || ! method_exists( $wpdb, 'get_var' ) ) {
+			return null;
+		}
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$found = $wpdb->get_var( $wpdb->prepare( "SELECT option_name FROM {$wpdb->options} WHERE option_name = %s LIMIT 1", $name ) );
+		return ( is_string( $found ) && '' !== $found ) ? $found : null;
+	}
+
+	/**
+	 * Boundary rule for option-name write/read arguments: real WordPress option
+	 * names are printable-ASCII slugs with no spaces, so any byte outside
+	 * [\x21-\x7E] (which also excludes the space 0x20 and every invisible/
+	 * non-ASCII char) is an evasion attempt or a typo. Refusing it is
+	 * collation-independent and cannot hit a legitimate option — the backstop
+	 * for the class match_option_name's DB canonicalization recognizes. Returns
+	 * the verdict only: true = refuse.
+	 */
+	public static function option_name_not_printable_ascii( $name ) {
+		return (bool) preg_match( '/[^\x21-\x7E]/', trim( (string) $name ) );
+	}
 
 	/**
 	 * Run a WP-CLI-style command via native PHP dispatch.

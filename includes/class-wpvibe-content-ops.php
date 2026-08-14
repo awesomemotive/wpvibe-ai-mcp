@@ -128,7 +128,7 @@ class WPVibe_Content_Ops {
 	public function compute_replacement( $current, $old_content, $new_content, $replace_all = false, $whole_word = false, &$replaced = null ) {
 		$replaced = 0;
 		if ( ! is_string( $current ) ) {
-			return new WP_Error( 'not_text', __( 'Stored value is not editable as text (it is an array or object). Edit it with rest_api or wp-cli instead.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 422 ) ) );
+			return new WP_Error( 'not_text', __( 'Stored value is not editable as text (it is an array or object; content/edit only rewrites strings). For an option, change one key with run_wp_cli `option patch update <option> <key-path> <value>`, or replace the whole value with `option update <option> \'<json>\' --format=json`. For post meta, pass the whole structure as JSON so it is decoded and stored as an array: `post meta update <id> <key> \'<json>\'` (a flat scalar value would collapse the array; add --force for underscore-prefixed builder keys such as _elementor_data).', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 422 ) ) );
 		}
 
 		$old = self::desanitize( $old_content );
@@ -309,7 +309,7 @@ class WPVibe_Content_Ops {
 		// prefixes. Post columns are always raw; meta/option are auto-unserialized
 		// on read, so a serialized string here means it was stored escaped.
 		if ( in_array( $type, array( 'meta', 'option' ), true ) && is_string( $current ) && is_serialized( $current ) ) {
-			return new WP_Error( 'serialized_value', __( 'This value is PHP-serialized; a text replace would corrupt it. Edit it with rest_api or wp-cli instead.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 422 ) ) );
+			return new WP_Error( 'serialized_value', __( 'This value is PHP-serialized; a text replace would corrupt it. A wp-cli `option` write also refuses serialized input, and a raw `post meta update` would double-serialize it, so neither is a safe fallback. If this is page-builder layout data (Beaver Builder, Bricks, Breakdance), load that builder\'s skill and use its WPVibe save endpoint, which round-trips serialization safely. Otherwise write it through the owning plugin\'s own settings UI or REST route, which serializes correctly.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 422 ) ) );
 		}
 
 		$replaced = 0;
@@ -327,6 +327,14 @@ class WPVibe_Content_Ops {
 			return new WP_Error(
 				'json_corrupted',
 				__( 'This value is JSON and the replacement would corrupt it (the result no longer parses). Inside JSON, quotes and slashes must stay escaped (\" and \/): take old_content verbatim from content/search and escape new_content the same way. No change was made.', 'vibe-ai' ),
+				WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422 ) )
+			);
+		}
+
+		if ( 'post' === $type && 'post_content' === (string) ( $args['field'] ?? '' ) && $this->content_blocks_broken_by_edit( $current, $updated ) ) {
+			return new WP_Error(
+				'block_json_corrupted',
+				__( 'This edit would damage the block markup: after the replacement a block\'s JSON attributes no longer parse, or the `<!-- wp:` opening-delimiter prefix of a block is malformed (a dropped brace/space, a bad prefix, or an unbalanced closer). Inside a block comment (<!-- wp:... -->) the attribute JSON and the delimiter prefix must stay intact and escaped exactly as stored; take old_content verbatim from content/search and mirror its escaping in new_content. This checks block-attribute JSON and delimiter-prefix integrity; it does not verify that otherwise well-formed markup is semantically correct. No change was made.', 'vibe-ai' ),
 				WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422 ) )
 			);
 		}
@@ -600,6 +608,94 @@ class WPVibe_Content_Ops {
 		return true;
 	}
 
+	/**
+	 * Delta-based block-corruption guard (NOT full coverage): refuse a
+	 * post_content edit that worsens any of three health signals versus the
+	 * pre-edit value. (1) more parsed blocks with null attrs JSON — delimiter
+	 * intact, JSON broken; (2) more INTENDED `wp:` openers core's strict parser
+	 * can no longer parse — catches uppercase `WP:`, no-space `<!--wp:`, space
+	 * `wp :`, and dropped-brace/space delimiter damage that makes a block vanish
+	 * from parse_blocks (so signal 1 never sees it); (3) a wider opener/closer
+	 * imbalance — catches a deleted closer or a closer flipped to an opener,
+	 * where following siblings silently re-parent. A legitimate whole-block
+	 * removal drops a matched opener AND closer together, so every signal nets
+	 * zero. Scope is block-attribute JSON + delimiter-PREFIX integrity, not full
+	 * corruption coverage: it does NOT catch semantically-wrong-but-well-formed
+	 * markup, an edit that repairs one block while breaking another, or a
+	 * SYMMETRIC delimiter rename (e.g. replace_all `wp:`->`wordpress:` mangles
+	 * every opener and closer equally, netting zero across all three signals).
+	 */
+	private function content_blocks_broken_by_edit( $current, $updated ) {
+		if ( ! function_exists( 'parse_blocks' ) || ! is_string( $current ) || ! is_string( $updated ) ) {
+			return false;
+		}
+		if ( false === stripos( $updated, '<!--' ) && false === stripos( $current, '<!--' ) ) {
+			return false;
+		}
+		$c = $this->block_health( $current );
+		$u = $this->block_health( $updated );
+		return $u['broken_attrs'] > $c['broken_attrs']
+			|| $u['unparsed_openers'] > $c['unparsed_openers']
+			|| $u['imbalance'] > $c['imbalance'];
+	}
+
+
+	/** Three corruption signals for a content string; parse_blocks is core's real parser in production. */
+	private function block_health( $content ) {
+		$blocks = parse_blocks( $content );
+		// Intended delimiters, counted loosely + case-insensitively: openers/voids
+		// (no leading slash) vs closers (leading slash). \s* so a dropped space
+		// still counts as an intended delimiter.
+		$loose_openers = (int) preg_match_all( '/<!--\s*wp\s*:/i', (string) $content );
+		$loose_closers = (int) preg_match_all( '/<!--\s*\/\s*wp\s*:/i', (string) $content );
+		// Self-closing (void) blocks are openers with no closer, so exclude them
+		// from the balance or a legit void insertion reads as an imbalance.
+		$loose_voids   = (int) preg_match_all( '/<!--\s*wp\s*:[^>]*\/\s*-->/i', (string) $content );
+		$parsed        = $this->count_parsed_blocks( $blocks );
+		return array(
+			'broken_attrs'    => $this->count_broken_block_attrs( $blocks ),
+			// Openers core's strict parser failed to recognize (uppercase, no
+			// space, space-before-colon, broken delimiter body).
+			'unparsed_openers' => max( 0, $loose_openers - $parsed ),
+			// Paired-opener vs closer balance; a deleted closer or closer→opener
+			// flip widens it, a whole-block removal keeps it level.
+			'imbalance'       => abs( ( $loose_openers - $loose_voids ) - $loose_closers ),
+		);
+	}
+
+
+	/** Parsed blocks whose delimiter matched but whose attrs JSON is null (invalid), recursive. */
+	private function count_broken_block_attrs( $blocks ) {
+		$broken = 0;
+		foreach ( (array) $blocks as $block ) {
+			$block = (array) $block;
+			if ( ! empty( $block['blockName'] ) && null === ( $block['attrs'] ?? null ) ) {
+				$broken++;
+			}
+			if ( ! empty( $block['innerBlocks'] ) ) {
+				$broken += $this->count_broken_block_attrs( $block['innerBlocks'] );
+			}
+		}
+		return $broken;
+	}
+
+
+	/** Recursive count of blocks with a resolved name — i.e. opener delimiters core actually parsed. */
+	private function count_parsed_blocks( $blocks ) {
+		$n = 0;
+		foreach ( (array) $blocks as $block ) {
+			$block = (array) $block;
+			if ( ! empty( $block['blockName'] ) ) {
+				$n++;
+			}
+			if ( ! empty( $block['innerBlocks'] ) ) {
+				$n += $this->count_parsed_blocks( $block['innerBlocks'] );
+			}
+		}
+		return $n;
+	}
+
+
 	/** True when the value parsed as a JSON object/array before the edit but no longer does after. */
 	private function json_broken_by_edit( $current, $updated ) {
 		if ( ! is_string( $current ) || ! is_string( $updated ) ) {
@@ -693,6 +789,30 @@ class WPVibe_Content_Ops {
 				if ( $blocked ) {
 					return $blocked;
 				}
+				// content/edit has no approval flow; without this, a gated
+				// builder option stored as JSON text is writable click-free.
+				// This branch is only reached for STRING values (arrays are
+				// refused earlier as not_text), so the JSON-text rewrite path
+				// is the one that works — patch refuses non-array options.
+				if ( WPVibe_CLI::option_name_not_printable_ascii( (string) $args['name'] ) ) {
+					return new WP_Error(
+						'bad_option',
+						__( 'Option name must be printable ASCII with no spaces. WordPress option names are plain slugs; a padded or disguised name can resolve to a different (possibly protected) option than it appears to. Re-run with the exact option name.', 'vibe-ai' ),
+						WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) )
+					);
+				}
+				$gated_name = WPVibe_CLI::match_option_name( (string) $args['name'], WPVibe_CLI::GATED_OPTIONS );
+				if ( null !== $gated_name ) {
+					return new WP_Error(
+						'builder_option_gated',
+						sprintf(
+							/* translators: %1$s: option key */
+							__( 'The option \'%1$s\' holds a page builder\'s site-wide settings or global presets, and writing it needs the user\'s approval. This value is stored as JSON text, so rewrite the whole value with run_wp_cli `option update %1$s \'<new json text>\' --format=plaintext` (that path shows the user the exact change for approval before writing). If the option were instead stored as a structured array, you would change one key with `option patch update %1$s <key-path> <value>`.', 'vibe-ai' ),
+							$gated_name
+						),
+						WPVibe_Error_Contract::data( 'approval_flow', false, array( 'status' => 403 ) )
+					);
+				}
 				// update_option does NOT unslash — store the value verbatim.
 				$ok = update_option( (string) $args['name'], $updated );
 				if ( false === $ok && (string) get_option( (string) $args['name'] ) !== (string) $updated ) {
@@ -731,10 +851,12 @@ class WPVibe_Content_Ops {
 	 * @return WP_Error|null
 	 */
 	private static function blocked_option_error( $name, $is_write ) {
-		if ( ! in_array( $name, WPVibe_CLI::BLOCKED_OPTIONS, true ) ) {
+		// match_option_name (not in_array) so " siteurl " / "SITEURL" cannot
+		// slip the block: WP trims and resolves case-insensitively to the row.
+		if ( null === WPVibe_CLI::match_option_name( $name, WPVibe_CLI::BLOCKED_OPTIONS ) ) {
 			return null;
 		}
-		if ( ! $is_write && in_array( $name, WPVibe_CLI::READABLE_BLOCKED_OPTIONS, true ) ) {
+		if ( ! $is_write && null !== WPVibe_CLI::match_option_name( $name, WPVibe_CLI::READABLE_BLOCKED_OPTIONS ) ) {
 			return null;
 		}
 		return new WP_Error(

@@ -244,7 +244,7 @@ trait WPVibe_CLI_Security {
 		// off. Disabling stays approval-free so recovery via AI is easy.
 		if ( in_array( $command_key, array( 'option update', 'option add' ), true )
 			&& class_exists( 'WPVibe_White_Label' )
-			&& WPVibe_White_Label::OPTION === ( $positional[0] ?? '' )
+			&& null !== self::match_option_name( $positional[0] ?? '', array( WPVibe_White_Label::OPTION ) )
 			&& WPVibe_White_Label::truthy( $positional[1] ?? '' ) ) {
 			return array(
 				'operation' => 'white_label_enable',
@@ -254,6 +254,22 @@ trait WPVibe_CLI_Security {
 					'note'    => __( 'To undo later: set the option to 0 (no approval needed) or delete it via WP-CLI.', 'vibe-ai' ),
 				),
 			);
+		}
+
+		// Builder-critical options (GATED_OPTIONS): update, add, and patch
+		// insert|update all gate — gating patch alone is bypassable via
+		// get-then-update. match_option_name (not in_array) so a padded or
+		// re-cased name that WP resolves to the real row cannot slip past.
+		// Deletes gate through the existing option delete / option patch delete
+		// / db query branches.
+		if ( in_array( $command_key, array( 'option update', 'option add' ), true )
+			&& null !== self::match_option_name( $positional[0] ?? '', self::GATED_OPTIONS ) ) {
+			return $this->classify_builder_option_write( $command_key, $positional, $flags );
+		}
+		if ( 'option patch' === $command_key
+			&& in_array( $positional[0] ?? '', array( 'insert', 'update' ), true )
+			&& null !== self::match_option_name( $positional[1] ?? '', self::GATED_OPTIONS ) ) {
+			return $this->classify_builder_option_patch( $positional, $flags );
 		}
 
 		// Options have no trash: deleting one permanently destroys whatever
@@ -898,7 +914,7 @@ trait WPVibe_CLI_Security {
 		$dry['value_type']       = strtolower( gettype( $value ) );
 		$dry['value_size_chars'] = mb_strlen( $str );
 		$dry['value_preview']    = mb_substr( $str, 0, 200 ) . ( strlen( $str ) > 200 ? '… [truncated]' : '' );
-		if ( in_array( $key, self::BLOCKED_OPTIONS, true ) ) {
+		if ( null !== self::match_option_name( $key, self::BLOCKED_OPTIONS ) ) {
 			$dry['warning'] = __( 'This option is permanently protected by WPVibe; execution will refuse even after approval.', 'vibe-ai' );
 		}
 		return $dry;
@@ -981,10 +997,234 @@ trait WPVibe_CLI_Security {
 		if ( is_array( $node ) || is_object( $node ) ) {
 			$dry['warning'] = __( 'This key path holds a nested structure; deleting it removes everything beneath it.', 'vibe-ai' );
 		}
-		if ( in_array( $key, self::BLOCKED_OPTIONS, true ) ) {
+		if ( null !== self::match_option_name( $key, self::BLOCKED_OPTIONS ) ) {
 			$dry['warning'] = __( 'This option is permanently protected by WPVibe; execution will refuse even after approval.', 'vibe-ai' );
 		}
 		return $dry;
+	}
+
+
+	/**
+	 * Approval decision for `option update|add` on a GATED_OPTIONS key. Parses
+	 * the value exactly like the handler; anything the handler will refuse
+	 * outright (usage error, bad JSON, add-on-existing, type-shape flip) must
+	 * not burn an approval click first, so those return null.
+	 */
+	private function classify_builder_option_write( $command_key, $positional, $flags ) {
+		if ( count( $positional ) < 2 ) {
+			return null;
+		}
+		// Canonical name (trimmed, correct case) so the operation key, the
+		// preview read, and the write all target one identity.
+		$key = self::match_option_name( $positional[0], self::GATED_OPTIONS );
+		$parsed = $this->parse_option_value( $positional[1], $flags, $key );
+		if ( isset( $parsed['error'] ) ) {
+			return null;
+		}
+		$value    = $parsed['value'];
+		$existing = get_option( $key, null );
+		if ( 'option add' === $command_key && null !== $existing ) {
+			return null;
+		}
+		if ( 'option update' === $command_key && null !== $existing ) {
+			$existing_structured = is_array( $existing ) || is_object( $existing );
+			$new_structured      = is_array( $value ) || is_object( $value );
+			if ( $existing_structured !== $new_structured ) {
+				return null;
+			}
+		}
+		return array(
+			'operation' => 'builder_option_write:' . $key,
+			'reason'    => $this->builder_option_reason( $key ),
+			'dry_run'   => $this->build_builder_option_dry_run( $command_key, $key, $existing, $value ),
+		);
+	}
+
+
+	/**
+	 * Approval decision for `option patch insert|update` on a GATED_OPTIONS
+	 * key. Resolves the leaf via the SAME walk the handler uses so the preview
+	 * can never describe a different leaf than the one that gets written, and
+	 * returns null for anything the handler will refuse.
+	 */
+	private function classify_builder_option_patch( $positional, $flags ) {
+		$action = (string) $positional[0];
+		$key    = self::match_option_name( $positional[1], self::GATED_OPTIONS );
+		$rest   = array_slice( $positional, 2 );
+		if ( count( $rest ) < 2 ) {
+			return null;
+		}
+		$raw    = array_pop( $rest );
+		$path   = $rest;
+		$parsed = $this->parse_option_value( $raw, $flags, $key );
+		if ( isset( $parsed['error'] ) ) {
+			return null;
+		}
+		$value   = $parsed['value'];
+		$current = get_option( $key, null );
+		if ( null === $current || ( ! is_array( $current ) && ! is_object( $current ) ) ) {
+			return null;
+		}
+		$leaf_found = false;
+		$leaf       = $this->option_leaf_at( $current, $path, $leaf_found );
+		if ( 'insert' === $action ) {
+			if ( $leaf_found ) {
+				return null;
+			}
+			if ( count( $path ) > 1 ) {
+				$parent_found = false;
+				$parent       = $this->option_leaf_at( $current, array_slice( $path, 0, -1 ), $parent_found );
+				if ( ! $parent_found || ( ! is_array( $parent ) && ! is_object( $parent ) ) ) {
+					return null;
+				}
+			}
+		} else {
+			if ( ! $leaf_found || $this->patch_leaf_shape_conflict( $leaf, $value ) ) {
+				return null;
+			}
+		}
+		$dry = array(
+			'command'  => 'wp option patch ' . $action . ' ' . $key . ' ' . implode( ' ', $path ),
+			'option'   => $key,
+			'key_path' => implode( '.', $path ),
+			'to'       => $this->leaf_value_preview( $value ),
+		);
+		if ( 'update' === $action ) {
+			$dry['from'] = $this->leaf_value_preview( $leaf );
+		} else {
+			$dry['note'] = __( 'New key: nothing exists at this key path yet.', 'vibe-ai' );
+		}
+		return array(
+			'operation' => 'builder_option_write:' . $key . ':' . implode( '.', $path ),
+			'reason'    => $this->builder_option_reason( $key ),
+			'dry_run'   => $dry,
+		);
+	}
+
+
+	private function builder_option_reason( $key ) {
+		return sprintf(
+			/* translators: %s: option key */
+			__( 'The option \'%s\' holds a page builder\'s site-wide settings or global presets (Divi). A malformed value here breaks styling or locks the builder on every page at once, a direct write bypasses the builder\'s own validation and migration, and WordPress keeps no history for options. Review the exact changes below before approving; design changes are safer made in the builder\'s own settings UI.', 'vibe-ai' ),
+			$key
+		);
+	}
+
+
+	/**
+	 * Approval preview for a gated option update/add: a leaf-level diff, not
+	 * two truncated blobs. JSON-text scalars diff decoded (Divi 5 stores the
+	 * D5 presets as a JSON string; a string-vs-string diff is unreadable).
+	 */
+	private function build_builder_option_dry_run( $command_key, $key, $existing, $value ) {
+		$dry = array(
+			'command' => 'wp ' . $command_key . ' ' . $key,
+			'option'  => $key,
+		);
+		if ( null === $existing ) {
+			$dry['note']      = __( 'This option does not exist yet; the write creates it.', 'vibe-ai' );
+			$dry['new_value'] = $this->leaf_value_preview( $value, 500 );
+			return $dry;
+		}
+		$diff_old = $this->decode_json_text( $existing );
+		$diff_new = $this->decode_json_text( $value );
+		if ( ( is_array( $diff_old ) || is_object( $diff_old ) ) && ( is_array( $diff_new ) || is_object( $diff_new ) ) ) {
+			$changes = array();
+			$total   = 0;
+			$this->collect_leaf_diff( $diff_old, $diff_new, '', $changes, $total );
+			$dry['changed_leaves'] = $total;
+			$dry['changes']        = $changes;
+			if ( $total > count( $changes ) ) {
+				$dry['changes_truncated'] = true;
+			}
+			if ( 0 === $total ) {
+				$dry['note'] = __( 'No leaf-level differences found; this write would be a no-op.', 'vibe-ai' );
+			} elseif ( is_string( $existing ) ) {
+				$dry['note'] = __( 'The option stores JSON text; the diff is computed on the decoded structure. The write stores the new text verbatim.', 'vibe-ai' );
+			}
+			return $dry;
+		}
+		$dry['from'] = $this->leaf_value_preview( $existing );
+		$dry['to']   = $this->leaf_value_preview( $value );
+		return $dry;
+	}
+
+
+	/** Decode a JSON-object/array string for diffing; anything else passes through. */
+	private function decode_json_text( $value ) {
+		if ( ! is_string( $value ) ) {
+			return $value;
+		}
+		$trimmed = trim( $value );
+		if ( '' === $trimmed || ( '{' !== $trimmed[0] && '[' !== $trimmed[0] ) ) {
+			return $value;
+		}
+		$decoded = json_decode( $trimmed, true );
+		return is_array( $decoded ) ? $decoded : $value;
+	}
+
+
+	/**
+	 * Recursive leaf diff between two structures. $total counts every changed
+	 * leaf; $changes carries at most 40 entries so a full-blob rewrite still
+	 * previews legibly. Depth-capped: deeper subtrees report as one change.
+	 */
+	private function collect_leaf_diff( $old, $new, $path, &$changes, &$total, $depth = 0 ) {
+		$old = is_object( $old ) ? get_object_vars( $old ) : $old;
+		$new = is_object( $new ) ? get_object_vars( $new ) : $new;
+		if ( is_array( $old ) && is_array( $new ) ) {
+			if ( $depth >= 8 ) {
+				if ( wp_json_encode( $old ) !== wp_json_encode( $new ) ) {
+					$total++;
+					if ( count( $changes ) < 40 ) {
+						$changes[] = array( 'path' => $path, 'change' => 'changed', 'note' => __( 'nested structure beyond preview depth', 'vibe-ai' ) );
+					}
+				}
+				return;
+			}
+			foreach ( array_keys( $old + $new ) as $k ) {
+				$p      = '' === $path ? (string) $k : $path . '.' . $k;
+				$in_old = array_key_exists( $k, $old );
+				$in_new = array_key_exists( $k, $new );
+				if ( $in_old && ! $in_new ) {
+					$total++;
+					if ( count( $changes ) < 40 ) {
+						$changes[] = array( 'path' => $p, 'change' => 'removed', 'from' => $this->leaf_value_preview( $old[ $k ] ) );
+					}
+				} elseif ( ! $in_old && $in_new ) {
+					$total++;
+					if ( count( $changes ) < 40 ) {
+						$changes[] = array( 'path' => $p, 'change' => 'added', 'to' => $this->leaf_value_preview( $new[ $k ] ) );
+					}
+				} else {
+					$this->collect_leaf_diff( $old[ $k ], $new[ $k ], $p, $changes, $total, $depth + 1 );
+				}
+			}
+			return;
+		}
+		if ( $old !== $new ) {
+			$total++;
+			if ( count( $changes ) < 40 ) {
+				$changes[] = array( 'path' => $path, 'change' => 'changed', 'from' => $this->leaf_value_preview( $old ), 'to' => $this->leaf_value_preview( $new ) );
+			}
+		}
+	}
+
+
+	/** Short human-readable preview of a single value for approval screens. */
+	private function leaf_value_preview( $value, $max = 100 ) {
+		if ( null === $value ) {
+			return 'null';
+		}
+		if ( is_bool( $value ) ) {
+			return $value ? 'true' : 'false';
+		}
+		$str = is_scalar( $value ) ? (string) $value : (string) wp_json_encode( $value );
+		if ( mb_strlen( $str ) > $max ) {
+			/* translators: %d: total character count of the truncated value */
+			return mb_substr( $str, 0, $max ) . sprintf( __( '... [truncated, %d chars total]', 'vibe-ai' ), mb_strlen( $str ) );
+		}
+		return $str;
 	}
 
 

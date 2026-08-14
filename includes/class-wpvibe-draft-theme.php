@@ -11,6 +11,16 @@ defined( 'ABSPATH' ) || exit;
 class WPVibe_Draft_Theme {
 
 	/**
+	 * Commercial builder themes, by directory slug (lowercased on compare;
+	 * Divi ships as wp-content/themes/Divi). Draft creation refuses these:
+	 * publish overwrites the live theme directory in place, and the vendor's
+	 * next theme update replaces that directory wholesale, silently wiping
+	 * every edit. Child themes (divi-child etc.) never match and stay
+	 * draftable — the vendor never updates them.
+	 */
+	const BUILDER_THEMES = array( 'divi', 'extra', 'avada', 'enfold', 'flatsome', 'betheme', 'bridge', 'salient', 'the7', 'x' );
+
+	/**
 	 * Create a draft theme by cloning the active theme.
 	 *
 	 * @return WP_REST_Response|WP_Error
@@ -26,6 +36,17 @@ class WPVibe_Draft_Theme {
 		}
 
 		$active_slug = get_stylesheet();
+		if ( in_array( strtolower( $active_slug ), self::BUILDER_THEMES, true ) ) {
+			return new WP_Error(
+				'builder_theme',
+				sprintf(
+					/* translators: %s: theme slug */
+					__( 'Refused: the active theme \'%s\' is a commercial builder theme. Publishing a draft overwrites the live theme directory in place, and the theme\'s next vendor update replaces that directory wholesale, silently wiping every edit made this way. Make design changes in the builder\'s own settings UI; for custom CSS or template overrides, install and activate the vendor\'s child theme (then a draft of the child is safe), or build a separate theme with create_classic_theme.', 'vibe-ai' ),
+					$active_slug
+				),
+				WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 409 ) )
+			);
+		}
 		$draft_slug  = $active_slug . '-wpvibe-draft';
 		$theme_root  = get_theme_root();
 		$source      = $theme_root . '/' . $active_slug;

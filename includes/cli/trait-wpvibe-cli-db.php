@@ -198,9 +198,24 @@ trait WPVibe_CLI_Db {
 		// blocked ones. INSERT/REPLACE never carry a WHERE, so the no-WHERE rule
 		// applies only to UPDATE/DELETE — an insert is already caught by name.
 		if ( 'OPTIONS' === $base ) {
+			// Quote-tolerant of trailing spaces: MySQL's PAD SPACE collation
+			// resolves 'siteurl ' to the siteurl row, so a strpos for the
+			// exact-quoted name would miss the padded write it still performs.
 			foreach ( WPVibe_CLI::BLOCKED_OPTIONS as $name ) {
-				if ( false !== strpos( $normalized, "'" . strtoupper( $name ) . "'" ) ) {
+				if ( $this->sql_names_option( $normalized, $name ) ) {
 					return $this->privileged_refusal( 'a protected option (' . $name . ')' );
+				}
+			}
+			// Builder design-system options: allowed, but not as an opaque raw
+			// blob write that skips the leaf-level change preview. Route to the
+			// commands that gate WITH a real diff.
+			foreach ( WPVibe_CLI::GATED_OPTIONS as $name ) {
+				if ( $this->sql_names_option( $normalized, $name ) ) {
+					return $this->error_result( sprintf(
+						/* translators: %1$s: option key */
+						__( 'Refused: this raw SQL writes the builder option \'%1$s\' as an opaque blob, bypassing its validation and the leaf-level change preview the user reviews. Use run_wp_cli `option update %1$s \'<json text>\' --format=plaintext` to rewrite the whole value, or `option patch update %1$s <key-path> <value>` to change one key; both show the user the exact change for approval.', 'vibe-ai' ),
+						$name
+					) );
 				}
 			}
 			$is_update_or_delete = (bool) preg_match( '/^\s*(?:UPDATE|DELETE)\b/', $normalized );
@@ -225,6 +240,23 @@ trait WPVibe_CLI_Db {
 
 		return null;
 	}
+
+	/**
+	 * True when the normalized (uppercased) SQL names this option in a single- or
+	 * double-quoted literal, tolerating whitespace inside the quotes (the leading
+	 * \s* also refuses a genuinely-different leading-space row, which is harmless
+	 * over-refusal). KNOWN name-blind residual (pre-existing, approval-gated as
+	 * db_query_*, never an unapproved write, so acceptable): a name reached via
+	 * option_id, CONCAT(), hex/0x literals, a backtick-quoted `option_name`
+	 * column with a bare value, a LIKE pattern (WHERE option_name LIKE 'et_divi%'
+	 * mass-updates every gated Divi option at once), a trailing NBSP inside the
+	 * quotes, or REPLACE INTO / INSERT ... ON DUPLICATE KEY still evades this
+	 * string test. Fully parsing SQL is out of scope.
+	 */
+	private function sql_names_option( $normalized, $name ) {
+		return (bool) preg_match( '/["\']\s*' . preg_quote( strtoupper( (string) $name ), '/' ) . '\s*["\']/', $normalized );
+	}
+
 
 	private function privileged_refusal( $what ) {
 		return $this->error_result( sprintf(
