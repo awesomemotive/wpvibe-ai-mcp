@@ -37,11 +37,22 @@ trait WPVibe_CLI_Db {
 			return $this->error_result( __( 'Executable MySQL comments (/*! ... */) are not allowed.', 'vibe-ai' ) );
 		}
 
-		// Validate: SELECT only.
-		// Strip SQL comments to prevent keyword bypass.
-		$stripped = preg_replace( '/--.*$/m', '', $sql );
-		$stripped = preg_replace( '/\/\*.*?\*\//s', '', $stripped );
-		$normalized = preg_replace( '/\s+/', ' ', strtoupper( trim( $stripped ) ) );
+		// File-access primitives (INTO OUTFILE/DUMPFILE, LOAD_FILE) are never
+		// legitimate here and are the highest-severity target of a comment/quote
+		// trick that could hide them from the stripped validation copy below
+		// (e.g. a backslash-escaped quote before a `-- ` comment). Scan the RAW
+		// statement for them so no comment/quote games can bypass it; a rare
+		// content query literally containing this text over-refuses, acceptably.
+		$raw_upper = strtoupper( (string) $sql );
+		if ( preg_match( '/\bINTO\s+(?:OUTFILE|DUMPFILE)\b/', $raw_upper ) || preg_match( '/\bLOAD_FILE\s*\(/', $raw_upper ) ) {
+			return $this->error_result( __( 'File-access SQL (INTO OUTFILE / DUMPFILE, LOAD_FILE) is not allowed.', 'vibe-ai' ) );
+		}
+
+		// Validate: SELECT only. Comments are stripped from this validation copy
+		// (execution below uses the original $sql) so the gate sees the same
+		// tokens MySQL will run without altering legitimate comment-bearing
+		// content.
+		$normalized = $this->normalize_sql_for_gate( $sql );
 
 		$is_select = ( strpos( $normalized, 'SELECT' ) === 0 );
 		// EXPLAIN is read-only only for SELECT plans (EXPLAIN ANALYZE executes the statement).
@@ -60,6 +71,17 @@ trait WPVibe_CLI_Db {
 				'RENAME', 'REPLACE', 'LOAD', 'OUTFILE', 'DUMPFILE',
 			);
 			foreach ( $blocked as $keyword ) {
+				// REPLACE(col,a,b) is a read-only string function; only the
+				// REPLACE ... INTO statement writes. Match the write form only
+				// so a legitimate SELECT using REPLACE() is not a dead-end (the
+				// classifier already treats it the same way).
+				if ( 'REPLACE' === $keyword ) {
+					if ( preg_match( '/\bREPLACE\s+(?:LOW_PRIORITY\s+|DELAYED\s+)?INTO\b/', $normalized ) ) {
+						/* translators: %s: SQL keyword */
+						return $this->error_result( sprintf( __( 'Blocked SQL keyword in SELECT: %s.', 'vibe-ai' ), 'REPLACE' ) );
+					}
+					continue;
+				}
 				if ( preg_match( '/\b' . $keyword . '\b/', $normalized ) ) {
 					/* translators: %s: SQL keyword */
 					return $this->error_result( sprintf( __( 'Blocked SQL keyword in SELECT: %s.', 'vibe-ai' ), $keyword ) );
@@ -70,6 +92,15 @@ trait WPVibe_CLI_Db {
 		// Multi-statement guard applies to both SELECT and mutating paths.
 		if ( preg_match( '/;\s*\S/', $sql ) ) {
 			return $this->error_result( __( 'Multiple SQL statements are not allowed.', 'vibe-ai' ) );
+		}
+
+		// LOAD_FILE() reads arbitrary server files (same FILE-privilege class as
+		// OUTFILE). The blocked-keyword \bLOAD\b never matches it (underscore is
+		// a word char), and it is just as reachable on the approved mutating
+		// path (SET col = LOAD_FILE(...) into a non-privileged table), so this
+		// guard must cover both paths, not only SELECT.
+		if ( preg_match( '/\bLOAD_FILE\s*\(/', $normalized ) ) {
+			return $this->error_result( __( 'LOAD_FILE() is not allowed.', 'vibe-ai' ) );
 		}
 
 		// Identity/privilege state is unapprovable by design: approval-gated SQL
@@ -172,32 +203,61 @@ trait WPVibe_CLI_Db {
 
 	/**
 	 * Hard-refuse mutating SQL aimed at identity/privilege state, even on the
-	 * approved path. $normalized is the uppercased, comment-stripped statement.
-	 * Judged on the WRITE TARGET table (not any substring), so ordinary content
-	 * whose prose contains "users"/"options" is unaffected. Fails closed: an
-	 * unparseable target on a privilege-shaped statement is still refused.
+	 * approved path. $normalized is the uppercased, whitespace-collapsed
+	 * statement (comment tokens are rejected upstream, not stripped, so it may
+	 * still contain `#...` text). Judged on the WRITE TARGET table (not any
+	 * substring), so ordinary content whose prose contains "users"/"options" is
+	 * unaffected. Fails closed: an unparseable target on a privilege-shaped
+	 * statement is still refused.
 	 */
 	private function privileged_sql_target_error( $normalized ) {
-		global $wpdb;
-		$prefix = strtoupper( $wpdb->prefix );
+		// DDL against an identity table is destruction/takeover in one statement
+		// (DROP/TRUNCATE/ALTER/RENAME). Anchored at the statement start, so a DDL
+		// keyword inside a value is not matched. The DML target regex below only
+		// covers UPDATE/INSERT/REPLACE/DELETE, so this is a separate guard.
+		if ( preg_match( '/^\s*(?:DROP\s+(?:TEMPORARY\s+)?TABLE(?:\s+IF\s+EXISTS)?|TRUNCATE(?:\s+TABLE)?|ALTER(?:\s+(?:ONLINE|OFFLINE|IGNORE))?\s+TABLE|RENAME\s+TABLE)\s+`?([A-Z0-9_{}.]+)`?/', $normalized, $dm ) ) {
+			if ( in_array( $this->sql_base_table( $dm[1] ), array( 'USERS', 'USERMETA', 'OPTIONS' ), true ) ) {
+				return $this->privileged_refusal( 'a protected identity table (schema change)' );
+			}
+		}
 
+		// INTO is optional for INSERT/REPLACE in MySQL (`INSERT tbl SET ...`),
+		// DELETE may carry a target/alias list before FROM (`DELETE u FROM t u`),
+		// and a table may be schema-qualified (`db.wp_options`); all three must
+		// be handled here or a write to wp_options/wp_users skips every guard.
 		if ( ! preg_match(
-			'/\b(?:UPDATE(?:\s+LOW_PRIORITY)?(?:\s+IGNORE)?|INSERT(?:\s+(?:LOW_PRIORITY|DELAYED|HIGH_PRIORITY))?(?:\s+IGNORE)?\s+INTO|REPLACE(?:\s+(?:LOW_PRIORITY|DELAYED))?\s+INTO|DELETE(?:\s+LOW_PRIORITY)?(?:\s+QUICK)?(?:\s+IGNORE)?\s+FROM)\s+`?([A-Z0-9_{}]+)`?/',
+			'/\b(?:UPDATE(?:\s+LOW_PRIORITY)?(?:\s+IGNORE)?|INSERT(?:\s+(?:LOW_PRIORITY|DELAYED|HIGH_PRIORITY))?(?:\s+IGNORE)?(?:\s+INTO)?|REPLACE(?:\s+(?:LOW_PRIORITY|DELAYED))?(?:\s+INTO)?|DELETE(?:\s+LOW_PRIORITY)?(?:\s+QUICK)?(?:\s+IGNORE)?(?:\s+[A-Z0-9_{}.,\s]+?)?\s+FROM)\s+`?([A-Z0-9_{}.]+)`?/',
 			$normalized,
 			$m
 		) ) {
 			return null;
 		}
-		$table = $m[1];
-		$base  = preg_replace( '/^' . preg_quote( $prefix, '/' ) . '/', '', $table );
-		$base  = preg_replace( '/^\{PREFIX\}/', '', $base );
-		$base  = preg_replace( '/^WP_/', '', $base );
+		$base = $this->sql_base_table( $m[1] );
 
-		// wp_options: refuse writes naming a blocked option, or a blanket
-		// UPDATE/DELETE (no WHERE) that would touch every option including the
-		// blocked ones. INSERT/REPLACE never carry a WHERE, so the no-WHERE rule
-		// applies only to UPDATE/DELETE — an insert is already caught by name.
+		// wp_options: raw INSERT/REPLACE is refused wholesale (below); for
+		// UPDATE/DELETE, refuse a write naming a blocked option, a disguised
+		// option name, or a blanket write (no WHERE) that would touch every
+		// option including the blocked ones.
 		if ( 'OPTIONS' === $base ) {
+			// INSERT/REPLACE carry the option name in VALUES(...) where it cannot
+			// be bound to a column predicate, so a disguised name there could
+			// seed or overwrite a protected option and we cannot reliably tell
+			// the name literal from a value literal. Raw row inserts into
+			// wp_options are not a supported path (option add/update fire the
+			// right hooks and gate with a diff), so refuse them wholesale.
+			if ( preg_match( '/^\s*(?:INSERT|REPLACE)\b/', $normalized ) ) {
+				return $this->privileged_refusal( 'the options table via raw INSERT/REPLACE (use option add or option update)' );
+			}
+			// Name-obfuscation fail-closed: an `option_name = <literal>` predicate
+			// can disguise which row MySQL binds (backslash escapes, adjacent-
+			// literal concatenation, hex literals, or a non-ASCII byte inside the
+			// quotes) so a protected option reads as something else to the literal
+			// match below. Emulating MySQL's string grammar is the losing game
+			// #59 documents, so refuse the disguised shape; a plain literal name
+			// is unaffected and `option update` remains the supported path.
+			if ( $this->sql_option_name_obfuscated( $normalized ) ) {
+				return $this->privileged_refusal( 'the options table with a disguised option name (re-run option update with the plain name)' );
+			}
 			// Quote-tolerant of trailing spaces: MySQL's PAD SPACE collation
 			// resolves 'siteurl ' to the siteurl row, so a strpos for the
 			// exact-quoted name would miss the padded write it still performs.
@@ -255,6 +315,93 @@ trait WPVibe_CLI_Db {
 	 */
 	private function sql_names_option( $normalized, $name ) {
 		return (bool) preg_match( '/["\']\s*' . preg_quote( strtoupper( (string) $name ), '/' ) . '\s*["\']/', $normalized );
+	}
+
+
+	/**
+	 * Strip SQL comments from the VALIDATION copy only. Execution always uses the
+	 * original $sql, so real comment-bearing content (Gutenberg block markup,
+	 * CSS comments, hex colors) is never altered. Shared by handle_db_query and
+	 * classify_destructive so their keyword views cannot desync. Each comment
+	 * becomes a SPACE (not empty) so tokens cannot fuse past a word-boundary
+	 * guard, and the grammar matches MySQL so the validation copy agrees with
+	 * what the server runs: a double-dash starts a comment only when followed by
+	 * whitespace or end (so a no-space double-dash stays as arithmetic and any
+	 * keyword after it is still seen), a hash runs to line end, and a slash-star
+	 * block is removed. Quote-blind (the limitation #59 is about), so it can
+	 * over-strip a comment token that is really inside a value; harmless, because
+	 * it only mangles the copy we validate, never what we execute, and the one
+	 * visible effect is a rare over-refusal (e.g. the no-WHERE options guard on a
+	 * hex-color value before the WHERE). Server-executed comments are rejected
+	 * upstream, before this runs.
+	 */
+	private function strip_sql_comments_for_validation( $sql ) {
+		$s = preg_replace( '/--(?=\s|$)[^\n]*/m', ' ', (string) $sql );
+		$s = preg_replace( '/#[^\n]*/', ' ', $s );
+		return preg_replace( '#/\*.*?\*/#s', ' ', $s );
+	}
+
+
+	/** Case-fold + whitespace-collapse the comment-stripped copy for the gate checks. */
+	private function normalize_sql_for_gate( $sql ) {
+		return preg_replace( '/\s+/', ' ', strtoupper( trim( $this->strip_sql_comments_for_validation( $sql ) ) ) );
+	}
+
+
+	/**
+	 * True when an `option_name = <literal>` predicate disguises the bound row:
+	 * concatenated adjacent literals ('siteur' 'l'), a backslash escape
+	 * ('site\url' -> siteurl), a non-ASCII byte inside the quotes (NBSP/ZWSP
+	 * padding that the collation folds to the real name), or a hex literal. The
+	 * column may be backtick-quoted. Scoped to the name predicate only, so an
+	 * ordinary option_value carrying a backslash or accented text is unaffected.
+	 * $normalized is uppercased.
+	 *
+	 * KNOWN residuals (still approval-gated as db_query_*, visible in the
+	 * approval preview, never an unapproved write, so acceptable): a name
+	 * reached via option_id, a LIKE pattern, or CONCAT()/expression rather than
+	 * a direct = literal.
+	 */
+	private function sql_option_name_obfuscated( $normalized ) {
+		if ( preg_match_all( '/`?OPTION_NAME`?\s*=\s*(\'(?:[^\']|\'\')*\'|"(?:[^"]|"")*")(\s*["\'])?/', $normalized, $matches, PREG_SET_ORDER ) ) {
+			foreach ( $matches as $m ) {
+				if ( isset( $m[2] ) && '' !== trim( $m[2] ) ) {
+					return true; // an adjacent literal follows: string concatenation
+				}
+				$inner = substr( $m[1], 1, -1 );
+				if ( false !== strpos( $inner, '\\' ) ) {
+					return true; // backslash escape
+				}
+				// Plain ASCII space (0x20) is intentionally allowed here: the
+				// PAD-SPACE trailing-space case is already caught with its
+				// specific message by sql_names_option, so this only flags the
+				// invisible padding it misses (NBSP, ZWSP, BOM, control bytes).
+				if ( preg_match( '/[^\x20-\x7E]/', $inner ) ) {
+					return true; // NBSP/ZWSP or other non-printable padding
+				}
+			}
+		}
+		return (bool) preg_match( '/`?OPTION_NAME`?\s*=\s*(0X[0-9A-F]+|X\'[0-9A-F]*\')/', $normalized );
+	}
+
+
+	/**
+	 * Normalize a captured table token to its base name: drop backticks, take
+	 * the part after the last dot (so a schema-qualified `db.wp_options` is
+	 * judged on the table, not the DB), then strip the table prefix / {PREFIX} /
+	 * WP_. $token comes from the uppercased normalized SQL.
+	 */
+	private function sql_base_table( $token ) {
+		global $wpdb;
+		$prefix = strtoupper( $wpdb->prefix );
+		$token  = str_replace( '`', '', (string) $token );
+		if ( false !== strpos( $token, '.' ) ) {
+			$parts = explode( '.', $token );
+			$token = (string) end( $parts );
+		}
+		$token = preg_replace( '/^' . preg_quote( $prefix, '/' ) . '/', '', $token );
+		$token = preg_replace( '/^\{PREFIX\}/', '', $token );
+		return preg_replace( '/^WP_/', '', $token );
 	}
 
 

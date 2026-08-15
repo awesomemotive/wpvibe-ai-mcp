@@ -30,6 +30,17 @@ trait WPVibe_CLI_Option {
 			);
 		}
 
+		// Collation-independent backstop: match_option_name canonicalizes a
+		// non-ASCII disguised name via a DB round-trip, which returns "not
+		// blocked" if that query fails (DB blip) — reads would then leak a
+		// padded auth salt (BLOCKED_OPTIONS holds auth_key + the salts). The
+		// write handlers already run this; reads must too. get_option resolves
+		// the padded name to the real row regardless, so refuse it up front.
+		$boundary = $this->reject_bad_option_name( $positional[0] );
+		if ( $boundary ) {
+			return $boundary;
+		}
+
 		$value = get_option( $positional[0], null );
 		if ( null === $value ) {
 			/* translators: %s: option key */
@@ -66,6 +77,14 @@ trait WPVibe_CLI_Option {
 					$key
 				)
 			);
+		}
+
+		// Collation-independent backstop (see handle_option_get): the non-ASCII
+		// canonicalization above fails open on a DB blip, so refuse a disguised
+		// name before get_option resolves it to a padded salt row.
+		$boundary = $this->reject_bad_option_name( $key );
+		if ( $boundary ) {
+			return $boundary;
 		}
 
 		$value = get_option( $key, null );
@@ -161,7 +180,9 @@ trait WPVibe_CLI_Option {
 
 		$results = array();
 		foreach ( $rows as $row ) {
-			if ( in_array( $row['option_name'], self::BLOCKED_OPTIONS, true ) ) {
+			// Canonicalize rather than strict compare: a stored row name that
+			// differs only by case from a blocked one must still be filtered out.
+			if ( null !== self::match_option_name( $row['option_name'], self::BLOCKED_OPTIONS ) ) {
 				continue;
 			}
 			if ( strlen( $row['option_value'] ) > 200 ) {
@@ -513,19 +534,15 @@ trait WPVibe_CLI_Option {
 
 		$rest  = array_slice( $positional, 2 );
 		$value = null;
+		$raw   = null;
 		if ( 'delete' === $action ) {
 			$path = $rest;
 		} else {
 			if ( count( $rest ) < 2 ) {
 				return $this->error_result( __( 'Both a key path and a value are required. Usage: option patch <insert|update> <option> <key-path>... <value>', 'vibe-ai' ) );
 			}
-			$raw    = array_pop( $rest );
-			$parsed = $this->parse_option_value( $raw, $flags, $key );
-			if ( isset( $parsed['error'] ) ) {
-				return $this->error_result( $parsed['error'] );
-			}
-			$value = $parsed['value'];
-			$path  = $rest;
+			$raw  = array_pop( $rest );
+			$path = $rest;
 		}
 		if ( empty( $path ) ) {
 			return $this->error_result( __( 'Key path required.', 'vibe-ai' ) );
@@ -541,13 +558,26 @@ trait WPVibe_CLI_Option {
 			return $this->error_result( sprintf( __( 'Option \'%s\' is not an array or object; use `option update` for scalar values.', 'vibe-ai' ), $key ) );
 		}
 
+		if ( 'delete' !== $action ) {
+			// Only refuse JSON text when the write would otherwise land;
+			// structurally doomed commands get their accurate error instead.
+			if ( $this->patch_value_is_json_text( $raw, $flags ) && $this->patch_structurally_writable( $current, $path, $action ) ) {
+				return $this->error_result( $this->patch_json_text_refusal( $key, $path, $action, $current ) );
+			}
+			$parsed = $this->parse_option_value( $raw, $flags, $key );
+			if ( isset( $parsed['error'] ) ) {
+				return $this->error_result( $parsed['error'] );
+			}
+			$value = $parsed['value'];
+		}
+
 		if ( 'update' === $action ) {
 			$leaf_found = false;
 			$leaf       = $this->option_leaf_at( $current, $path, $leaf_found );
 			if ( $leaf_found && $this->patch_leaf_shape_conflict( $leaf, $value ) ) {
 				return $this->error_result( sprintf(
 					/* translators: 1: key path, 2: option key, 3: current shape, 4: new shape */
-					__( 'Key path \'%1$s\' in option \'%2$s\' currently stores %3$s; writing %4$s would silently change its stored shape and can break the plugin that owns it. Write the same shape (--format=json for structures, --format=plaintext for literal text), or use `option patch delete` then `option patch insert` if the shape change is intentional.', 'vibe-ai' ),
+					__( 'Key path \'%1$s\' in option \'%2$s\' currently stores %3$s; writing %4$s would silently change its stored shape and can break the plugin that owns it. Write the same shape (--format=json for structures; for literal text use --format=plaintext, or a JSON-encoded string with --format=json when the text itself parses as JSON), or use `option patch delete` then `option patch insert` if the shape change is intentional.', 'vibe-ai' ),
 					implode( '.', $path ),
 					$key,
 					( is_array( $leaf ) || is_object( $leaf ) ) ? __( 'an array/object', 'vibe-ai' ) : __( 'a scalar', 'vibe-ai' ),
@@ -618,6 +648,85 @@ trait WPVibe_CLI_Option {
 		$leaf_structured  = is_array( $leaf ) || is_object( $leaf );
 		$value_structured = is_array( $value ) || is_object( $value );
 		return $leaf_structured !== $value_structured;
+	}
+
+
+	/**
+	 * `option patch` leaves live inside a decoded PHP array (the handler
+	 * refuses scalar options), so a value that parses as a JSON object/array
+	 * without --format=json is almost always a formatting mistake: stored as
+	 * plaintext it becomes a string where the owning theme/plugin expects an
+	 * array (fataled a live Astra site on PHP 8, issue #71). Deliberate parity
+	 * divergence: upstream WP-CLI stores the literal string. The rare literal
+	 * JSON-text leaf is still writable as a JSON-encoded string, which the
+	 * refusal text explains.
+	 */
+	private function patch_value_is_json_text( $raw, $flags ) {
+		$format = isset( $flags['format'] ) ? strtolower( (string) $flags['format'] ) : '';
+		return in_array( $format, array( '', 'plaintext' ), true ) && is_array( json_decode( (string) $raw, true ) );
+	}
+
+
+	/** Mirrors patch_structure's structural checks so the JSON-text refusal
+	 * only fires when the write would otherwise land (same walk the approval
+	 * classifier uses). */
+	private function patch_structurally_writable( $current, $path, $action ) {
+		$leaf_found = false;
+		$this->option_leaf_at( $current, $path, $leaf_found );
+		if ( 'insert' !== $action ) {
+			return $leaf_found;
+		}
+		if ( $leaf_found ) {
+			return false;
+		}
+		if ( count( $path ) > 1 ) {
+			$parent_found = false;
+			$parent       = $this->option_leaf_at( $current, array_slice( $path, 0, -1 ), $parent_found );
+			return $parent_found && ( is_array( $parent ) || is_object( $parent ) );
+		}
+		return true;
+	}
+
+
+	private function quote_path_for_guidance( $path ) {
+		$out = array();
+		foreach ( $path as $seg ) {
+			$out[] = preg_match( '/\s/', (string) $seg ) ? "'" . $seg . "'" : (string) $seg;
+		}
+		return implode( ' ', $out );
+	}
+
+
+	private function patch_json_text_refusal( $key, $path, $action, $current ) {
+		$leaf_found = false;
+		$leaf       = $this->option_leaf_at( $current, $path, $leaf_found );
+		$hatch      = __( 'If the owning plugin genuinely stores literal JSON text at this key, pass a JSON-encoded string with --format=json (single-quoted, e.g. \'"{\\"x\\":1}"\').', 'vibe-ai' );
+		if ( 'update' === $action && $leaf_found && is_string( $leaf ) && is_array( json_decode( $leaf, true ) ) ) {
+			// The leaf already stores literal JSON text; delete+insert would
+			// decode it into an array, the exact corruption this guard exists
+			// to prevent, so the encoded-string form is the fix here.
+			$fix   = __( 'This key already stores literal JSON text, so keep it a string: pass the new text as a JSON-encoded string with --format=json (single-quoted, e.g. \'"{\\"x\\":1}"\'). A decoded structure here would corrupt the owning plugin\'s setting.', 'vibe-ai' );
+			$hatch = '';
+		} elseif ( 'update' === $action && $leaf_found && $this->patch_leaf_shape_conflict( $leaf, array() ) ) {
+			// Reuse the shape guard's own predicate so this wording can never
+			// recommend a --format=json retry the guard would then refuse.
+			$fix = sprintf(
+				/* translators: 1: option key, 2: space-separated key path */
+				__( 'This key currently stores non-empty scalar text, so replace it explicitly: run `option patch delete %1$s %2$s`, then `option patch insert %1$s %2$s \'<json>\' --format=json`.', 'vibe-ai' ),
+				$key,
+				$this->quote_path_for_guidance( $path )
+			);
+		} else {
+			$fix = __( 'Re-run the same command with --format=json to store the structure.', 'vibe-ai' );
+		}
+		$message = sprintf(
+			/* translators: 1: key path, 2: option key, 3: corrective guidance */
+			__( 'Key path \'%1$s\' in option \'%2$s\': the value parses as a JSON object/array, but \'%2$s\' is a decoded PHP array whose leaves are decoded structures, never JSON text. Stored as plaintext it becomes a string where the owning theme/plugin expects an array, which can fatally break the site. %3$s', 'vibe-ai' ),
+			implode( '.', $path ),
+			$key,
+			$fix
+		);
+		return '' === $hatch ? $message : $message . ' ' . $hatch;
 	}
 
 

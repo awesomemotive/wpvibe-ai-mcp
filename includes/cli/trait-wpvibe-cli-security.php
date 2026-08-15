@@ -210,9 +210,11 @@ trait WPVibe_CLI_Security {
 			if ( '' === $sql ) {
 				return null; // Handler will return a usage error.
 			}
-			$stripped   = preg_replace( '/--.*$/m', '', $sql );
-			$stripped   = preg_replace( '/\/\*.*?\*\//s', '', $stripped );
-			$normalized = preg_replace( '/\s+/', ' ', strtoupper( trim( $stripped ) ) );
+			// Comments are stripped from the validation copy (shared helper, so
+			// this cannot desync from handle_db_query), matching MySQL's grammar
+			// so a keyword hidden in a real comment is not seen while a keyword
+			// after a bare `--`/inside a value still is.
+			$normalized = $this->normalize_sql_for_gate( $sql );
 			$mutating   = array( 'DELETE', 'UPDATE', 'DROP', 'TRUNCATE', 'ALTER', 'INSERT', 'CREATE', 'RENAME', 'GRANT', 'REVOKE' );
 			$matched    = null;
 			foreach ( $mutating as $kw ) {
@@ -221,7 +223,11 @@ trait WPVibe_CLI_Security {
 					break;
 				}
 			}
-			if ( null === $matched && preg_match( '/\bREPLACE\s+(?:LOW_PRIORITY\s+|DELAYED\s+)?INTO\b/', $normalized ) ) {
+			// REPLACE as a statement (INTO optional in MySQL), followed by a
+			// table token — the trailing [`\w{] excludes the REPLACE() string
+			// function (REPLACE( has no space + a paren), which is not a write.
+			// Kept in sync with handle_db_query's INTO-optional target guard.
+			if ( null === $matched && preg_match( '/\bREPLACE\s+(?:LOW_PRIORITY\s+|DELAYED\s+)?(?:INTO\s+)?[`\w{]/', $normalized ) ) {
 				$matched = 'REPLACE';
 			}
 			if ( null !== $matched ) {
@@ -1054,8 +1060,11 @@ trait WPVibe_CLI_Security {
 		if ( count( $rest ) < 2 ) {
 			return null;
 		}
-		$raw    = array_pop( $rest );
-		$path   = $rest;
+		$raw  = array_pop( $rest );
+		$path = $rest;
+		if ( $this->patch_value_is_json_text( $raw, $flags ) ) {
+			return null;
+		}
 		$parsed = $this->parse_option_value( $raw, $flags, $key );
 		if ( isset( $parsed['error'] ) ) {
 			return null;

@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.15.2] - 2026-08-15
+- Security: hardened raw database access so a disguised query cannot bypass the protections on core options, the users table, secret keys, and server files (SQL comments, option-name obfuscation, file-access primitives, privileged-target parsing).
+- Fix: read-only queries using REPLACE() to count/inspect content are no longer refused by mistake.
+
+
 ## [1.15.1] - 2026-08-14
 
 * Hardening: your page builder's site-wide settings and global presets (such as Divi's design presets) now require your approval before any write, on every path including option writes and raw SQL, and the approval screen shows exactly which settings change. This closes a route where a bulk edit could overwrite a builder's global styling and break its editor across the whole site.

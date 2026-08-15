@@ -4,7 +4,7 @@ Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.15.1
+Stable tag: 1.15.2
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -230,6 +230,10 @@ Yes. Connected sites are unlimited on every plan, including the free plan. Conne
 No. WPVibe lets you manage your WordPress site entirely through conversation with your AI assistant. No coding required for content management. Theme editing is also conversational, your AI writes the code for your WordPress theme.
 
 == Changelog ==
+
+= 1.15.2 =
+* Security: hardened the protections on WPVibe's raw database access so a disguised query cannot slip past them. WPVibe already refuses to change your site's core web addresses, touch the users table, read your site's secret keys, or read and write files on the server, even on a command you approve. This release closes several ways a specially crafted query could hide those actions from the safety checks, such as using SQL comments or unusual spellings of a protected setting's name.
+* Fix: read-only database queries that use REPLACE() to count or inspect content (a common reporting pattern) are no longer refused by mistake.
 
 = 1.15.1 =
 * Hardening: your page builder's site-wide settings and global presets (such as Divi's design presets) now require your approval before any write, on every path including option writes and raw SQL, and the approval screen shows exactly which settings change. This closes a route where a bulk edit could overwrite a builder's global styling and break its editor across the whole site.
