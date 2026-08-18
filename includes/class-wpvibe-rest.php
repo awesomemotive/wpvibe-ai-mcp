@@ -33,6 +33,9 @@ class WPVibe_REST {
 	 * then fails every data request with missing_required_scopes. Marking
 	 * REST-prefixed paths as API requests lets the same credentials resolve first.
 	 *
+	 * Only applies when the Basic username maps to a real user — see
+	 * basic_auth_user_exists() for why non-user credentials must pass through.
+	 *
 	 * @param bool $is_api_request Whether core already considers this an API request.
 	 * @return bool
 	 */
@@ -47,11 +50,47 @@ class WPVibe_REST {
 		}
 		// Plain-permalink REST only routes through the front controller; direct scripts (admin-ajax.php) never carry rest_route.
 		if ( isset( $_GET['rest_route'] ) && ( false === strpos( $path, '.php' ) || 'index.php' === basename( $path ) ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-			return true;
+			return self::basic_auth_user_exists();
 		}
 		$home_path = (string) wp_parse_url( home_url(), PHP_URL_PATH );
 		$prefix    = rtrim( $home_path, '/' ) . '/' . rest_get_url_prefix();
-		return $path === $prefix || 0 === strpos( $path, $prefix . '/' );
+		if ( $path !== $prefix && 0 !== strpos( $path, $prefix . '/' ) ) {
+			return false;
+		}
+		return self::basic_auth_user_exists();
+	}
+
+	/**
+	 * Whether the request's Basic username could ever validate as an app password.
+	 *
+	 * App-password auth for a nonexistent username can only hard-fail: core stores
+	 * the invalid_username error and rest_authentication_errors returns it even
+	 * after another handler authenticates. Services sending WooCommerce ck_/cs_
+	 * keys as Basic credentials (TrackShip, Metorik) got blanket 401s that way,
+	 * so a credential that maps to no user must not trigger the early marking.
+	 *
+	 * @return bool
+	 */
+	private static function basic_auth_user_exists() {
+		// empty() (not isset) to agree with WPVibe_Auth_Fallback::has_server_credentials(),
+		// and is_string() because a crafted array here fatals inside core on PHP 8.
+		if ( empty( $_SERVER['PHP_AUTH_USER'] ) || ! is_string( $_SERVER['PHP_AUTH_USER'] ) ) {
+			// Core skips app-password auth entirely without PHP_AUTH_*, so marking is harmless.
+			return true;
+		}
+		// get_user_by() is pluggable — undefined when the auth fallback calls this
+		// filter at plugin-file-load time, before pluggable.php.
+		if ( ! function_exists( 'get_user_by' ) ) {
+			return true;
+		}
+		// Raw value, not unslashed: core hands $_SERVER['PHP_AUTH_USER'] to
+		// wp_authenticate_application_password() as-is, and this must mirror
+		// exactly the lookup core will perform.
+		$username = $_SERVER['PHP_AUTH_USER']; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized, WordPress.Security.ValidatedSanitizedInput.MissingUnslash
+		if ( get_user_by( 'login', $username ) ) {
+			return true;
+		}
+		return (bool) ( is_email( $username ) && get_user_by( 'email', $username ) );
 	}
 
 	/**

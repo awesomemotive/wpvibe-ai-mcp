@@ -1,5 +1,8 @@
 # Changelog
 
+## [1.15.3] - 2026-08-18
+- Fix: services that authenticate with WooCommerce REST API keys (TrackShip, Metorik, and similar) no longer receive a 401 Unknown username error on sites where another plugin resolves the user early in the request.
+
 ## [1.15.2] - 2026-08-15
 - Security: hardened raw database access so a disguised query cannot bypass the protections on core options, the users table, secret keys, and server files (SQL comments, option-name obfuscation, file-access primitives, privileged-target parsing).
 - Fix: read-only queries using REPLACE() to count/inspect content are no longer refused by mistake.
