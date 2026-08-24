@@ -1,5 +1,8 @@
 # Changelog
 
+## [1.15.4] - 2026-08-23
+- Fix: sites running WPCode with Error Logging turned on no longer hit a "Class WPCode_File_Cache not found" fatal on WPVibe requests when a snippet emits a warning. WPCode only loads that class inside wp-admin, so WPVibe now loads it for its own requests. This restores code snippet creation and WP-CLI reads on affected sites.
+
 ## [1.15.3] - 2026-08-18
 - Fix: services that authenticate with WooCommerce REST API keys (TrackShip, Metorik, and similar) no longer receive a 401 Unknown username error on sites where another plugin resolves the user early in the request.
 

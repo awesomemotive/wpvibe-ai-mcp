@@ -35,6 +35,19 @@ class WPVibe_Code_Snippet {
 		'admin_head', 'admin_footer',
 	);
 
+	// WPCode requires this class only under is_admin(), but its always-loaded logger calls it statically on REST.
+	public static function load_wpcode_file_cache() {
+		if ( is_admin() || class_exists( 'WPCode_File_Cache', false ) || ! defined( 'WPCODE_PLUGIN_PATH' ) ) {
+			return false;
+		}
+		$file = WPCODE_PLUGIN_PATH . 'includes/class-wpcode-file-cache.php';
+		if ( ! is_readable( $file ) ) {
+			return false;
+		}
+		require_once $file;
+		return class_exists( 'WPCode_File_Cache', false );
+	}
+
 	/**
 	 * WPCode_Snippet is WPCode's internal class, not a versioned contract —
 	 * feature-detect the shape we drive and fail closed if it drifted.
