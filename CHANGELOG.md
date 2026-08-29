@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.15.5] - 2026-08-29
+- Fix: when WordPress rejects the application password it created seconds earlier, the plugin now reports whether that user has any application passwords stored at all, plus the install facts that explain a lost one (persistent object cache, shared user tables, wp-content drop-ins). WPVibe uses this to say "your site did not keep the password" instead of blaming the host for stripping the Authorization header.
+- Fix: the Approve page no longer leaves an empty red bar when the site's REST API answers with a firewall page or nothing at all. It now says what came back (status, page vs JSON, the security vendor if recognisable), the two fixes, and where to get help, and warns before you click when the same request is already blocked. Advisory only; the Approve form is never changed. Disable with the WPVIBE_DISABLE_AUTHORIZE_NOTICE constant or the wpvibe_authorize_notice filter.
+
 ## [1.15.4] - 2026-08-23
 - Fix: sites running WPCode with Error Logging turned on no longer hit a "Class WPCode_File_Cache not found" fatal on WPVibe requests when a snippet emits a warning. WPCode only loads that class inside wp-admin, so WPVibe now loads it for its own requests. This restores code snippet creation and WP-CLI reads on affected sites.
 

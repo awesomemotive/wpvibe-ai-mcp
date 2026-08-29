@@ -4,7 +4,7 @@ Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.15.4
+Stable tag: 1.15.5
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -132,6 +132,8 @@ This plugin connects to the WPVibe service at [wpvibe.ai](https://wpvibe.ai) to 
 
 No data is collected, tracked, or shared with third parties beyond what is necessary to relay your AI assistant's MCP requests to your WordPress REST API. Your content stays on your WordPress server.
 
+On WPVibe's own authorization page (the Approve screen an authorize link opens), if your site's REST API answers the approval request with a firewall page or no response, the plugin reports that outcome to the WPVibe service (the HTTP status, whether the answer was a page or JSON, and the security vendor if recognised; never page content) so support can see what blocked the connection. Nothing is reported on a successful approval.
+
 * [Privacy Policy](https://wpvibe.ai/privacy/)
 
 = Third-Party Libraries =
@@ -230,6 +232,10 @@ Yes. Connected sites are unlimited on every plan, including the free plan. Conne
 No. WPVibe lets you manage your WordPress site entirely through conversation with your AI assistant. No coding required for content management. Theme editing is also conversational, your AI writes the code for your WordPress theme.
 
 == Changelog ==
+
+= 1.15.5 =
+* Fix: when WordPress rejects the application password it created seconds earlier, the plugin now reports whether that user has any application passwords stored at all, plus the install facts that explain a lost one (persistent object cache, shared user tables, wp-content drop-ins). WPVibe uses this to say "your site did not keep the password" instead of blaming the host for stripping the Authorization header.
+* Fix: the Approve page no longer leaves an empty red bar when the site's REST API answers with a firewall page or nothing at all. It now says what came back (status, page vs JSON, the security vendor if recognisable), the two fixes, and where to get help, and warns before you click when the same request is already blocked. Advisory only; the Approve form is never changed. Disable with the WPVIBE_DISABLE_AUTHORIZE_NOTICE constant or the wpvibe_authorize_notice filter.
 
 = 1.15.4 =
 * Fix: sites running WPCode with Error Logging turned on no longer hit a "Class WPCode_File_Cache not found" fatal on WPVibe requests when a snippet emits a warning. WPCode only loads that class inside wp-admin, so WPVibe now loads it for its own requests. This restores code snippet creation and WP-CLI reads on affected sites.
@@ -341,28 +347,6 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 
 = 1.8.1 =
 * Fix: SeedProd landing pages now render on your site automatically after WPVibe builds or updates them. The automatic render step added in 1.8.0 only recognized SeedProd theme templates and coming-soon or maintenance pages, so regular landing pages still asked you to open the SeedProd builder and click Save yourself.
-
-= 1.8.0 =
-* New: SeedProd pages and theme templates that WPVibe builds now render on your site automatically, without you opening each one in the SeedProd builder and clicking Save yourself. WPVibe triggers the builder's own save step for you through a single-use sign-in link that expires in two minutes and is scoped to that one page, so nothing else on your site is exposed.
-* Improvement: Elementor pages can now set their WordPress page template at save time (new page_template field on the save-page endpoint): "elementor_canvas" for standalone landing pages, "elementor_header_footer" to keep the theme's header and footer without the page title. Previously every AI-built page rendered with the theme's default template, which prints the raw page title above the design on most themes. Unknown template names are saved but flagged in the response warnings.
-* New: Code snippets, safely. Your AI can now draft a code snippet (PHP, JavaScript, CSS, HTML, universal, or text) through the free WPCode plugin. You approve the exact code, type, and placement in your browser before anything is written, and every snippet is saved switched off: you review and enable it yourself in wp-admin, where WPCode runs its own fatal-error check. PHP snippets are also syntax-checked at write time, so a typo is caught before it ever reaches the enable switch. Requires WPCode; without it the feature says so clearly instead of failing cryptically.
-* Hardening: WP-CLI commands can no longer create or edit WPCode snippet posts (including their custom fields and type/location terms). Snippet code always goes through the code approval panel, and enabling a snippet remains something only you can do.
-* New: "post term set", "post term add", and "post term remove" assign existing taxonomy terms to a post (by slug, or by id with --by=id), including private taxonomies the REST API cannot reach. Terms are never created implicitly; a missing term is reported with how to create it first.
-* New: "option pluck" reads a single nested key out of a large settings option (plugin settings arrays, JSON blobs) instead of fetching the whole option into the conversation.
-* Improvement: "theme list" now reports update availability (update and update_version fields, plus --update=available), matching what plugin list has done since 1.5.2, so "any theme updates?" is one command instead of probing each theme.
-* Improvement: "cache purge" now detects the official Cloudflare plugin and purges its edge cache alongside the other cache plugins, so a purge actually reaches visitors on Cloudflare-fronted sites.
-* Fix: post create/update accept --post_content_base64 for content that mixes single and double quotes. The plain --post_content flag silently dropped colliding quote characters; the new flag round-trips the content byte for byte, backslashes included.
-* Hardening: "db query" now rejects MySQL executable comments (/*! ... */), which could hide a blocked keyword from the query validator.
-* New: "cache purge --url=" purges specific pages instead of the whole cache, on every cache plugin with a URL purge API (LiteSpeed Cache, WP Rocket, W3 Total Cache, WP Super Cache, SiteGround Speed Optimizer). Plugins without one still flush fully, and the result says which happened. "--skip=" leaves named layers alone (for example Cloudflare or the object cache).
-* Fix: "cache purge" no longer reports the Cloudflare cache as purged when the Cloudflare plugin's Automatic Cache Management toggle is off. The plugin silently ignores purge requests in that state; the result now says so and points at the setting.
-* Improvement: cache purges now run origin caches first and Cloudflare last, so the edge cannot re-cache stale pages mid-purge.
-* Improvement: publishing a draft theme now flushes every detected cache as part of the publish itself, so visitors see the new design immediately on every cache plugin, not just the ones that react to a theme switch.
-* Fix: deleting a user by email address now shows the real account details in the approval preview. Previously the preview claimed the user would not be found while the deletion itself would still proceed after approval.
-* Fix: the "transient delete --all" approval preview no longer claims site transients are included; only regular transients are deleted, and the preview now says so.
-* Fix: "widget list" reads sidebars through the WordPress core accessor, so sites upgraded from very old WordPress versions no longer see a bogus "array_version" row.
-* Fix: search-replace always quotes primary-key values in its row queries. On plugin tables with text primary keys, numeric-looking key values could previously match the wrong row and copy one row's content into another.
-* Fix: "option list --search" and "transient list --search" treat underscores in your search text as literal characters instead of single-character wildcards, so searching blog_* no longer matches unrelated options.
-* Improvement: truncated previews of long post, comment, and option values now cut cleanly on multibyte (emoji, accented, CJK) content.
 
 = Older versions =
 WP.org caps the changelog at 5,000 words. For the full release history back to 1.0.0, see https://wpvibe.ai/changelog/
