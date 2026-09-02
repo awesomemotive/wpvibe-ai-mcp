@@ -15,6 +15,11 @@
 - Fix: operation receipts now accept the fleet runner's operation ids, so background jobs can recover the outcome of a call that timed out mid-flight instead of re-probing.
 - Feature: `core update` and `core update-db`. Updating WordPress core pauses for browser approval and shows the exact version change; the approval is re-verified against the site at execution, and a leftover .maintenance file is cleaned up so a failed update cannot strand the site.
 - Fix: when a security plugin filters WordPress core update data, `core check-update` and `core update` now say so instead of reporting "no update available" as a certainty.
+- Fix: Elementor pages saved through WPVibe are verified after the save. If Elementor stored the layout empty, WPVibe writes the requested structure directly, removes the empty autosave the editor would otherwise open, and never reports success on a page that is still empty.
+- Fix: a content edit whose old text differs from the stored value only by whitespace now applies when it is the one unambiguous match, and a miss says what was tried instead of a bare "not found".
+- Hardening: PHP file writes are refused when they would redeclare a function or class the running site already has, and publishing a draft theme renders the front page afterwards and rolls back to the backup on a fatal, keeping the draft for editing.
+- Fix: the Approve click on the connection screen now creates the application password through WPVibe's own route with your logged-in session, so hosts that block the core users endpoint as "user enumeration" no longer stop the one-click connect.
+- Fix: when the connection check fails, the connected page now says what actually came back (a firewall page, a redirect, a server error) and what to do about it, instead of one generic message.
 
 ## [1.15.5] - 2026-08-29
 - Fix: when WordPress rejects the application password it created seconds earlier, the plugin now reports whether that user has any application passwords stored at all, plus the install facts that explain a lost one (persistent object cache, shared user tables, wp-content drop-ins). WPVibe uses this to say "your site did not keep the password" instead of blaming the host for stripping the Authorization header.
