@@ -115,10 +115,301 @@ trait WPVibe_CLI_Core {
 				'locale'      => $update->locale ?? '',
 			);
 		}
+		$note = $this->core_update_filter_note();
 		if ( empty( $available ) ) {
-			return $this->success_result( array( 'message' => __( 'WordPress is at the latest version.', 'vibe-ai' ) ) );
+			$data = array( 'message' => __( 'WordPress is at the latest version.', 'vibe-ai' ) );
+			if ( $note ) {
+				$data['note'] = $note;
+			}
+			return $this->success_result( $data );
 		}
-		return $this->success_result( $available );
+		return $this->success_result( $available, (string) $note );
+	}
+
+
+	/**
+	 * Approval-gated core update. Classification already re-verified the
+	 * current/new versions against the approved snapshot (drift check), so this
+	 * runs only what the user reviewed.
+	 */
+	private function handle_core_update( $positional, $flags, $confirm_write = false ) {
+		$err = $this->core_update_flag_error( $flags );
+		if ( $err ) {
+			return $err;
+		}
+
+		// Preflight BEFORE any download: on FTP/SSH-credential filesystems the
+		// upgrader would fetch the zip and then fail to write a single file.
+		if ( ! function_exists( 'get_filesystem_method' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/file.php';
+		}
+		if ( 'direct' !== get_filesystem_method() ) {
+			return $this->error_result( __( 'This site\'s filesystem needs FTP/SSH credentials that WordPress does not have in this context, so core files cannot be written. Update from wp-admin > Updates, where WordPress can prompt for credentials.', 'vibe-ai' ) );
+		}
+
+		if ( get_option( 'core_updater.lock' ) ) {
+			return $this->error_result( __( 'Another update is currently in progress. You may need to run \'option delete core_updater.lock\' after verifying another update isn\'t actually running (that delete pauses for approval).', 'vibe-ai' ) );
+		}
+
+		if ( function_exists( 'set_time_limit' ) ) {
+			@set_time_limit( 300 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+		}
+
+		global $wp_version;
+		$resolved = $this->resolve_core_update_offer( $flags );
+		if ( ! $resolved['offer'] ) {
+			if ( 'latest_minor' === $resolved['note'] ) {
+				return $this->success_result( array( 'message' => __( 'WordPress is at the latest minor release.', 'vibe-ai' ) ) );
+			}
+			if ( 'version_unavailable' === $resolved['note'] ) {
+				return $this->error_result( sprintf(
+					/* translators: %s: requested version */
+					__( 'Version %s is not offered by WordPress.org for this site, so it cannot be installed here. Run `core check-update` for the offered versions, or use wp-admin > Updates for anything else.', 'vibe-ai' ),
+					$resolved['requested']
+				) );
+			}
+			/* translators: %s: current WordPress version */
+			$data = array( 'message' => sprintf( __( 'WordPress is up to date at version %s.', 'vibe-ai' ), $wp_version ) );
+			$note = $this->core_update_filter_note();
+			if ( $note ) {
+				$data['note'] = $note;
+			}
+			return $this->success_result( $data );
+		}
+
+		$offer = $resolved['offer'];
+		$old   = (string) $wp_version;
+
+		require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
+		$skin     = new Automatic_Upgrader_Skin();
+		$upgrader = new Core_Upgrader( $skin );
+		$thrown   = null;
+		$result   = null;
+		try {
+			$result = $upgrader->upgrade( $offer );
+		} catch ( \Throwable $e ) {
+			$thrown = $e;
+		}
+
+		// A dead update can leave .maintenance behind, taking the whole site
+		// down until someone deletes it by hand; clean it up on every outcome.
+		$maintenance_note = null;
+		if ( file_exists( ABSPATH . '.maintenance' ) ) {
+			@unlink( ABSPATH . '.maintenance' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+			$maintenance_note = __( 'A leftover .maintenance file was found after the update attempt and removed, so the site is not stuck in maintenance mode.', 'vibe-ai' );
+		}
+
+		$skin_messages = $skin->get_upgrade_messages();
+		$log           = $skin_messages ? ' Upgrader log: ' . implode( ' / ', $skin_messages ) : '';
+		$tail          = $maintenance_note ? ' ' . $maintenance_note : '';
+
+		if ( $thrown ) {
+			/* translators: %s: error message */
+			return $this->error_result( sprintf( __( 'Core update threw a fatal error: %s', 'vibe-ai' ), $thrown->getMessage() ) . $log . $tail );
+		}
+		if ( is_wp_error( $result ) ) {
+			if ( 'up_to_date' === $result->get_error_code() ) {
+				/* translators: %s: current WordPress version */
+				return $this->success_result( array( 'message' => sprintf( __( 'WordPress is up to date at version %s.', 'vibe-ai' ), $old ) ) );
+			}
+			return $this->error_result( $result->get_error_message() . $log . $tail );
+		}
+		if ( ! $result ) {
+			return $this->error_result( __( 'Core update failed.', 'vibe-ai' ) . $log . $tail );
+		}
+
+		$new = is_string( $result ) ? $result : (string) $offer->current;
+		WPVibe_Change_Tracker::mark( array(
+			'summary'      => "WordPress core updated: {$old} -> {$new}",
+			'action_label' => 'Updates',
+			'admin_url'    => admin_url( 'update-core.php' ),
+		) );
+
+		$data = array(
+			/* translators: 1: old version, 2: new version */
+			'message'    => sprintf( __( 'Updated WordPress %1$s -> %2$s.', 'vibe-ai' ), $old, $new ),
+			'next_steps' => __( 'Run `core update-db` to apply database migrations, then `core verify-checksums` to confirm file integrity.', 'vibe-ai' ),
+		);
+		if ( $maintenance_note ) {
+			$data['note'] = $maintenance_note;
+		}
+		if ( is_multisite() ) {
+			$data['multisite_note'] = __( 'This is a multisite install: core updates here are not covered by WPVibe testing on multisite. Visit wp-admin > Updates on the network admin and verify each site afterwards.', 'vibe-ai' );
+		}
+		return $this->success_result( $data );
+	}
+
+
+	private function handle_core_update_db( $positional, $flags ) {
+		$reject = $this->reject_unknown_flags( 'core update-db', $flags, array(), array(
+			'network' => __( 'Multisite network-wide DB upgrade is not emulated; run it per site from wp-admin.', 'vibe-ai' ),
+		) );
+		if ( $reject ) {
+			return $reject;
+		}
+		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+		$before = (string) get_option( 'db_version' );
+		wp_upgrade();
+		$after = (string) get_option( 'db_version' );
+		if ( $before === $after ) {
+			/* translators: %s: database version */
+			return $this->success_result( array( 'message' => sprintf( __( 'WordPress database is already at the latest version (%s).', 'vibe-ai' ), $after ) ) );
+		}
+		WPVibe_Change_Tracker::mark( array(
+			'summary'      => "WordPress database upgraded: {$before} -> {$after}",
+			'action_label' => 'Updates',
+			'admin_url'    => admin_url( 'update-core.php' ),
+		) );
+		/* translators: 1: old db version, 2: new db version */
+		return $this->success_result( array( 'message' => sprintf( __( 'WordPress database upgraded from %1$s to %2$s.', 'vibe-ai' ), $before, $after ) ) );
+	}
+
+
+	/**
+	 * Flag validation shared by classify_destructive and the handler, so a run
+	 * that will refuse can never burn an approval click first.
+	 */
+	private function core_update_flag_error( $flags ) {
+		$reject = $this->reject_unknown_flags( 'core update', $flags, array( 'minor', 'version' ), array(
+			'force'    => __( 'Reinstalls and downgrades are not emulated; use wp-admin > Updates.', 'vibe-ai' ),
+			'locale'   => __( 'Locale switching is not emulated; use wp-admin > Updates.', 'vibe-ai' ),
+			'network'  => __( 'Multisite network flags are not emulated; use wp-admin > Updates.', 'vibe-ai' ),
+			'insecure' => __( 'Disabling release-signature checks is not emulated.', 'vibe-ai' ),
+		) );
+		if ( $reject ) {
+			return $reject;
+		}
+		if ( isset( $flags['minor'] ) && isset( $flags['version'] ) ) {
+			return $this->error_result( __( '--minor and --version are mutually exclusive; pass one or the other.', 'vibe-ai' ) );
+		}
+		if ( isset( $flags['version'] ) ) {
+			if ( true === $flags['version'] || '' === trim( (string) $flags['version'] ) ) {
+				return $this->error_result( __( '--version requires a value, e.g. --version=6.7.2.', 'vibe-ai' ) );
+			}
+			global $wp_version;
+			$requested = trim( (string) $flags['version'] );
+			if ( version_compare( $requested, (string) $wp_version, '<' ) ) {
+				return $this->error_result( sprintf(
+					/* translators: 1: current version, 2: requested version */
+					__( 'WordPress is at %1$s; %2$s is older. Downgrading core is not supported through WPVibe; use wp-admin > Updates.', 'vibe-ai' ),
+					$wp_version,
+					$requested
+				) );
+			}
+		}
+		return null;
+	}
+
+
+	/**
+	 * Resolve the update offer core update would install, the SAME way for the
+	 * approval classifier and the handler (classify/handler parity rule).
+	 * Returns array{offer: object|null, note: string, requested?: string}.
+	 */
+	private function resolve_core_update_offer( $flags ) {
+		global $wp_version;
+		if ( ! function_exists( 'get_core_updates' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/update.php';
+		}
+		wp_version_check();
+		$offers = array();
+		foreach ( (array) get_core_updates() as $u ) {
+			if ( is_object( $u ) && isset( $u->response ) && 'latest' !== $u->response && ! empty( $u->current ) ) {
+				$offers[] = $u;
+			}
+		}
+		$requested = ( isset( $flags['version'] ) && true !== $flags['version'] ) ? trim( (string) $flags['version'] ) : '';
+		if ( '' !== $requested ) {
+			if ( version_compare( $requested, (string) $wp_version, '==' ) ) {
+				return array( 'offer' => null, 'note' => 'up_to_date' );
+			}
+			foreach ( $offers as $u ) {
+				if ( (string) $u->current === $requested ) {
+					return array( 'offer' => $u, 'note' => '' );
+				}
+			}
+			return array( 'offer' => null, 'note' => 'version_unavailable', 'requested' => $requested );
+		}
+		if ( isset( $flags['minor'] ) ) {
+			$branch = implode( '.', array_slice( explode( '.', (string) $wp_version ), 0, 2 ) );
+			foreach ( $offers as $u ) {
+				$offer_branch = implode( '.', array_slice( explode( '.', (string) $u->current ), 0, 2 ) );
+				if ( $offer_branch === $branch && version_compare( (string) $u->current, (string) $wp_version, '>' ) ) {
+					return array( 'offer' => $u, 'note' => '' );
+				}
+			}
+			return array( 'offer' => null, 'note' => 'latest_minor' );
+		}
+		$best = null;
+		foreach ( $offers as $u ) {
+			if ( version_compare( (string) $u->current, (string) $wp_version, '>' )
+				&& ( ! $best || version_compare( (string) $u->current, (string) $best->current, '>' ) ) ) {
+				$best = $u;
+			}
+		}
+		return $best ? array( 'offer' => $best, 'note' => '' ) : array( 'offer' => null, 'note' => 'up_to_date' );
+	}
+
+
+	/**
+	 * Hidden-updates honesty: security plugins (am-site-security et al.) filter
+	 * the core update transient, so "no update available" may not reflect
+	 * wordpress.org. Never blocks anything; only stops the emulator from
+	 * laundering a filtered feed into a confident "you're current".
+	 */
+	private function core_update_filter_note() {
+		global $wp_filter;
+		foreach ( array( 'pre_site_transient_update_core', 'site_transient_update_core' ) as $hook ) {
+			$hooked = isset( $wp_filter[ $hook ] ) ? $wp_filter[ $hook ] : null;
+			$groups = ( is_object( $hooked ) && isset( $hooked->callbacks ) ) ? $hooked->callbacks : ( is_array( $hooked ) ? $hooked : array() );
+			foreach ( (array) $groups as $callbacks ) {
+				foreach ( (array) $callbacks as $cb ) {
+					$file = $this->callback_source_file( isset( $cb['function'] ) ? $cb['function'] : null );
+					if ( ! $file || ! defined( 'WP_PLUGIN_DIR' ) ) {
+						continue;
+					}
+					// realpath both sides: Reflection resolves symlinks, and
+					// symlinked plugin dirs (Composer, /tmp) are common.
+					$root        = realpath( WP_PLUGIN_DIR );
+					$plugin_root = wp_normalize_path( trailingslashit( false !== $root ? $root : WP_PLUGIN_DIR ) );
+					$real        = realpath( $file );
+					$file        = wp_normalize_path( false !== $real ? $real : $file );
+					if ( 0 !== strpos( $file, $plugin_root ) ) {
+						continue;
+					}
+					$rel = substr( $file, strlen( $plugin_root ) );
+					$dir = strstr( $rel, '/', true );
+					$dir = false === $dir ? $rel : $dir;
+					return sprintf(
+						/* translators: %s: plugin directory name */
+						__( 'Note: another plugin (%s) filters WordPress core update data on this site, so "no update available" may not reflect wordpress.org. Verify on wp-admin > Updates or compare `core version` against wordpress.org.', 'vibe-ai' ),
+						$dir
+					);
+				}
+			}
+		}
+		return null;
+	}
+
+
+	private function callback_source_file( $function ) {
+		try {
+			if ( is_string( $function ) && function_exists( $function ) ) {
+				return ( new ReflectionFunction( $function ) )->getFileName();
+			}
+			if ( $function instanceof Closure ) {
+				return ( new ReflectionFunction( $function ) )->getFileName();
+			}
+			if ( is_array( $function ) && 2 === count( $function ) ) {
+				return ( new ReflectionMethod( $function[0], $function[1] ) )->getFileName();
+			}
+			if ( is_object( $function ) && method_exists( $function, '__invoke' ) ) {
+				return ( new ReflectionMethod( $function, '__invoke' ) )->getFileName();
+			}
+		} catch ( \Throwable $e ) {
+			return null;
+		}
+		return null;
 	}
 
 

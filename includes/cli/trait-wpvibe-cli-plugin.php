@@ -467,7 +467,34 @@ trait WPVibe_CLI_Plugin {
 		$dry_run    = ! empty( $flags['dry_run'] );
 
 		if ( empty( $positional ) && ! $update_all ) {
-			return $this->error_result( __( 'Plugin slug required. Usage: plugin update <slug>... | --all [--exclude=<slugs>] [--dry-run]', 'vibe-ai' ) );
+			return $this->error_result( __( 'Plugin slug required. Usage: plugin update <slug>... | --all [--exclude=<slugs>] [--dry-run] [--expect-version=<version>]', 'vibe-ai' ) );
+		}
+
+		// The generic --version guidance recommends a force-reinstall, which is
+		// refused for vibe-ai itself; route that one to --expect-version instead.
+		if ( isset( $flags['version'] ) && 1 === count( $positional ) && ! $update_all
+			&& in_array( $positional[0], array( 'vibe-ai', 'vibe-ai/vibe-ai.php' ), true ) ) {
+			return $this->error_result( __( 'Version pinning on update is not emulated. For WPVibe itself, use `plugin update vibe-ai --expect-version=<version>`: it refuses unless the offered update matches that exact version. Reinstalling WPVibe over its own connection is not available.', 'vibe-ai' ) );
+		}
+
+		$reject = $this->reject_unknown_flags( 'plugin update', $flags, array( 'all', 'exclude', 'dry_run', 'expect_version' ), array(
+			'version' => __( 'Version pinning on update is not emulated; this always installs the latest available version. To install a specific version (rollback or downgrade), run `plugin install <slug> --version=<version> --force` — replacing an existing install pauses for browser approval.', 'vibe-ai' ),
+			'minor'   => __( 'Constraining to minor releases is not emulated; this always installs the latest available version.', 'vibe-ai' ),
+			'patch'   => __( 'Constraining to patch releases is not emulated; this always installs the latest available version.', 'vibe-ai' ),
+		) );
+		if ( $reject ) {
+			return $reject;
+		}
+
+		$expect_version = '';
+		if ( isset( $flags['expect_version'] ) ) {
+			if ( true === $flags['expect_version'] || '' === trim( (string) $flags['expect_version'] ) ) {
+				return $this->error_result( __( '--expect-version requires a value, e.g. --expect-version=1.2.3.', 'vibe-ai' ) );
+			}
+			if ( $update_all || count( $positional ) > 1 ) {
+				return $this->error_result( __( '--expect-version applies to exactly one plugin; run one update per slug.', 'vibe-ai' ) );
+			}
+			$expect_version = trim( (string) $flags['expect_version'] );
 		}
 
 		if ( ! function_exists( 'get_plugins' ) ) {
@@ -483,37 +510,36 @@ trait WPVibe_CLI_Plugin {
 				/* translators: %s: plugin slug */
 				return $this->error_result( sprintf( __( 'Plugin \'%s\' not found.', 'vibe-ai' ), $positional[0] ) );
 			}
-
-			// Self-update replaces this plugin's files while they serve the request: fatals with a 500 and never applies.
-			if ( $self_file === $file ) {
-				return $this->error_result( __( 'WPVibe cannot update itself over its own connection (the update would replace the plugin files serving this request). Update it from the Plugins screen in wp-admin, or enable auto-updates for it there.', 'vibe-ai' ) );
-			}
-		}
-
-		// Checked after the self-update guard so `plugin update vibe-ai --version=x`
-		// still reports the self-update refusal, which is the more useful message.
-		$reject = $this->reject_unknown_flags( 'plugin update', $flags, array( 'all', 'exclude', 'dry_run' ), array(
-			'version' => __( 'Version pinning on update is not emulated; this always installs the latest available version. To install a specific version (rollback or downgrade), run `plugin install <slug> --version=<version> --force` — replacing an existing install pauses for browser approval.', 'vibe-ai' ),
-			'minor'   => __( 'Constraining to minor releases is not emulated; this always installs the latest available version.', 'vibe-ai' ),
-			'patch'   => __( 'Constraining to patch releases is not emulated; this always installs the latest available version.', 'vibe-ai' ),
-		) );
-		if ( $reject ) {
-			return $reject;
 		}
 
 		wp_update_plugins();
 		$update_data = get_site_transient( 'update_plugins' );
 		$available   = ( is_object( $update_data ) && ! empty( $update_data->response ) ) ? $update_data->response : array();
 
-		$self_skip_reason = __( 'WPVibe cannot update itself over its own connection. Update it from the Plugins screen in wp-admin.', 'vibe-ai' );
-		$targets          = array();
-		$skipped          = array();
+		$targets     = array();
+		$skipped     = array();
+		$self_update = null;
 
 		if ( $single ) {
 			if ( ! isset( $available[ $file ] ) ) {
 				return $this->error_result( __( 'No update available for this plugin.', 'vibe-ai' ) );
 			}
-			$targets[ $file ] = $available[ $file ];
+			if ( '' !== $expect_version && (string) $available[ $file ]->new_version !== $expect_version ) {
+				return $this->error_result( sprintf(
+					/* translators: 1: plugin slug, 2: expected version, 3: offered version */
+					__( 'Refused: expected to install %1$s %2$s but the available update is %3$s. Re-check with `plugin list --update=available` and re-issue with the version you mean to approve.', 'vibe-ai' ),
+					$positional[0],
+					$expect_version,
+					$available[ $file ]->new_version
+				) );
+			}
+			if ( $self_file === $file ) {
+				// Self-update never runs inline (it would replace the files serving
+				// this request); it is scheduled out-of-band in phase 2 instead.
+				$self_update = $available[ $file ];
+			} else {
+				$targets[ $file ] = $available[ $file ];
+			}
 		} elseif ( $update_all ) {
 			$exclude = array_filter( array_map( 'trim', explode( ',', (string) ( $flags['exclude'] ?? '' ) ) ) );
 			foreach ( $available as $file => $update ) {
@@ -526,7 +552,7 @@ trait WPVibe_CLI_Plugin {
 					continue;
 				}
 				if ( $self_file === $file ) {
-					$skipped[] = array( 'name' => $slug, 'status' => 'skipped', 'reason' => $self_skip_reason );
+					$self_update = $update;
 					continue;
 				}
 				$targets[ $file ] = $update;
@@ -536,10 +562,10 @@ trait WPVibe_CLI_Plugin {
 				$file = $this->resolve_plugin_file( $slug );
 				if ( ! $file ) {
 					$skipped[] = array( 'name' => $slug, 'status' => 'error', 'reason' => 'not found' );
-				} elseif ( $self_file === $file ) {
-					$skipped[] = array( 'name' => $slug, 'status' => 'skipped', 'reason' => $self_skip_reason );
 				} elseif ( ! isset( $available[ $file ] ) ) {
 					$skipped[] = array( 'name' => $slug, 'status' => 'skipped', 'reason' => 'no update available' );
+				} elseif ( $self_file === $file ) {
+					$self_update = $available[ $file ];
 				} else {
 					$targets[ $file ] = $available[ $file ];
 				}
@@ -555,12 +581,20 @@ trait WPVibe_CLI_Plugin {
 				'slug'            => ( ! empty( $update->slug ) ) ? $update->slug : dirname( $file ),
 			);
 		}
+		if ( $self_update ) {
+			$preview[] = array(
+				'name'            => $all[ $self_file ]['Name'],
+				'current_version' => $all[ $self_file ]['Version'],
+				'new_version'     => $self_update->new_version,
+				'slug'            => 'vibe-ai',
+			);
+		}
 
 		if ( $dry_run ) {
 			return $this->success_result( array( 'dry_run' => true, 'updates_available' => $preview, 'skipped' => $skipped ) );
 		}
 
-		if ( empty( $targets ) ) {
+		if ( empty( $targets ) && ! $self_update ) {
 			return $this->success_result( array( 'message' => __( 'No plugin updates available.', 'vibe-ai' ), 'skipped' => $skipped ) );
 		}
 
@@ -595,10 +629,33 @@ trait WPVibe_CLI_Plugin {
 			);
 		}
 
-		// Phase 2: Actual update.
-		require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
-		$skin     = new Automatic_Upgrader_Skin();
-		$upgrader = new Plugin_Upgrader( $skin );
+		// Phase 2: single-slug self-update only schedules; no upgrader runs inline.
+		if ( $single && $self_update ) {
+			$sched = WPVibe_Self_Update::instance()->schedule_self_update(
+				$all[ $self_file ]['Version'],
+				$self_update->new_version,
+				$expect_version
+			);
+			if ( is_wp_error( $sched ) ) {
+				return $this->error_result( $sched->get_error_message() );
+			}
+			return $this->success_result( array(
+				'status'       => 'scheduled',
+				'self_update'  => true,
+				'from_version' => $all[ $self_file ]['Version'],
+				'to_version'   => (string) $self_update->new_version,
+				'message'      => __( 'WPVibe self-update scheduled. It runs out-of-band in the next few seconds; verify with `plugin get vibe-ai` or `option get wpvibe_self_update_state`.', 'vibe-ai' ),
+			) );
+		}
+
+		// Phase 2: Actual update. No upgrader is constructed when every pending
+		// update is the deferred self-update.
+		$upgrader = null;
+		if ( ! empty( $targets ) ) {
+			require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
+			$skin     = new Automatic_Upgrader_Skin();
+			$upgrader = new Plugin_Upgrader( $skin );
+		}
 
 		if ( $single ) {
 			$file = array_keys( $targets )[0];
@@ -639,7 +696,7 @@ trait WPVibe_CLI_Plugin {
 		}
 
 		// Same path as wp-admin's bulk update (maintenance mode around the run).
-		$bulk    = $upgrader->bulk_upgrade( array_keys( $targets ) );
+		$bulk    = empty( $targets ) ? array() : $upgrader->bulk_upgrade( array_keys( $targets ) );
 		$results = array();
 		$updated = array();
 		foreach ( $targets as $file => $update ) {
@@ -660,6 +717,30 @@ trait WPVibe_CLI_Plugin {
 			$results[] = $row;
 		}
 
+		// vibe-ai schedules LAST so its out-of-band swap can never interrupt the
+		// inline updates above. A scheduling failure reports per-row and must not
+		// flip a fully-successful bulk run to exit 1.
+		if ( $self_update ) {
+			$sched    = WPVibe_Self_Update::instance()->schedule_self_update(
+				$all[ $self_file ]['Version'],
+				$self_update->new_version,
+				$expect_version
+			);
+			$self_row = array(
+				'name'         => 'vibe-ai',
+				'old_version'  => $all[ $self_file ]['Version'],
+				'new_version'  => (string) $self_update->new_version,
+			);
+			if ( is_wp_error( $sched ) ) {
+				$self_row['status'] = 'error';
+				$self_row['reason'] = $sched->get_error_message();
+			} else {
+				$self_row['status'] = 'scheduled';
+				$self_row['reason'] = 'self-update runs out-of-band';
+			}
+			$results[] = $self_row;
+		}
+
 		if ( $updated ) {
 			WPVibe_Change_Tracker::mark( array(
 				'summary'      => 'Plugins updated: ' . implode( ', ', $updated ),
@@ -668,9 +749,13 @@ trait WPVibe_CLI_Plugin {
 			) );
 		}
 
+		/* translators: 1: updated count, 2: total count */
+		$message = sprintf( __( 'Updated %1$d of %2$d plugins.', 'vibe-ai' ), count( $updated ), count( $targets ) );
+		if ( $self_update ) {
+			$message .= ' ' . __( 'WPVibe self-update scheduled; it runs out-of-band. Verify with `plugin get vibe-ai`.', 'vibe-ai' );
+		}
 		$payload = array(
-			/* translators: 1: updated count, 2: total count */
-			'message' => sprintf( __( 'Updated %1$d of %2$d plugins.', 'vibe-ai' ), count( $updated ), count( $targets ) ),
+			'message' => $message,
 			'results' => $results,
 		);
 		if ( $skipped ) {
@@ -905,6 +990,174 @@ trait WPVibe_CLI_Plugin {
 			}
 		}
 		return null;
+	}
+
+
+	// ------------------------------------------------------------------
+	// plugin auto-updates enable|disable|status (wp-cli/extension-command parity)
+	// ------------------------------------------------------------------
+
+	private function handle_plugin_auto_updates_enable( $positional, $flags ) {
+		return $this->plugin_auto_updates_toggle( 'enable', $positional, $flags );
+	}
+
+
+	private function handle_plugin_auto_updates_disable( $positional, $flags ) {
+		return $this->plugin_auto_updates_toggle( 'disable', $positional, $flags );
+	}
+
+
+	private function plugin_auto_updates_toggle( $action, $positional, $flags ) {
+		$enable = ( 'enable' === $action );
+		$reject = $this->reject_unknown_flags(
+			'plugin auto-updates ' . $action,
+			$flags,
+			$enable ? array( 'all', 'disabled_only' ) : array( 'all', 'enabled_only' )
+		);
+		if ( $reject ) {
+			return $reject;
+		}
+		if ( empty( $positional ) && empty( $flags['all'] ) ) {
+			return $this->error_result( __( 'Please specify one or more plugins, or use --all.', 'vibe-ai' ) );
+		}
+
+		$resolved = $this->plugin_auto_updates_resolve( $positional, $flags );
+		$files    = $resolved['files'];
+		$warnings = $resolved['warnings'];
+		$enabled  = WPVibe_Self_Update::auto_update_list();
+
+		if ( $enable && ! empty( $flags['disabled_only'] ) ) {
+			$files = array_filter( $files, function ( $file ) use ( $enabled ) {
+				return ! in_array( $file, $enabled, true );
+			} );
+		}
+		if ( ! $enable && ! empty( $flags['enabled_only'] ) ) {
+			$files = array_filter( $files, function ( $file ) use ( $enabled ) {
+				return in_array( $file, $enabled, true );
+			} );
+		}
+
+		if ( empty( $files ) ) {
+			return $this->error_result( trim( implode( "\n", $warnings ) . "\n" . sprintf(
+				/* translators: %s: enable or disable */
+				__( 'Error: No plugins provided to %s auto-updates for.', 'vibe-ai' ),
+				$action
+			) ) );
+		}
+
+		$total = count( $files );
+		$ok    = 0;
+		foreach ( $files as $slug => $file ) {
+			$in = in_array( $file, $enabled, true );
+			if ( $enable ) {
+				if ( $in ) {
+					/* translators: %s: plugin slug */
+					$warnings[] = sprintf( __( 'Warning: Auto-updates already enabled for plugin %s.', 'vibe-ai' ), $slug );
+					continue;
+				}
+				$enabled[] = $file;
+				$ok++;
+			} else {
+				if ( ! $in ) {
+					/* translators: %s: plugin slug */
+					$warnings[] = sprintf( __( 'Warning: Auto-updates already disabled for plugin %s.', 'vibe-ai' ), $slug );
+					continue;
+				}
+				$enabled = array_values( array_diff( $enabled, array( $file ) ) );
+				$ok++;
+			}
+		}
+
+		if ( $ok > 0 ) {
+			WPVibe_Self_Update::set_auto_update_list( $enabled );
+			WPVibe_Change_Tracker::mark( array(
+				'summary'      => 'Plugin auto-updates ' . $action . 'd: ' . implode( ', ', array_keys( $files ) ),
+				'action_label' => 'Manage Plugins',
+				'admin_url'    => admin_url( 'plugins.php' ),
+			) );
+		}
+
+		if ( $ok === $total ) {
+			return $this->success_result(
+				array(
+					/* translators: 1: Enabled or Disabled, 2: success count, 3: total */
+					'message' => sprintf( __( '%1$s %2$d of %3$d plugin auto-updates.', 'vibe-ai' ), $enable ? __( 'Enabled', 'vibe-ai' ) : __( 'Disabled', 'vibe-ai' ), $ok, $total ),
+				),
+				trim( implode( "\n", $warnings ) )
+			);
+		}
+		/* translators: 1: enabled or disabled, 2: success count, 3: total */
+		$error = sprintf( __( 'Error: Only %1$s %2$d of %3$d plugin auto-updates.', 'vibe-ai' ), $enable ? __( 'enabled', 'vibe-ai' ) : __( 'disabled', 'vibe-ai' ), $ok, $total );
+		return $this->error_result( trim( implode( "\n", $warnings ) . "\n" . $error ) );
+	}
+
+
+	private function handle_plugin_auto_updates_status( $positional, $flags ) {
+		$reject = $this->reject_unknown_flags( 'plugin auto-updates status', $flags, array( 'all', 'enabled_only', 'disabled_only', 'fields', 'field', 'format' ) );
+		if ( $reject ) {
+			return $reject;
+		}
+		if ( ! empty( $flags['enabled_only'] ) && ! empty( $flags['disabled_only'] ) ) {
+			return $this->error_result( __( '--enabled-only and --disabled-only are mutually exclusive and cannot be used at the same time.', 'vibe-ai' ) );
+		}
+		$reject = $this->reject_unsupported_format( 'plugin auto-updates status', $flags );
+		if ( $reject ) {
+			return $reject;
+		}
+		if ( empty( $positional ) && empty( $flags['all'] ) ) {
+			return $this->error_result( __( 'Please specify one or more plugins, or use --all.', 'vibe-ai' ) );
+		}
+
+		$resolved = $this->plugin_auto_updates_resolve( $positional, $flags );
+		$enabled  = WPVibe_Self_Update::auto_update_list();
+
+		$rows = array();
+		foreach ( $resolved['files'] as $slug => $file ) {
+			$status = in_array( $file, $enabled, true ) ? 'enabled' : 'disabled';
+			if ( ! empty( $flags['enabled_only'] ) && 'enabled' !== $status ) {
+				continue;
+			}
+			if ( ! empty( $flags['disabled_only'] ) && 'disabled' !== $status ) {
+				continue;
+			}
+			$rows[] = array( 'name' => $slug, 'status' => $status );
+		}
+
+		if ( isset( $flags['field'] ) ) {
+			$field = (string) $flags['field'];
+			if ( ! in_array( $field, array( 'name', 'status' ), true ) ) {
+				/* translators: %s: field name */
+				return $this->error_result( sprintf( __( 'Invalid field: %s. Supported fields: name, status.', 'vibe-ai' ), $field ) );
+			}
+			return $this->success_result( array_column( $rows, $field ), trim( implode( "\n", $resolved['warnings'] ) ) );
+		}
+		return $this->success_result( $this->format_rows( $rows, $flags, 'name' ), trim( implode( "\n", $resolved['warnings'] ) ) );
+	}
+
+
+	/** Resolve --all / slug list to slug => plugin file, warning per not-found slug. */
+	private function plugin_auto_updates_resolve( $positional, $flags ) {
+		if ( ! function_exists( 'get_plugins' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		}
+		$files    = array();
+		$warnings = array();
+		if ( ! empty( $flags['all'] ) ) {
+			foreach ( get_plugins() as $file => $data ) {
+				$files[ $this->plugin_slug_from_file( $file ) ] = $file;
+			}
+			return array( 'files' => $files, 'warnings' => $warnings );
+		}
+		foreach ( $positional as $slug ) {
+			$file = $this->resolve_plugin_file( $slug );
+			if ( ! $file ) {
+				/* translators: %s: plugin slug */
+				$warnings[] = sprintf( __( 'Warning: The \'%s\' plugin could not be found.', 'vibe-ai' ), $slug );
+				continue;
+			}
+			$files[ $slug ] = $file;
+		}
+		return array( 'files' => $files, 'warnings' => $warnings );
 	}
 
 }

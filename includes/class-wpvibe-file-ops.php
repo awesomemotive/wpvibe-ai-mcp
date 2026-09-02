@@ -123,6 +123,27 @@ class WPVibe_File_Ops {
 		return wpvibe_check_php_syntax( $content, basename( $real_path ) );
 	}
 
+	/** php -l passes a redeclared function; the site fatals on load (#78). */
+	private function validate_php_redeclarations( $file_path ) {
+		$real_path = $file_path;
+		$suffix    = '.wpvibe-tmp';
+		if ( substr( $real_path, -strlen( $suffix ) ) === $suffix ) {
+			$real_path = substr( $real_path, 0, -strlen( $suffix ) );
+		}
+		if ( pathinfo( $real_path, PATHINFO_EXTENSION ) !== 'php' ) {
+			return true;
+		}
+		$fs = wpvibe_fs();
+		if ( ! $fs ) {
+			return true;
+		}
+		$content = $fs->get_contents( $file_path );
+		if ( false === $content ) {
+			return true;
+		}
+		return WPVibe_PHP_Guard::check_redeclarations( $content, $real_path );
+	}
+
 	/**
 	 * Read a file, optionally a specific line range.
 	 *
@@ -232,6 +253,11 @@ class WPVibe_File_Ops {
 			wp_delete_file( $tmp );
 			return $syntax;
 		}
+		$redeclare = $this->validate_php_redeclarations( $tmp );
+		if ( is_wp_error( $redeclare ) ) {
+			wp_delete_file( $tmp );
+			return $redeclare;
+		}
 
 		if ( ! $fs->copy( $tmp, $full_path, true, FS_CHMOD_FILE ) ) {
 			wp_delete_file( $tmp );
@@ -319,6 +345,11 @@ class WPVibe_File_Ops {
 		if ( is_wp_error( $syntax ) ) {
 			wp_delete_file( $tmp );
 			return $syntax;
+		}
+		$redeclare = $this->validate_php_redeclarations( $tmp );
+		if ( is_wp_error( $redeclare ) ) {
+			wp_delete_file( $tmp );
+			return $redeclare;
 		}
 
 		if ( ! $fs->copy( $tmp, $full_path, true, FS_CHMOD_FILE ) ) {

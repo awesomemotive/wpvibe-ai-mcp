@@ -98,6 +98,83 @@ class WPVibe_Draft_Theme {
 	 *
 	 * @return WP_REST_Response|WP_Error
 	 */
+	/** First candidate slug that is actually installed, or '' when none is.
+	 * switch_theme() does no validation, so an unchecked slug white-screens the
+	 * site just as surely as the fatal the rollback is undoing. */
+	private static function first_existing_theme( array $candidates ) {
+		foreach ( $candidates as $slug ) {
+			$slug = (string) $slug;
+			if ( '' === $slug ) {
+				continue;
+			}
+			$theme = wp_get_theme( $slug );
+			if ( $theme && $theme->exists() ) {
+				return $slug;
+			}
+		}
+		return '';
+	}
+
+	/** Put the backup back live and the published tree back into the draft slot. */
+	private function rollback_publish( $live_dir, $backup_dir, $draft_dir, $swapped_by_rename, $source_slug, $had_live = true, $previous_active = '' ) {
+		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- failures reported below.
+		$draft_back = @rename( $live_dir, $draft_dir ) || ! is_wp_error( $this->copy_directory( $live_dir, $draft_dir ) );
+		if ( $draft_back && is_dir( $live_dir ) ) {
+			$this->delete_directory( $live_dir );
+		}
+		if ( ! $had_live ) {
+			// A brand-new theme had no live copy to back up: the source slug's
+			// directory was just moved into the draft slot, so re-activating it
+			// would point the site at nothing. Go back to whatever was active
+			// before the publish, and only to a theme that is really on disk.
+			wp_clean_themes_cache();
+			$target = self::first_existing_theme( array( $previous_active === $source_slug ? '' : $previous_active, WP_DEFAULT_THEME ) );
+			if ( '' !== $target ) {
+				switch_theme( $target );
+			}
+			if ( class_exists( 'WPVibe_CLI' ) ) {
+				try {
+					( new WPVibe_CLI() )->purge_all_caches();
+				} catch ( \Throwable $e ) { // phpcs:ignore Generic.CodeAnalysis.EmptyStatement.DetectedCatch
+				}
+			}
+			if ( '' === $target ) {
+				return __( 'no installed theme could be activated in its place, so the site is still on the failed theme. Install or restore a working theme from the host file manager.', 'vibe-ai' );
+			}
+			return $draft_back
+				? sprintf( /* translators: %s: theme slug */ __( '\'%s\' is live again and the draft is intact for editing.', 'vibe-ai' ), $target )
+				: sprintf( /* translators: %s: theme slug */ __( '\'%s\' is live again, but the draft could not be restored; recreate it.', 'vibe-ai' ), $target );
+		}
+		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+		$live_back = @rename( $backup_dir, $live_dir ) || ! is_wp_error( $this->copy_directory( $backup_dir, $live_dir ) );
+		wp_clean_themes_cache();
+		// Back to the theme the site was actually running: publishing activates
+		// the source, so when the site was on a different theme a failed publish
+		// must not leave that switch in place.
+		$restore = self::first_existing_theme( array( $previous_active, $source_slug ) );
+		if ( '' !== $restore ) {
+			switch_theme( $restore );
+		}
+		if ( class_exists( 'WPVibe_CLI' ) ) {
+			try {
+				( new WPVibe_CLI() )->purge_all_caches();
+			} catch ( \Throwable $e ) { // phpcs:ignore Generic.CodeAnalysis.EmptyStatement.DetectedCatch
+			}
+		}
+		if ( $live_back && $draft_back ) {
+			return __( 'the previous theme is live again and the draft is intact for editing.', 'vibe-ai' );
+		}
+		if ( $live_back ) {
+			return __( 'the previous theme is live again, but the draft could not be restored; recreate it from the live theme.', 'vibe-ai' );
+		}
+		return sprintf(
+			/* translators: 1: backup dir, 2: live dir */
+			__( 'RESTORE FAILED: the previous theme is at \'%1$s\'. Move it to \'%2$s\' by hand (SFTP or the host file manager) to recover the site.', 'vibe-ai' ),
+			$backup_dir,
+			$live_dir
+		);
+	}
+
 	public function publish() {
 		$draft_slug  = get_option( 'wpvibe_draft_theme' );
 		$source_slug = get_option( 'wpvibe_draft_source' );
@@ -114,6 +191,11 @@ class WPVibe_Draft_Theme {
 		if ( ! is_dir( $draft_dir ) ) {
 			return new WP_Error( 'draft_missing', __( 'Draft theme directory not found.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
 		}
+		// Unfiltered: WPVibe_Preview filters 'stylesheet' to the draft slug when a
+		// preview token is present, and rolling back onto the draft would
+		// re-activate the very theme that just fataled.
+		$previous_active = (string) get_option( 'stylesheet' );
+		$had_live        = is_dir( $live_dir );
 
 		// Capture the clean original name BEFORE the live dir is overwritten; strips any accumulated draft suffix.
 		$original_name = preg_replace( '/(\s*\((?:WPVibe )?Draft\))+$/', '', wp_get_theme( $source_slug )->get( 'Name' ) );
@@ -249,6 +331,23 @@ class WPVibe_Draft_Theme {
 				( new WPVibe_CLI() )->purge_all_caches();
 			} catch ( \Throwable $e ) { // phpcs:ignore Generic.CodeAnalysis.EmptyStatement.DetectedCatch -- a cache-engine failure must never fail a completed publish.
 			}
+		}
+
+		// A valid-but-fatal functions.php passes php -l and white-screens the
+		// site; render once and put everything back if it does (#78).
+		$health = WPVibe_PHP_Guard::render_health_check();
+		if ( is_wp_error( $health ) ) {
+			$rolled = $this->rollback_publish( $live_dir, $backup_dir, $draft_dir, $swapped_by_rename, $source_slug, $had_live, $previous_active );
+			return new WP_Error(
+				'publish_rolled_back',
+				sprintf(
+					/* translators: 1: what the front page returned, 2: rollback outcome */
+					__( 'Published, then the site failed to render (%1$s), so the publish was rolled back: %2$s Fix the draft (a runtime fatal in functions.php is the usual cause: an undefined function, or a function or class declared twice) and publish again.', 'vibe-ai' ),
+					$health->get_error_message(),
+					$rolled
+				),
+				WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422, 'render' => $health->get_error_message() ) )
+			);
 		}
 
 		// Cleanup.

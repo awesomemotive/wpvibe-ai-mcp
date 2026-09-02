@@ -218,6 +218,69 @@ class WPVibe_Elementor {
 	 * broken page. $created_id > 0 means this request created the post and it
 	 * should be removed on failure.
 	 */
+	/**
+	 * Pure decision: given what was asked and what is stored on the post and
+	 * on its newest autosave/revision, is the save real? Empty stored data for
+	 * a non-empty request is the #95 wrong-success; an empty autosave beside
+	 * good post data is what makes the editor open blank.
+	 */
+	public static function saved_elements_verdict( array $requested, $post_meta, $autosave_meta ) {
+		if ( empty( $requested ) ) {
+			return 'ok';
+		}
+		$post_empty     = self::elements_meta_is_empty( $post_meta );
+		$autosave_empty = null !== $autosave_meta && self::elements_meta_is_empty( $autosave_meta );
+		if ( $post_empty ) {
+			return 'post_empty';
+		}
+		return $autosave_empty ? 'autosave_empty' : 'ok';
+	}
+
+	public static function elements_meta_is_empty( $meta ) {
+		if ( is_array( $meta ) ) {
+			return empty( $meta );
+		}
+		$raw = trim( (string) $meta );
+		if ( '' === $raw ) {
+			return true;
+		}
+		$decoded = json_decode( $raw, true );
+		return is_array( $decoded ) ? empty( $decoded ) : false;
+	}
+
+	/**
+	 * Re-read after Document::save; repair the two known shapes, then refuse
+	 * to report success on anything still empty.
+	 */
+	private function verify_saved_elements( $id, array $data, array &$warnings ) {
+		$post_meta = get_post_meta( $id, '_elementor_data', true );
+		$autosave  = function_exists( 'wp_get_post_autosave' ) ? wp_get_post_autosave( $id ) : false;
+		$auto_meta = $autosave ? get_post_meta( $autosave->ID, '_elementor_data', true ) : null;
+		$verdict   = self::saved_elements_verdict( $data, $post_meta, $auto_meta );
+
+		if ( 'post_empty' === $verdict ) {
+			// Write the structure the request carried straight onto the post;
+			// Elementor expects the JSON text with slashes preserved.
+			update_post_meta( $id, '_elementor_data', wp_slash( wp_json_encode( $data ) ) );
+			$post_meta = get_post_meta( $id, '_elementor_data', true );
+			$warnings[] = array( 'code' => 'elementor_data_repaired', 'message' => __( 'Elementor saved empty element data; the page structure was written directly.', 'vibe-ai' ), 'context' => "post_id={$id}" );
+			$verdict = self::saved_elements_verdict( $data, $post_meta, $auto_meta );
+		}
+		if ( 'autosave_empty' === $verdict && $autosave ) {
+			wp_delete_post_revision( $autosave->ID );
+			$warnings[] = array( 'code' => 'elementor_empty_autosave_removed', 'message' => __( 'An empty Elementor autosave was removed so the editor loads the saved page instead of a blank one.', 'vibe-ai' ), 'context' => "autosave_id={$autosave->ID}" );
+			$verdict = 'ok';
+		}
+		if ( 'ok' !== $verdict ) {
+			return new WP_Error(
+				'elementor_data_empty',
+				__( 'Elementor reported the save but the page has no element data afterwards, even after writing it directly. The page was not saved as requested; check the Elementor version and the site error log before retrying.', 'vibe-ai' ),
+				WPVibe_Error_Contract::data( 'wp_core', false, array( 'status' => 500, 'post_id' => (int) $id ) )
+			);
+		}
+		return true;
+	}
+
 	private function save_document( $document, array $data, int $created_id ) {
 		try {
 			return $document->save( array( 'elements' => $data ) );
@@ -614,6 +677,12 @@ class WPVibe_Elementor {
 		$saved = $this->save_document( $document, $data, empty( $request['id'] ) ? $id : 0 );
 		if ( is_wp_error( $saved ) ) {
 			return $saved;
+		}
+		// Elementor 4.2 can answer success while the document's data lands
+		// empty (and an empty autosave/revision then wins in the editor).
+		$verified = $this->verify_saved_elements( $id, $data, $warnings );
+		if ( is_wp_error( $verified ) ) {
+			return $verified;
 		}
 
 		// Direct meta write, not Document::save(['settings'=>...]) — save_settings()

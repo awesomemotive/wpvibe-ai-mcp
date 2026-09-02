@@ -67,6 +67,8 @@ class WPVibe_Authorize_Notice {
 			'docsUrl'      => self::DOCS_URL,
 			'supportEmail' => 'support@wpvibe.ai',
 			'beaconHosts'  => $hosts,
+			// Approve mints here instead of /wp/v2/users/me/application-passwords (#58).
+			'mintPath'     => '/wpvibe/v1/authorize',
 			'i18n'         => array(
 				'title'     => __( 'Approve could not reach this site\'s REST API', 'vibe-ai' ),
 				/* translators: %s: what the request returned (e.g. "an HTML page (status 403)"). */

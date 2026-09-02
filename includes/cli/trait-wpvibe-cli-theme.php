@@ -144,13 +144,46 @@ trait WPVibe_CLI_Theme {
 		require_once ABSPATH . 'wp-admin/includes/misc.php';
 		require_once ABSPATH . 'wp-admin/includes/theme.php';
 
-		$api_args = array( 'slug' => $slug, 'fields' => array( 'sections' => false ) );
-		if ( ! empty( $flags['version'] ) ) {
-			$api_args['version'] = $flags['version'];
-		}
-		$api = themes_api( 'theme_information', $api_args );
+		$api = themes_api( 'theme_information', array( 'slug' => $slug, 'fields' => array( 'sections' => false ) ) );
 		if ( is_wp_error( $api ) ) {
 			return $this->error_result( $api->get_error_message() );
+		}
+
+		// themes_api ignores a version argument and always describes the latest
+		// release, so a pinned version must rewrite the download URL to the
+		// versioned zip and verify it exists (WP-CLI's alter_api_response).
+		// Mirrors handle_plugin_install; without it --version installs latest.
+		$requested = ! empty( $flags['version'] ) ? trim( (string) $flags['version'] ) : '';
+		if ( 'dev' === $requested || 'trunk' === $requested ) {
+			return $this->error_result( __( 'Installing development/trunk builds is not emulated; name a released version, e.g. --version=1.2.3.', 'vibe-ai' ) );
+		}
+		// The version is interpolated into the download URL path; a slash or query
+		// char would address a different file on downloads.wordpress.org.
+		if ( '' !== $requested && ! preg_match( '/^[A-Za-z0-9._-]+$/', $requested ) ) {
+			return $this->error_result( sprintf(
+				/* translators: %s: the rejected version string */
+				__( '"%s" is not a valid theme version string.', 'vibe-ai' ),
+				$requested
+			) );
+		}
+		if ( '' !== $requested && $requested !== $api->version ) {
+			$base = str_replace( $api->slug . '.' . $api->version . '.zip', '', $api->download_link );
+			if ( $base === $api->download_link ) {
+				$base = 'https://downloads.wordpress.org/theme/';
+			}
+			$versioned_link = $base . $api->slug . '.' . $requested . '.zip';
+			$head           = wp_remote_head( $versioned_link, array( 'timeout' => 10, 'redirection' => 3 ) );
+			$head_code      = is_wp_error( $head ) ? 0 : (int) wp_remote_retrieve_response_code( $head );
+			if ( 200 !== $head_code ) {
+				return $this->error_result( sprintf(
+					/* translators: 1: requested version, 2: HTTP status or transport error */
+					__( "Can't find the requested theme's version %1\$s in the WordPress.org theme repository (%2\$s). Available versions are listed on the theme's page under Previous Versions.", 'vibe-ai' ),
+					$requested,
+					is_wp_error( $head ) ? $head->get_error_message() : 'HTTP ' . $head_code
+				) );
+			}
+			$api->download_link = $versioned_link;
+			$api->version       = $requested;
 		}
 
 		if ( ! $confirm_write ) {
@@ -241,72 +274,204 @@ trait WPVibe_CLI_Theme {
 
 
 	private function handle_theme_update( $positional, $flags, $confirm_write = false ) {
-		if ( empty( $positional[0] ) ) {
-			return $this->error_result( __( 'Theme slug required.', 'vibe-ai' ) );
+		$update_all = ! empty( $flags['all'] );
+		$dry_run    = ! empty( $flags['dry_run'] );
+
+		if ( empty( $positional ) && ! $update_all ) {
+			return $this->error_result( __( 'Theme slug required. Usage: theme update <slug>... | --all [--exclude=<slugs>] [--dry-run]', 'vibe-ai' ) );
 		}
-		$slug  = $positional[0];
-		$theme = wp_get_theme( $slug );
-		if ( ! $theme->exists() ) {
-			/* translators: %s: theme slug */
-			return $this->error_result( sprintf( __( 'Theme \'%s\' not found.', 'vibe-ai' ), $slug ) );
+
+		$reject = $this->reject_unknown_flags( 'theme update', $flags, array( 'all', 'exclude', 'dry_run', 'expect_version' ), array(
+			'version' => __( 'Version pinning on update is not emulated; this always installs the latest available version. To roll a theme back to a specific version, upload that version from wp-admin > Appearance > Themes instead.', 'vibe-ai' ),
+			'minor'   => __( 'Constraining to minor releases is not emulated; this always installs the latest available version.', 'vibe-ai' ),
+			'patch'   => __( 'Constraining to patch releases is not emulated; this always installs the latest available version.', 'vibe-ai' ),
+		) );
+		if ( $reject ) {
+			return $reject;
+		}
+
+		$expect_version = '';
+		if ( isset( $flags['expect_version'] ) ) {
+			if ( true === $flags['expect_version'] || '' === trim( (string) $flags['expect_version'] ) ) {
+				return $this->error_result( __( '--expect-version requires a value, e.g. --expect-version=1.2.3.', 'vibe-ai' ) );
+			}
+			if ( $update_all || count( $positional ) > 1 ) {
+				return $this->error_result( __( '--expect-version applies to exactly one theme; run one update per slug.', 'vibe-ai' ) );
+			}
+			$expect_version = trim( (string) $flags['expect_version'] );
 		}
 
 		wp_update_themes();
 		$update_data = get_site_transient( 'update_themes' );
-		if ( ! isset( $update_data->response[ $slug ] ) ) {
-			return $this->error_result( __( 'No update available for this theme.', 'vibe-ai' ) );
-		}
-		// Theme update entries are arrays (unlike plugins, which are objects).
-		$update = (array) $update_data->response[ $slug ];
+		// Theme update entries are arrays keyed by stylesheet (plugins: objects).
+		$available = ( is_object( $update_data ) && ! empty( $update_data->response ) ) ? $update_data->response : array();
 
+		$themes  = wp_get_themes();
+		$single  = ! $update_all && 1 === count( $positional );
+		$targets = array();
+		$skipped = array();
+
+		if ( $update_all ) {
+			$exclude = array_filter( array_map( 'trim', explode( ',', (string) ( $flags['exclude'] ?? '' ) ) ) );
+			foreach ( $available as $slug => $update ) {
+				if ( ! isset( $themes[ $slug ] ) ) {
+					continue;
+				}
+				if ( in_array( $slug, $exclude, true ) ) {
+					$skipped[] = array( 'name' => $slug, 'status' => 'skipped', 'reason' => 'excluded' );
+					continue;
+				}
+				$targets[ $slug ] = (array) $update;
+			}
+		} else {
+			foreach ( $positional as $slug ) {
+				$theme = wp_get_theme( $slug );
+				if ( ! $theme->exists() ) {
+					$skipped[] = array( 'name' => $slug, 'status' => 'error', 'reason' => 'not found' );
+				} elseif ( ! isset( $available[ $slug ] ) ) {
+					$skipped[] = array( 'name' => $slug, 'status' => 'skipped', 'reason' => 'no update available' );
+				} else {
+					$targets[ $slug ] = (array) $available[ $slug ];
+				}
+			}
+			if ( $single && empty( $targets ) ) {
+				$only = $skipped[0] ?? array();
+				if ( 'not found' === ( $only['reason'] ?? '' ) ) {
+					/* translators: %s: theme slug */
+					return $this->error_result( sprintf( __( 'Theme \'%s\' not found.', 'vibe-ai' ), $positional[0] ) );
+				}
+				return $this->error_result( __( 'No update available for this theme.', 'vibe-ai' ) );
+			}
+		}
+
+		if ( $single && '' !== $expect_version ) {
+			$slug    = array_keys( $targets )[0];
+			$offered = (string) ( $targets[ $slug ]['new_version'] ?? '' );
+			if ( $offered !== $expect_version ) {
+				return $this->error_result( sprintf(
+					/* translators: 1: theme slug, 2: expected version, 3: offered version */
+					__( 'Refused: expected to install %1$s %2$s but the available update is %3$s. Re-check with `theme list --update=available` and re-issue with the version you mean to approve.', 'vibe-ai' ),
+					$slug,
+					$expect_version,
+					$offered
+				) );
+			}
+		}
+
+		$preview = array();
+		foreach ( $targets as $slug => $update ) {
+			$preview[] = array(
+				'name'            => $themes[ $slug ]->get( 'Name' ),
+				'current_version' => $themes[ $slug ]->get( 'Version' ),
+				'new_version'     => (string) ( $update['new_version'] ?? '' ),
+				'slug'            => $slug,
+			);
+		}
+
+		if ( $dry_run ) {
+			return $this->success_result( array( 'dry_run' => true, 'updates_available' => $preview, 'skipped' => $skipped ) );
+		}
+
+		if ( empty( $targets ) ) {
+			return $this->success_result( array( 'message' => __( 'No theme updates available.', 'vibe-ai' ), 'skipped' => $skipped ) );
+		}
+
+		// Phase 1: Return info and require confirmation.
 		if ( ! $confirm_write ) {
+			if ( $single ) {
+				return array(
+					'exit_code'             => 0,
+					'stdout'                => wp_json_encode( $preview[0], JSON_PRETTY_PRINT ),
+					'stderr'                => '',
+					'requires_confirmation' => true,
+					'message'               => sprintf(
+						/* translators: 1: theme name, 2: current version, 3: new version */
+						__( 'Ready to update %1$s from %2$s to %3$s. Call again with confirm_write=true to proceed.', 'vibe-ai' ),
+						$preview[0]['name'],
+						$preview[0]['current_version'],
+						$preview[0]['new_version']
+					),
+				);
+			}
 			return array(
 				'exit_code'             => 0,
-				'stdout'                => wp_json_encode( array(
-					'name'            => $theme->get( 'Name' ),
-					'current_version' => $theme->get( 'Version' ),
-					'new_version'     => $update['new_version'] ?? '',
-				), JSON_PRETTY_PRINT ),
+				'stdout'                => wp_json_encode( array( 'updates' => $preview, 'skipped' => $skipped ), JSON_PRETTY_PRINT ),
 				'stderr'                => '',
 				'requires_confirmation' => true,
 				'message'               => sprintf(
-					/* translators: 1: theme name, 2: current version, 3: new version */
-					__( 'Ready to update %1$s from %2$s to %3$s. Call again with confirm_write=true to proceed.', 'vibe-ai' ),
-					$theme->get( 'Name' ),
-					$theme->get( 'Version' ),
-					$update['new_version'] ?? ''
+					/* translators: 1: number of themes, 2: comma-separated theme names */
+					__( 'Ready to update %1$d themes: %2$s. Call again with confirm_write=true to proceed.', 'vibe-ai' ),
+					count( $preview ),
+					implode( ', ', array_column( $preview, 'name' ) )
 				),
 			);
 		}
 
+		// Phase 2: bulk_upgrade for single AND bulk (one code path; the active
+		// theme survives, matching the plugin handler's precedent).
 		require_once ABSPATH . 'wp-admin/includes/file.php';
 		require_once ABSPATH . 'wp-admin/includes/misc.php';
 		require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
 		$skin     = new Automatic_Upgrader_Skin();
 		$upgrader = new Theme_Upgrader( $skin );
-		$result   = $upgrader->upgrade( $slug );
-		if ( is_wp_error( $result ) ) {
-			return $this->error_result( $result->get_error_message() );
-		}
-		if ( ! $result ) {
-			$messages = $skin->get_upgrade_messages();
-			return $this->error_result( __( 'Update failed.', 'vibe-ai' ) . ( $messages ? ' Upgrader log: ' . implode( ' / ', $messages ) : '' ) );
+		$bulk     = $upgrader->bulk_upgrade( array_keys( $targets ) );
+
+		$results = array();
+		$updated = array();
+		foreach ( $targets as $slug => $update ) {
+			$row = array(
+				'name'        => $themes[ $slug ]->get( 'Name' ),
+				'old_version' => $themes[ $slug ]->get( 'Version' ),
+				'new_version' => (string) ( $update['new_version'] ?? '' ),
+			);
+			$result = is_array( $bulk ) && isset( $bulk[ $slug ] ) ? $bulk[ $slug ] : null;
+			if ( is_wp_error( $result ) ) {
+				$row['status'] = 'error: ' . $result->get_error_message();
+			} elseif ( empty( $result ) ) {
+				$row['status'] = 'error: update failed';
+			} else {
+				$row['status'] = 'updated';
+				$updated[]     = $slug;
+			}
+			$results[] = $row;
 		}
 
-		WPVibe_Change_Tracker::mark( array(
-			'summary'      => "Theme updated: {$slug}",
-			'action_label' => 'Manage Themes',
-			'admin_url'    => admin_url( 'themes.php' ),
-		) );
+		if ( $updated ) {
+			WPVibe_Change_Tracker::mark( array(
+				'summary'      => 'Themes updated: ' . implode( ', ', $updated ),
+				'action_label' => 'Manage Themes',
+				'admin_url'    => admin_url( 'themes.php' ),
+			) );
+		}
 
-		return $this->success_result( array(
-			'message' => sprintf(
+		if ( $single ) {
+			$only = $results[0];
+			if ( 'updated' !== $only['status'] ) {
+				$messages = $skin->get_upgrade_messages();
+				return $this->error_result( __( 'Update failed.', 'vibe-ai' ) . ( $messages ? ' Upgrader log: ' . implode( ' / ', $messages ) : '' ) );
+			}
+			return $this->success_result( array(
 				/* translators: 1: theme name, 2: new version */
-				__( 'Updated %1$s to v%2$s.', 'vibe-ai' ),
-				$theme->get( 'Name' ),
-				$update['new_version'] ?? ''
-			),
-		) );
+				'message' => sprintf( __( 'Updated %1$s to v%2$s.', 'vibe-ai' ), $only['name'], $only['new_version'] ),
+			) );
+		}
+
+		$payload = array(
+			/* translators: 1: updated count, 2: total count */
+			'message' => sprintf( __( 'Updated %1$d of %2$d themes.', 'vibe-ai' ), count( $updated ), count( $targets ) ),
+			'results' => $results,
+		);
+		if ( $skipped ) {
+			$payload['skipped'] = $skipped;
+		}
+		if ( count( $updated ) === count( $targets ) ) {
+			return $this->success_result( $payload );
+		}
+		return array(
+			'exit_code' => 1,
+			'stdout'    => wp_json_encode( $payload, JSON_PRETTY_PRINT ),
+			'stderr'    => __( 'Some theme updates failed.', 'vibe-ai' ),
+		);
 	}
 
 

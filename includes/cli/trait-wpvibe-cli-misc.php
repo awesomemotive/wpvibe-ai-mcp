@@ -11,7 +11,7 @@ trait WPVibe_CLI_Misc {
 
 
 	private function handle_user_list( $positional, $flags ) {
-		$reject = $this->reject_unknown_flags( 'user list', $flags, array( 'role', 'number', 'fields', 'format' ), array(
+		$reject = $this->reject_unknown_flags( 'user list', $flags, array( 'role', 'number', 'offset', 'paged', 'fields', 'format' ), array(
 			'search'  => __( 'Filter the returned rows yourself, or use rest_api GET /wp/v2/users?search=<term>.', 'vibe-ai' ),
 			'include' => __( 'Fetch the ids individually with `user get`, or use rest_api GET /wp/v2/users?include=<ids>.', 'vibe-ai' ),
 			'exclude' => __( 'Filter the returned rows yourself, or use rest_api GET /wp/v2/users?exclude=<ids>.', 'vibe-ai' ),
@@ -31,6 +31,11 @@ trait WPVibe_CLI_Misc {
 		$args = array( 'number' => 100 );
 		if ( isset( $flags['role'] ) )   $args['role']   = $flags['role'];
 		if ( isset( $flags['number'] ) ) $args['number'] = min( (int) $flags['number'], 1000 );
+		$paging = $this->paging_args( 'user list', $flags, (int) $args['number'] );
+		if ( is_array( $paging ) && isset( $paging['exit_code'] ) ) {
+			return $paging;
+		}
+		$args    = array_merge( $args, $paging );
 		$users   = get_users( $args );
 		$results = array();
 		foreach ( $users as $user ) {
@@ -45,7 +50,7 @@ trait WPVibe_CLI_Misc {
 		}
 		return $this->success_result(
 			$this->format_rows( $results, $flags, 'ID' ),
-			$this->truncation_notice( $results, (int) $args['number'], 'user list' )
+			$this->truncation_notice( $results, (int) $args['number'], 'user list', $this->next_page_hint( $flags, (int) $args['number'] ) )
 		);
 	}
 

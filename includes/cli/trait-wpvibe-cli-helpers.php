@@ -22,12 +22,46 @@ trait WPVibe_CLI_Helpers {
 
 
 	/** Warning text when a listing hit its row cap, so a bulk op is not driven off a partial set. */
-	private function truncation_notice( $rows, $limit, $command ) {
+	private function truncation_notice( $rows, $limit, $command, $paging_hint = '' ) {
 		if ( count( $rows ) < $limit ) {
 			return '';
 		}
 		/* translators: 1: row limit, 2: command */
-		return sprintf( __( 'Results truncated at %1$d rows. More may exist, so do NOT treat this as the complete set for a bulk operation. Narrow the query, or raise the limit where `%2$s` supports it.', 'vibe-ai' ), $limit, $command );
+		return sprintf( __( 'Results truncated at %1$d rows. More may exist, so do NOT treat this as the complete set for a bulk operation. Narrow the query, or raise the limit where `%2$s` supports it.', 'vibe-ai' ), $limit, $command ) . ( '' !== $paging_hint ? ' ' . $paging_hint : '' );
+	}
+
+
+	/**
+	 * --offset and --paged (upstream names) for the list commands. Both is a
+	 * contradiction WP_Query resolves silently (offset wins), so refuse it.
+	 * Returns query args, or an error result.
+	 */
+	private function paging_args( $command, $flags, $per_page ) {
+		$has_offset = isset( $flags['offset'] );
+		$has_paged  = isset( $flags['paged'] );
+		if ( $has_offset && $has_paged ) {
+			/* translators: %s: command name */
+			return $this->error_result( sprintf( __( '`%s`: pass either --offset or --paged, not both.', 'vibe-ai' ), $command ) );
+		}
+		if ( $has_offset ) {
+			if ( ! is_numeric( $flags['offset'] ) || (int) $flags['offset'] < 0 ) {
+				return $this->error_result( __( '--offset must be a non-negative integer.', 'vibe-ai' ) );
+			}
+			return array( 'offset' => (int) $flags['offset'] );
+		}
+		if ( $has_paged ) {
+			if ( ! is_numeric( $flags['paged'] ) || (int) $flags['paged'] < 1 ) {
+				return $this->error_result( __( '--paged must be a positive integer (1 = first page).', 'vibe-ai' ) );
+			}
+			return array( 'offset' => ( (int) $flags['paged'] - 1 ) * max( 1, $per_page ) );
+		}
+		return array();
+	}
+
+	private function next_page_hint( $flags, $per_page ) {
+		$paged = isset( $flags['paged'] ) ? (int) $flags['paged'] : ( isset( $flags['offset'] ) ? (int) floor( (int) $flags['offset'] / max( 1, $per_page ) ) + 1 : 1 );
+		/* translators: %d: next page number */
+		return sprintf( __( 'Fetch the next page with --paged=%d (or --offset=<n>).', 'vibe-ai' ), $paged + 1 );
 	}
 
 
@@ -48,21 +82,22 @@ trait WPVibe_CLI_Helpers {
 	}
 
 
-	/** Shape a single- or multi-target post op response consistently. */
-	private function bulk_result( $action, $ok, $ids, $results ) {
+	/** Shape a single- or multi-target entity op response consistently. */
+	private function bulk_result( $action, $ok, $ids, $results, $noun = 'post' ) {
 		$total = count( $ids );
+		$label = ucfirst( $noun );
 		if ( 1 === $total ) {
 			$only = $results[0];
 			if ( isset( $only['status'] ) && 'error' === $only['status'] ) {
-				/* translators: 1: post ID, 2: error message */
-				return $this->error_result( sprintf( __( 'Post #%1$d: %2$s', 'vibe-ai' ), $only['id'], $only['error'] ) );
+				/* translators: 1: entity label, 2: ID, 3: error message */
+				return $this->error_result( sprintf( __( '%1$s #%2$d: %3$s', 'vibe-ai' ), $label, $only['id'], $only['error'] ) );
 			}
-			/* translators: 1: post ID, 2: action taken */
-			return $this->success_result( array( 'message' => sprintf( __( 'Post #%1$d %2$s.', 'vibe-ai' ), $ids[0], $action ) ) );
+			/* translators: 1: entity label, 2: ID, 3: action taken */
+			return $this->success_result( array( 'message' => sprintf( __( '%1$s #%2$d %3$s.', 'vibe-ai' ), $label, $ids[0], $action ) ) );
 		}
 		return $this->success_result( array(
-			/* translators: 1: success count, 2: total, 3: action taken */
-			'message'   => sprintf( __( '%1$d of %2$d posts %3$s.', 'vibe-ai' ), $ok, $total, $action ),
+			/* translators: 1: success count, 2: total, 3: plural noun, 4: action taken */
+			'message'   => sprintf( __( '%1$d of %2$d %3$s %4$s.', 'vibe-ai' ), $ok, $total, $noun . 's', $action ),
 			'succeeded' => $ok,
 			'total'     => $total,
 			'results'   => $results,

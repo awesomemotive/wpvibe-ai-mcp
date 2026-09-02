@@ -242,7 +242,7 @@ trait WPVibe_CLI_Option {
 					/* translators: %s: option key */
 					__( 'Option \'%s\' is blocked for security. Update it via wp-admin.', 'vibe-ai' ),
 					$key
-				)
+				) . $this->blocked_option_alternative( $key )
 			);
 		}
 
@@ -834,13 +834,23 @@ trait WPVibe_CLI_Option {
 		return implode( "\n", array(
 			'<wpvibe-blocked-option>',
 			/* translators: 1: option key, 2: verb (added or deleted) */
-			sprintf( __( 'The option "%1$s" is permanently protected by WPVibe and cannot be %2$s via AI tools.', 'vibe-ai' ), $key, $verb ),
+			sprintf( __( 'The option "%1$s" is permanently protected by WPVibe and cannot be %2$s via AI tools.', 'vibe-ai' ), $key, $verb ) . $this->blocked_option_alternative( $key ),
 			'',
 			__( 'This protection exists because changing this option would break the site (broken admin URLs, broken login, broken auth, etc.). DO NOT suggest manual workarounds — do not tell the user to run wp-cli on the server, edit wp-config.php, or run SQL against the database. The user is being protected from accidental destructive changes; respect that.', 'vibe-ai' ),
 			'',
 			__( 'How to reply: in one short sentence, tell the user this specific option is permanently protected and they should change it through WordPress admin if they really need to. Do not offer alternative deletion methods.', 'vibe-ai' ),
 			'</wpvibe-blocked-option>',
 		) );
+	}
+
+
+	/** Blocked options with a supported narrow-door command get it named in the refusal. */
+	private function blocked_option_alternative( $key ) {
+		$canonical = self::match_option_name( $key, self::BLOCKED_OPTIONS );
+		if ( 'auto_update_plugins' === $canonical ) {
+			return ' ' . __( 'To change plugin auto-updates, use `plugin auto-updates enable <slug>` or `plugin auto-updates disable <slug>` instead.', 'vibe-ai' );
+		}
+		return '';
 	}
 
 }

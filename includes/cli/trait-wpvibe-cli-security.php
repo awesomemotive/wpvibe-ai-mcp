@@ -36,17 +36,17 @@ trait WPVibe_CLI_Security {
 		// trash, permanent). When an irreversible op names several targets,
 		// enumerate them so one approval shows the full list. Three explicit IDs
 		// is not "bulk" — the trigger is permanence, not how many.
-		$force_delete = ( 'post delete' === $command_key && ! empty( $flags['force'] ) );
+		$force_delete = ( in_array( $command_key, array( 'post delete', 'comment delete' ), true ) && ! empty( $flags['force'] ) );
 		if ( ( ! empty( $meta['destructive'] ) || $force_delete ) && ! empty( $meta['bulk'] ) ) {
 			$offset  = isset( $meta['bulk']['offset'] ) ? (int) $meta['bulk']['offset'] : 0;
 			$targets = array_slice( $positional, $offset );
 			if ( count( $targets ) > 1 ) {
 				// Force-delete shares an operation prefix across single + bulk so a
 				// session bypass (post_delete_force:*) covers both forms.
-				$prefix = $force_delete ? 'post_delete_force' : $command_key;
+				$prefix = $force_delete ? $meta['bulk']['label'] . '_delete_force' : $command_key;
 				$reason = $force_delete
-					/* translators: %d: number of posts */
-					? sprintf( __( 'Permanently deletes %d posts, bypassing trash — they cannot be restored. Review the list before approving.', 'vibe-ai' ), count( $targets ) )
+					/* translators: 1: number of targets, 2: plural noun */
+					? sprintf( __( 'Permanently deletes %1$d %2$s, bypassing trash. They cannot be restored. Review the list before approving.', 'vibe-ai' ), count( $targets ), $meta['bulk']['label'] . 's' )
 					/* translators: 1: command, 2: target count */
 					: sprintf( __( 'Permanently affects %2$d targets via "%1$s" and cannot be undone. Review the list before approving.', 'vibe-ai' ), $command_key, count( $targets ) );
 				return array(
@@ -108,6 +108,42 @@ trait WPVibe_CLI_Security {
 					'dry_run'   => $dry_run,
 				);
 			}
+		}
+
+		// core update: the site runs the new version immediately for every
+		// visitor and cannot roll back from inside WPVibe. Resolves the offer
+		// exactly like the handler (shared resolver, parity rule at the top of
+		// this method); anything the handler will refuse (bad flags, downgrade,
+		// no offer) returns null so no approval click is burned.
+		if ( 'core update' === $command_key ) {
+			if ( null !== $this->core_update_flag_error( $flags ) ) {
+				return null;
+			}
+			$resolved = $this->resolve_core_update_offer( $flags );
+			if ( empty( $resolved['offer'] ) ) {
+				return null;
+			}
+			$offer = $resolved['offer'];
+			global $wp_version;
+			$echo = '';
+			if ( isset( $flags['minor'] ) ) {
+				$echo .= ' --minor';
+			}
+			if ( isset( $flags['version'] ) && true !== $flags['version'] ) {
+				$echo .= ' --version=' . $flags['version'];
+			}
+			return array(
+				'operation' => 'core_update:' . $offer->current,
+				'reason'    => __( 'Updates WordPress core itself. The site runs the new version immediately for every visitor; plugins or themes incompatible with it can take the site down, and core updates cannot be rolled back from inside WPVibe. Review the version change before approving.', 'vibe-ai' ),
+				'dry_run'   => array(
+					'command'         => 'wp core update' . $echo,
+					'current_version' => (string) $wp_version,
+					'new_version'     => (string) $offer->current,
+					'update_type'     => isset( $offer->response ) ? (string) $offer->response : '',
+					'php_required'    => isset( $offer->php_version ) ? (string) $offer->php_version : '',
+					'mysql_required'  => isset( $offer->mysql_version ) ? (string) $offer->mysql_version : '',
+				),
+			);
 		}
 
 		// Terms have no trash: deletion permanently detaches the term from every
@@ -231,6 +267,24 @@ trait WPVibe_CLI_Security {
 				$matched = 'REPLACE';
 			}
 			if ( null !== $matched ) {
+				// An identity/privilege target is unapprovable: refuse at
+				// classification so no human is handed an approve button the
+				// executor would refuse anyway (and the preview never runs).
+				// Scoped exactly like handle_db_query's own call: a SELECT is
+				// read-only however many write keywords its string literals
+				// contain ("... LIKE '%update users%'"), and refusing one here
+				// would be both a lie and a dead end.
+				$is_select      = ( strpos( $normalized, 'SELECT' ) === 0 );
+				$is_schema_read = (bool) preg_match( '/^(DESCRIBE|DESC|SHOW|EXPLAIN SELECT)\b/', $normalized );
+				$privileged     = ( $is_select || $is_schema_read ) ? null : $this->privileged_sql_target_error( $normalized );
+				if ( $privileged ) {
+					return array(
+						'operation' => 'db_query_' . strtolower( $matched ),
+						'reason'    => (string) $privileged['stderr'],
+						'dry_run'   => null,
+						'refuse'    => $privileged,
+					);
+				}
 				return array(
 					'operation' => 'db_query_' . strtolower( $matched ),
 					'reason'    => sprintf(
@@ -382,16 +436,20 @@ trait WPVibe_CLI_Security {
 			);
 		}
 
-		// --force flag bypassing trash (post delete --force).
-		if ( ! empty( $flags['force'] ) && 'post delete' === $command_key ) {
+		// --force flag bypassing trash (post delete --force, comment delete --force).
+		if ( $force_delete ) {
 			$target = $positional[0] ?? '?';
+			$noun   = $meta['bulk']['label'];
 			return array(
-				'operation' => 'post_delete_force:' . $target,
-				'reason'    => __( '--force bypasses trash and permanently deletes content. The post cannot be restored.', 'vibe-ai' ),
+				'operation' => $noun . '_delete_force:' . $target,
+				/* translators: %s: entity noun */
+				'reason'    => sprintf( __( '--force bypasses trash and permanently deletes content. The %s cannot be restored.', 'vibe-ai' ), $noun ),
 				'dry_run'   => array(
-					'command'   => 'wp post delete --force',
+					'command'   => 'wp ' . $command_key . ' --force',
 					'target_id' => $target,
-					'note'      => __( 'Without --force, the post would move to trash and be restorable. With --force, it is permanently deleted.', 'vibe-ai' ),
+					'target'    => $this->describe_target( $noun, $target ),
+					/* translators: %s: entity noun */
+					'note'      => sprintf( __( 'Without --force, the %s would move to trash and be restorable. With --force, it is permanently deleted.', 'vibe-ai' ), $noun ),
 				),
 			);
 		}
@@ -409,6 +467,9 @@ trait WPVibe_CLI_Security {
 	private function drift_sensitive_fields( $operation ) {
 		$map    = array(
 			'plugin_install_force' => array( 'installed_version', 'active' ),
+			// The approve-6.7.1-get-6.7.2 race --expect-version closes for
+			// plugins is closed here by the drift check instead.
+			'core_update'          => array( 'current_version', 'new_version' ),
 		);
 		$prefix = $this->operation_prefix( $operation );
 		return isset( $map[ $prefix ] ) ? $map[ $prefix ] : null;
@@ -833,10 +894,12 @@ trait WPVibe_CLI_Security {
 			'targets_truncated' => count( $targets ) > $cap,
 		);
 
-		if ( 'post delete' === $command_key ) {
+		if ( 'post delete' === $command_key || 'comment delete' === $command_key ) {
 			$dry['note'] = ! empty( $flags['force'] )
-				? __( '--force permanently deletes these posts (no trash, not restorable).', 'vibe-ai' )
-				: __( 'Posts move to trash and remain restorable.', 'vibe-ai' );
+				/* translators: %s: plural noun */
+				? sprintf( __( '--force permanently deletes these %s (no trash, not restorable).', 'vibe-ai' ), $type . 's' )
+				/* translators: %s: capitalized plural noun */
+				: sprintf( __( '%s move to trash and remain restorable.', 'vibe-ai' ), ucfirst( $type ) . 's' );
 		} elseif ( 'post update' === $command_key ) {
 			$changes = array();
 			foreach ( array( 'post_title', 'post_content', 'post_status', 'post_excerpt', 'post_name', 'post_parent', 'menu_order', 'comment_status', 'post_type' ) as $field ) {
@@ -861,6 +924,19 @@ trait WPVibe_CLI_Security {
 				return $post
 					? array( 'id' => (int) $t, 'title' => get_the_title( $post ), 'type' => $post->post_type, 'status' => $post->post_status )
 					: array( 'id' => (int) $t, 'note' => __( 'not found', 'vibe-ai' ) );
+			case 'comment':
+				$comment = get_comment( (int) $t );
+				if ( ! $comment ) {
+					return array( 'id' => (int) $t, 'note' => __( 'not found', 'vibe-ai' ) );
+				}
+				$excerpt = trim( wp_strip_all_tags( (string) $comment->comment_content ) );
+				return array(
+					'id'      => (int) $t,
+					'author'  => (string) $comment->comment_author,
+					'excerpt' => strlen( $excerpt ) > 80 ? mb_substr( $excerpt, 0, 80 ) . '...' : $excerpt,
+					'status'  => wp_get_comment_status( $comment ),
+					'post_id' => (int) $comment->comment_post_ID,
+				);
 			case 'user':
 				$user = is_numeric( $t )
 					? get_user_by( 'id', (int) $t )

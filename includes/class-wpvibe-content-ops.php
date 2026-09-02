@@ -191,7 +191,16 @@ class WPVibe_Content_Ops {
 			return str_replace( $old, $new, $current );
 		}
 		if ( 0 === $count ) {
-			return new WP_Error( 'no_match', __( 'old_content not found. Use content/search to locate the exact current text, then retry.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422 ) ) );
+			// Measured retry: the same text with different whitespace (a wrapped
+			// line, a double space) is the commonest near-miss. One exact
+			// whitespace-insensitive hit is applied; anything else stays a miss.
+			$ws = self::whitespace_lenient_replace( $current, $old, $new, $replace_all );
+			if ( null !== $ws ) {
+				$replaced = $ws['replaced'];
+				$this->last_match_mode = 'whitespace';
+				return $ws['value'];
+			}
+			return new WP_Error( 'no_match', __( 'old_content not found in the stored value (even allowing for quote style and whitespace differences). Use content/search with a short distinctive pattern and paste its snippet verbatim, then retry.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422 ) ) );
 		}
 		if ( ! $replace_all && $count > 1 ) {
 			/* translators: %d: number of matching locations */
@@ -381,6 +390,10 @@ class WPVibe_Content_Ops {
 			'replaced' => $replaced,
 			'bytes'    => $stored_len,
 		);
+		if ( 'whitespace' === $this->last_match_mode ) {
+			$response['match_mode'] = 'whitespace_lenient';
+			$response['message']   .= ' ' . __( 'old_content matched only after allowing whitespace differences; verify the result reads as intended.', 'vibe-ai' );
+		}
 		if ( false === $verbatim ) {
 			$response['stored_verbatim'] = false;
 			$response['message']         = __( 'Content updated, but the site modified the saved value (a filter such as kses or a security plugin altered it). Your copy of this value is now stale; re-read it with content/search before making further edits.', 'vibe-ai' );
@@ -427,6 +440,36 @@ class WPVibe_Content_Ops {
 	// ------------------------------------------------------------------
 
 	/** Mutates the WP_Error, merging candidates and value shape into its data. */
+	/** Set when a whitespace-lenient match was the one applied. */
+	private $last_match_mode = null;
+
+	/**
+	 * Collapse whitespace runs on both sides and match once. Returns the
+	 * updated value and count, or null when there is no unique hit (or the
+	 * needle is too short to be safe outside exact matching).
+	 */
+	public static function whitespace_lenient_replace( $current, $old, $new, $replace_all ) {
+		$trimmed = trim( $old );
+		if ( mb_strlen( $trimmed ) < 12 || ! preg_match( '/\s/', $old ) ) {
+			return null;
+		}
+		$parts   = preg_split( '/\s+/u', $trimmed );
+		$pattern = '/' . implode( '\s+', array_map( function ( $p ) {
+			return preg_quote( $p, '/' );
+		}, $parts ) ) . '/u';
+		$count = preg_match_all( $pattern, $current );
+		if ( ! $count || ( ! $replace_all && 1 !== $count ) ) {
+			return null;
+		}
+		$updated = preg_replace_callback( $pattern, function () use ( $new ) {
+			return $new;
+		}, $current, $replace_all ? -1 : 1, $replaced );
+		if ( null === $updated ) {
+			return null;
+		}
+		return array( 'value' => $updated, 'replaced' => (int) $replaced );
+	}
+
 	private function augment_match_error( $error, $current, $old_content ) {
 		$data = $error->get_error_data();
 		if ( ! is_array( $data ) ) {

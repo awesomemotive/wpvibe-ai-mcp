@@ -99,7 +99,12 @@ trait WPVibe_CLI_Parse {
 		for ( $i = 0; $i < $len; $i++ ) {
 			$char = $input[ $i ];
 			if ( $in_quote ) {
-				if ( $char === $quote_char ) {
+				// Shell semantics: inside double quotes \" and \\ are escapes, every
+				// other backslash is literal; single quotes keep all bytes as-is.
+				if ( '"' === $quote_char && '\\' === $char && $i + 1 < $len && ( '"' === $input[ $i + 1 ] || '\\' === $input[ $i + 1 ] ) ) {
+					$current .= $input[ $i + 1 ];
+					$i++;
+				} elseif ( $char === $quote_char ) {
 					$in_quote = false;
 				} else {
 					$current .= $char;

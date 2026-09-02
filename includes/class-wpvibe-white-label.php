@@ -177,10 +177,12 @@ class WPVibe_White_Label {
 		if ( ! self::truthy( $value ) || ! defined( 'WPVIBE_PLUGIN_BASENAME' ) ) {
 			return;
 		}
-		$auto = (array) get_option( 'auto_update_plugins', array() );
+		// Shared helper with the CLI verb: core's auto-updater reads the SITE
+		// option (a network option on multisite, where get_option missed it).
+		$auto = WPVibe_Self_Update::auto_update_list();
 		if ( ! in_array( WPVIBE_PLUGIN_BASENAME, $auto, true ) ) {
 			$auto[] = WPVIBE_PLUGIN_BASENAME;
-			update_option( 'auto_update_plugins', $auto );
+			WPVibe_Self_Update::set_auto_update_list( $auto );
 		}
 	}
 }

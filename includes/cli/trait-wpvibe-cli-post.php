@@ -32,13 +32,18 @@ trait WPVibe_CLI_Post {
 		if ( $format_reject ) {
 			return $format_reject;
 		}
-		$known = array( 'post_type', 'post_status', 'posts_per_page', 'orderby', 'order', 's', 'author', 'year', 'monthnum', 'fields', 'format' );
+		$known = array( 'post_type', 'post_status', 'posts_per_page', 'orderby', 'order', 's', 'author', 'year', 'monthnum', 'offset', 'paged', 'fields', 'format' );
 		foreach ( array_keys( $flags ) as $flag ) {
 			if ( ! in_array( $flag, $known, true ) ) {
 				/* translators: %s: the unsupported flag name */
-				return $this->error_result( sprintf( __( 'post list does not support --%s here. Supported filters: s, author, year, monthnum, post_type, post_status, posts_per_page, orderby, order. For richer queries use the REST API (/wp/v2/posts).', 'vibe-ai' ), $flag ) );
+				return $this->error_result( sprintf( __( 'post list does not support --%s here. Supported filters: s, author, year, monthnum, post_type, post_status, posts_per_page, offset, paged, orderby, order. For richer queries use the REST API (/wp/v2/posts).', 'vibe-ai' ), $flag ) );
 			}
 		}
+		$paging = $this->paging_args( 'post list', $flags, (int) $args['posts_per_page'] );
+		if ( is_array( $paging ) && isset( $paging['exit_code'] ) ) {
+			return $paging;
+		}
+		$args    = array_merge( $args, $paging );
 		$posts   = get_posts( $args );
 		$results = array();
 		foreach ( $posts as $post ) {
@@ -53,7 +58,7 @@ trait WPVibe_CLI_Post {
 		}
 		return $this->success_result(
 			$this->format_rows( $results, $flags, 'ID' ),
-			$this->truncation_notice( $results, (int) $args['posts_per_page'], 'post list' )
+			$this->truncation_notice( $results, (int) $args['posts_per_page'], 'post list', $this->next_page_hint( $flags, (int) $args['posts_per_page'] ) )
 		);
 	}
 
@@ -499,49 +504,6 @@ trait WPVibe_CLI_Post {
 		}
 
 		return $this->success_result( $this->filter_fields( $results, $flags ) );
-	}
-
-
-	private function handle_comment_list( $positional, $flags ) {
-		$args = array(
-			'number' => isset( $flags['number'] ) ? min( (int) $flags['number'], 100 ) : 20,
-		);
-		if ( isset( $flags['status'] ) )  $args['status']  = $flags['status'];
-		if ( isset( $flags['post_id'] ) ) $args['post_id'] = (int) $flags['post_id'];
-		if ( isset( $flags['type'] ) )    $args['type']    = $flags['type'];
-
-		$comments = get_comments( $args );
-		$results  = array();
-		foreach ( $comments as $comment ) {
-			$content = $comment->comment_content;
-			if ( strlen( $content ) > 200 ) {
-				$content = mb_substr( $content, 0, 200 ) . '...[truncated]';
-			}
-			$results[] = array(
-				'comment_ID'      => $comment->comment_ID,
-				'comment_author'  => $comment->comment_author,
-				'comment_content' => $content,
-				'comment_date'    => $comment->comment_date,
-				'comment_approved' => $comment->comment_approved,
-				'comment_post_ID' => $comment->comment_post_ID,
-			);
-		}
-
-		return $this->success_result( $this->filter_fields( $results, $flags ) );
-	}
-
-
-	private function handle_comment_count( $positional, $flags ) {
-		$post_id = ! empty( $positional[0] ) ? (int) $positional[0] : 0;
-		$counts  = wp_count_comments( $post_id );
-
-		return $this->success_result( array(
-			'approved'            => $counts->approved,
-			'awaiting_moderation' => $counts->moderated,
-			'spam'                => $counts->spam,
-			'trash'               => $counts->trash,
-			'total_comments'      => $counts->total_comments,
-		) );
 	}
 
 

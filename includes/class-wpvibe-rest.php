@@ -552,7 +552,7 @@ class WPVibe_REST {
 		// Execution-receipt lookup for Worker reconciliation. Always 200 —
 		// a bare 404 is indistinguishable from a rolled-back plugin, which the
 		// Worker must treat as UNKNOWN rather than "never executed".
-		register_rest_route( $namespace, '/op-receipt/(?P<op_id>op_[a-z0-9]+)', array(
+		register_rest_route( $namespace, '/op-receipt/(?P<op_id>[a-z0-9_.:]+)', array(
 			'methods'             => 'GET',
 			'callback'            => array( $this, 'op_receipt_get' ),
 			'permission_callback' => array( $this, 'can_manage_options' ),
@@ -564,7 +564,7 @@ class WPVibe_REST {
 		register_rest_route( $namespace, '/cli/run-approved', array(
 			'methods'             => 'POST',
 			'callback'            => array( $this, 'run_cli_approved' ),
-			'permission_callback' => array( $this, 'can_run_cli' ),
+			'permission_callback' => array( $this, 'can_run_cli_approved' ),
 			'args'                => array(
 				'command' => array(
 					'type'              => 'string',
@@ -581,6 +581,12 @@ class WPVibe_REST {
 					'type'     => 'string',
 					'required' => false,
 				),
+				// Worker-controlled: run a detachable command out of band and
+				// answer 202; the outcome lands in the op receipt.
+				'detach' => array(
+					'type'    => 'boolean',
+					'default' => false,
+				),
 			),
 		) );
 
@@ -590,10 +596,33 @@ class WPVibe_REST {
 		// code + type + location. `code` carries exact bytes — no sanitizer;
 		// the Worker asserts stored bytes equal approved bytes. There is
 		// deliberately no `active` arg: activation is human-only, in wp-admin.
+		// The authorize screen's Approve button mints through this route instead
+		// of /wp/v2/users/me/application-passwords, which host firewalls block
+		// as user enumeration (#58). Cookie + nonce session only.
+		register_rest_route( $namespace, '/authorize', array(
+			'methods'             => 'POST',
+			'callback'            => array( $this, 'mint_app_password' ),
+			'permission_callback' => array( $this, 'can_mint_app_password' ),
+			'args'                => array(
+				'name'   => array( 'type' => 'string', 'required' => true, 'sanitize_callback' => 'sanitize_text_field' ),
+				'app_id' => array( 'type' => 'string', 'required' => false, 'sanitize_callback' => 'sanitize_text_field' ),
+			),
+		) );
+
+		// Worker-provisioned key for the per-op proof the approval routes verify.
+		register_rest_route( $namespace, '/op-proof/key', array(
+			'methods'             => 'POST',
+			'callback'            => array( $this, 'op_proof_key_set' ),
+			'permission_callback' => array( $this, 'can_manage_options' ),
+			'args'                => array(
+				'key' => array( 'type' => 'string', 'required' => true ),
+			),
+		) );
+
 		register_rest_route( $namespace, '/code-snippet', array(
 			'methods'             => 'POST',
 			'callback'            => array( $this, 'code_snippet' ),
-			'permission_callback' => array( $this, 'can_edit_code_snippets' ),
+			'permission_callback' => array( $this, 'can_edit_code_snippets_approved' ),
 			'args'                => array(
 				'action' => array(
 					'type'              => 'string',
@@ -948,6 +977,80 @@ class WPVibe_REST {
 	}
 
 	/**
+	 * The current cookie session only: never an application password or Basic
+	 * auth (this must not become a firewall-bypass password factory for callers
+	 * that already hold one), and only for a user who may create their own.
+	 */
+	public function can_mint_app_password( $request ) {
+		$uid = get_current_user_id();
+		if ( $uid <= 0 ) {
+			return new WP_Error( 'wpvibe_authorize_login_required', __( 'Log in to WordPress in this browser to approve the connection.', 'vibe-ai' ), array( 'status' => 401 ) );
+		}
+		$auth_header = is_object( $request ) && method_exists( $request, 'get_header' ) ? (string) $request->get_header( 'authorization' ) : '';
+		if ( '' !== $auth_header || ! empty( $_SERVER['PHP_AUTH_USER'] ) || ( function_exists( 'wp_is_application_passwords_in_use' ) && wp_is_application_passwords_in_use() ) ) {
+			return new WP_Error( 'wpvibe_authorize_session_only', __( 'This route accepts the logged-in browser session only.', 'vibe-ai' ), array( 'status' => 403 ) );
+		}
+		if ( ! current_user_can( 'create_app_password', $uid ) ) {
+			return new WP_Error( 'wpvibe_authorize_forbidden', __( 'This account cannot create application passwords.', 'vibe-ai' ), array( 'status' => 403 ) );
+		}
+		if ( function_exists( 'wp_is_application_passwords_available_for_user' ) && ! wp_is_application_passwords_available_for_user( $uid ) ) {
+			return new WP_Error( 'wpvibe_authorize_unavailable', __( 'Application passwords are not available for this account on this site.', 'vibe-ai' ), array( 'status' => 501 ) );
+		}
+		return true;
+	}
+
+	/** Same core call the wp/v2 route makes; the response shape core's auth-app.js reads. */
+	public function mint_app_password( $request ) {
+		$uid  = get_current_user_id();
+		$args = array( 'name' => (string) $request->get_param( 'name' ) );
+		$app  = (string) $request->get_param( 'app_id' );
+		if ( '' !== $app ) {
+			$args['app_id'] = $app;
+		}
+		$created = WP_Application_Passwords::create_new_application_password( $uid, $args );
+		if ( is_wp_error( $created ) ) {
+			return $created;
+		}
+		// An admin approving a new connection in the browser is the only event
+		// that may drop the proof key; the Worker owning the new credential
+		// provisions its own on first contact.
+		if ( current_user_can( 'manage_options' ) ) {
+			WPVibe_Op_Proof::reset();
+		}
+		list( $password, $item ) = $created;
+		return rest_ensure_response( array(
+			'password' => $password,
+			'uuid'     => isset( $item['uuid'] ) ? $item['uuid'] : '',
+			'name'     => isset( $item['name'] ) ? $item['name'] : $args['name'],
+		) );
+	}
+
+	/** run-approved: capability, then the Worker's per-op proof once a key exists. */
+	public function can_run_cli_approved( $request ) {
+		$ok = $this->can_run_cli();
+		if ( true !== $ok ) {
+			return $ok;
+		}
+		return WPVibe_Op_Proof::verify( $request, '/wpvibe/v1/cli/run-approved', (string) $request->get_param( 'command' ) );
+	}
+
+	public function can_edit_code_snippets_approved( $request ) {
+		$ok = $this->can_edit_code_snippets();
+		if ( true !== $ok ) {
+			return $ok;
+		}
+		return WPVibe_Op_Proof::verify( $request, '/wpvibe/v1/code-snippet', (string) $request->get_param( 'code' ) );
+	}
+
+	public function op_proof_key_set( $request ) {
+		$set = WPVibe_Op_Proof::set_key( $request );
+		if ( is_wp_error( $set ) ) {
+			return $set;
+		}
+		return rest_ensure_response( array( 'status' => 'set' ) );
+	}
+
+	/**
 	 * Content edit/search — capability depends on the target. Options carry
 	 * site-wide config (and can hold secrets), so they need manage_options;
 	 * post + meta edits require edit-access to the specific post.
@@ -1044,7 +1147,7 @@ class WPVibe_REST {
 	 * MCP to compare WPVIBE_VERSION strings — flags are forward-compatible.
 	 */
 	public static function feature_flags() {
-		return array( 'content_edit', 'content_search', 'code_snippet', 'beaver_save', 'breakdance_save', 'bricks_save', 'armor' );
+		return array( 'content_edit', 'content_search', 'code_snippet', 'beaver_save', 'breakdance_save', 'bricks_save', 'armor', 'authorize_mint', 'op_proof', 'detached_ops' );
 	}
 
 	public function get_site_info() {
@@ -1269,6 +1372,18 @@ class WPVibe_REST {
 	public function run_cli_approved( $request ) {
 		$command       = $request->get_param( 'command' );
 		$confirm_write = (bool) $request->get_param( 'confirm_write' );
+
+		if ( $request->get_param( 'detach' ) && WPVibe_Detached_Ops::is_detachable( $command ) ) {
+			$op_id = WPVibe_Op_Receipts::sanitize_op_id( (string) $request->get_header( 'x_wpvibe_op_id' ) );
+			if ( '' === $op_id ) {
+				return new WP_Error( 'wpvibe_detach_needs_op_id', __( 'Detached execution needs an operation id header; the receipt is the only channel for its result.', 'vibe-ai' ), array( 'status' => 400 ) );
+			}
+			$scheduled = WPVibe_Detached_Ops::instance()->schedule( $op_id, $command, $confirm_write, $request->get_param( 'approved_state' ) );
+			if ( is_wp_error( $scheduled ) ) {
+				return $scheduled;
+			}
+			return new WP_REST_Response( $scheduled, 202 );
+		}
 
 		$cli = new WPVibe_CLI();
 		return $cli->run_approved( $command, $confirm_write, $request->get_param( 'approved_state' ) );

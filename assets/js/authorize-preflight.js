@@ -79,6 +79,26 @@
 	var cfg = root.wpvibeAuthorize, authApp = root.authApp, wp = root.wp, $ = root.jQuery;
 	if ( ! cfg || ! authApp || ! wp || ! wp.apiRequest || ! wp.hooks || ! $ ) return;
 
+	// Route the Approve mint through the plugin: host firewalls block
+	// /wp/v2/users* as user enumeration and the one-click connect dies with
+	// a blank red bar (#58). Same request, same session, same success redirect;
+	// only the path changes, so wpApiSettings.root still handles pretty vs
+	// ?rest_route= permalinks.
+	if ( cfg.mintPath ) {
+		var origApiRequest = wp.apiRequest;
+		var routed = function ( options ) {
+			if ( options && typeof options.path === 'string' && options.path.indexOf( '/wp/v2/users/me/application-passwords' ) === 0 && ( options.method || 'GET' ).toUpperCase() === 'POST' ) {
+				var q = options.path.indexOf( '?' );
+				options = $.extend( {}, options, { path: cfg.mintPath + ( q >= 0 ? options.path.slice( q ) : '' ) } );
+			}
+			return origApiRequest.call( this, options );
+		};
+		for ( var key in origApiRequest ) {
+			if ( Object.prototype.hasOwnProperty.call( origApiRequest, key ) ) routed[ key ] = origApiRequest[ key ];
+		}
+		wp.apiRequest = routed;
+	}
+
 	var t = cfg.i18n || {};
 	var sent = {};
 

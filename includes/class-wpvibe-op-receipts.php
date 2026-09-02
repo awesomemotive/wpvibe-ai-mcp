@@ -28,7 +28,7 @@ class WPVibe_Op_Receipts {
 	const SCHEMA_VERSION = '1.0';
 	const OPTION_VERSION = 'wpvibe_op_receipts_schema';
 
-	const MAX_SUMMARY  = 2048;
+	const MAX_SUMMARY = 16384;
 	const MAX_ROUTE    = 191;
 	const IN_PROGRESS  = 120;
 	const TTL_SECONDS  = 604800;
@@ -92,7 +92,9 @@ class WPVibe_Op_Receipts {
 		if ( ! is_string( $value ) ) {
 			return '';
 		}
-		return preg_match( '/^op_[a-z0-9]{1,32}$/', $value ) ? $value : '';
+		// op_<hex> from the approval flow; fj_<hex>.<seq>[:a<n>][:b<n>][:r<n>]
+		// from the fleet runner (attempt, drain batch, resend). Max 63 chars.
+		return preg_match( '/^(op|fj)_[a-z0-9]{1,32}(\.[0-9]{1,9})?(:[a-z][0-9]{1,4}){0,3}$/', $value ) ? $value : '';
 	}
 
 	public static function get_receipt( $op_id ) {
@@ -184,6 +186,22 @@ class WPVibe_Op_Receipts {
 			self::$started_ops[ $op_id ] = true;
 		}
 		return $response;
+	}
+
+	/**
+	 * A request that hands its op to a background process must not complete
+	 * the receipt itself (the 202 is not the outcome); the process does.
+	 */
+	public static function defer( $op_id ) {
+		unset( self::$started_ops[ self::sanitize_op_id( $op_id ) ] );
+	}
+
+	public static function complete_detached( $op_id, $status, $summary ) {
+		$op_id = self::sanitize_op_id( $op_id );
+		if ( '' === $op_id ) {
+			return;
+		}
+		self::complete( $op_id, (int) $status, substr( (string) $summary, 0, self::MAX_SUMMARY ) );
 	}
 
 	public function record_completed( $response, $handler, $request ) {

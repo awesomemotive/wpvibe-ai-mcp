@@ -219,6 +219,10 @@ trait WPVibe_CLI_Db {
 			if ( in_array( $this->sql_base_table( $dm[1] ), array( 'USERS', 'USERMETA', 'OPTIONS' ), true ) ) {
 				return $this->privileged_refusal( 'a protected identity table (schema change)' );
 			}
+			$extra = $this->sql_extra_target_tables( $normalized, $dm[1] );
+			if ( ! empty( $extra ) ) {
+				return $this->privileged_refusal( 'a protected identity table (' . strtolower( implode( ', ', $extra ) ) . ') later in the table list' );
+			}
 		}
 
 		// INTO is optional for INSERT/REPLACE in MySQL (`INSERT tbl SET ...`),
@@ -233,6 +237,14 @@ trait WPVibe_CLI_Db {
 			return null;
 		}
 		$base = $this->sql_base_table( $m[1] );
+
+		// Every table the statement can touch, not only the first capture: a
+		// multi-table UPDATE or a cross-table DELETE can name a content table
+		// first and an identity table later (#74).
+		$extra = $this->sql_extra_target_tables( $normalized, $m[1] );
+		if ( ! empty( $extra ) ) {
+			return $this->privileged_refusal( 'a protected identity table (' . strtolower( implode( ', ', $extra ) ) . ') inside a multi-table statement; write it with the single-table commands instead' );
+		}
 
 		// wp_options: raw INSERT/REPLACE is refused wholesale (below); for
 		// UPDATE/DELETE, refuse a write naming a blocked option, a disguised
@@ -391,6 +403,56 @@ trait WPVibe_CLI_Db {
 	 * judged on the table, not the DB), then strip the table prefix / {PREFIX} /
 	 * WP_. $token comes from the uppercased normalized SQL.
 	 */
+	/**
+	 * Identity bases (USERS, USERMETA, OPTIONS) named anywhere beyond the first
+	 * target of a multi-table statement: the table list of a multi-table UPDATE
+	 * (everything before SET, across JOINs and commas), a DELETE's FROM/USING
+	 * lists, and the comma lists of DROP/TRUNCATE/RENAME. Aliases cannot be told
+	 * from tables, so an alias literally named after an identity table refuses
+	 * too; that is a harmless over-refusal on approval-gated SQL.
+	 */
+	private function sql_extra_target_tables( $normalized, $primary ) {
+		$segments = array();
+		if ( preg_match( '/^\s*UPDATE\b(.*?)\bSET\b/s', $normalized, $m ) ) {
+			$segments[] = $m[1];
+		}
+		if ( preg_match( '/^\s*DELETE\b(.*?)(?:\bWHERE\b|\bORDER\s+BY\b|\bLIMIT\b|$)/s', $normalized, $m ) ) {
+			$segments[] = $m[1];
+		}
+		if ( preg_match( '/^\s*(?:DROP\s+(?:TEMPORARY\s+)?TABLE(?:\s+IF\s+EXISTS)?|TRUNCATE(?:\s+TABLE)?|RENAME\s+TABLE)\b(.*)$/s', $normalized, $m ) ) {
+			$segments[] = $m[1];
+		}
+		if ( empty( $segments ) ) {
+			return array();
+		}
+		$keywords = array( 'LOW_PRIORITY', 'IGNORE', 'QUICK', 'FROM', 'USING', 'JOIN', 'INNER', 'LEFT', 'RIGHT', 'OUTER', 'CROSS', 'NATURAL', 'STRAIGHT_JOIN', 'ON', 'AS', 'AND', 'OR', 'NOT', 'NULL', 'IS', 'IN', 'TO', 'IF', 'EXISTS', 'TEMPORARY', 'TABLE', 'PARTITION' );
+		$primary = str_replace( '`', '', (string) $primary );
+		$skipped = false;
+		$found   = array();
+		foreach ( $segments as $segment ) {
+			// A comparison's operands are columns, not tables; blank them so
+			// `p.ID = u.ID` cannot contribute identifiers.
+			$segment = preg_replace( '/[A-Z0-9_{}.`]+\s*(?:=|<>|!=|<=|>=|<|>)\s*[A-Z0-9_{}.`\'"]+/', ' ', $segment );
+			preg_match_all( '/`?([A-Z0-9_{}.]+)`?/', $segment, $tokens );
+			foreach ( $tokens[1] as $token ) {
+				if ( in_array( $token, $keywords, true ) || is_numeric( $token ) ) {
+					continue;
+				}
+				// The first capture is judged by the single-table rules above.
+				if ( ! $skipped && $token === $primary ) {
+					$skipped = true;
+					continue;
+				}
+				$base = $this->sql_base_table( $token );
+				if ( in_array( $base, array( 'USERS', 'USERMETA', 'OPTIONS' ), true ) && ! in_array( $base, $found, true ) ) {
+					$found[] = $base;
+				}
+			}
+		}
+		return $found;
+	}
+
+
 	private function sql_base_table( $token ) {
 		global $wpdb;
 		$prefix = strtoupper( $wpdb->prefix );
@@ -445,30 +507,15 @@ trait WPVibe_CLI_Db {
 			return $this->error_result( $tables->get_error_message() );
 		}
 
-		$skip_columns    = array_filter( wp_parse_list( (string) ( $flags['skip_columns'] ?? '' ) ) );
-		$include_columns = array_filter( wp_parse_list( (string) ( $flags['include_columns'] ?? '' ) ) );
-
-		// Never rewrite password hashes. A search string that happens to appear
-		// inside a bcrypt hash would corrupt it and lock that user out with no way
-		// back. Upstream hard-appends this too, and unlike guid it is not
-		// overridable: the skip test below runs before the include test, so even
-		// an explicit --include_columns=user_pass yields zero columns rather than
-		// re-opening the column.
-		$skip_columns[] = 'user_pass';
-
-		$guid_skipped    = false;
-		if ( empty( $flags['include_guids'] ) && ! in_array( 'guid', $include_columns, true ) ) {
-			// WP best practice: GUIDs are permanent identifiers, not URLs.
-			$skip_columns[] = 'guid';
-			$guid_skipped   = true;
-		}
+		list( $skip_columns, $include_columns, $guid_skipped ) = $this->search_replace_column_filters( $flags );
 
 		if ( function_exists( 'set_time_limit' ) ) {
-			@set_time_limit( 300 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+			@set_time_limit( $this->detached ? 0 : 300 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
 		}
-		// We run inside a REST request, not a shell: keep a hard budget and
-		// report completed vs remaining tables so the AI can re-run scoped.
-		$deadline = microtime( true ) + 240;
+		// Inside a REST request keep a hard budget and report completed vs
+		// remaining tables so the AI can re-run scoped; a detached run has the
+		// whole background process to itself.
+		$deadline = $this->detached ? PHP_INT_MAX : microtime( true ) + 240;
 
 		$this->sr_skipped_serialized = 0;
 		$this->sr_timed_out          = false;
@@ -786,6 +833,43 @@ trait WPVibe_CLI_Db {
 	}
 
 
+	/**
+	 * Column filters shared by execution and the approval preview, so the
+	 * preview counts exactly the columns the replace will touch. user_pass is
+	 * never rewritable (a needle inside a bcrypt hash would lock the user out;
+	 * the skip test runs before the include test so --include_columns cannot
+	 * reopen it); guid is skipped unless --include-guids or an explicit include.
+	 */
+	private function search_replace_column_filters( $flags ) {
+		$skip_columns    = array_filter( wp_parse_list( (string) ( $flags['skip_columns'] ?? '' ) ) );
+		$include_columns = array_filter( wp_parse_list( (string) ( $flags['include_columns'] ?? '' ) ) );
+		$skip_columns[]  = 'user_pass';
+		$guid_skipped    = false;
+		if ( empty( $flags['include_guids'] ) && ! in_array( 'guid', $include_columns, true ) ) {
+			$skip_columns[] = 'guid';
+			$guid_skipped   = true;
+		}
+		return array( $skip_columns, $include_columns, $guid_skipped );
+	}
+
+	private function search_replace_column_in_scope( $table, $col, $skip_columns, $include_columns ) {
+		if ( in_array( $col, $skip_columns, true ) || in_array( "$table.$col", $skip_columns, true ) ) {
+			return false;
+		}
+		if ( ! empty( $include_columns ) && ! in_array( $col, $include_columns, true ) && ! in_array( "$table.$col", $include_columns, true ) ) {
+			return false;
+		}
+		return true;
+	}
+
+	/**
+	 * Row-count preview per table for the approval card. Mirrors execution:
+	 * the same column filters, and the JSON-escaped variant of the needle
+	 * (a URL inside Elementor's _elementor_data is stored with escaped
+	 * slashes; execution replaces it, so the preview must count it). When the
+	 * only matches are a few posts rows, the post ids ride along so the
+	 * Worker can name the exact content/edit calls instead of a raw replace.
+	 */
 	private function build_search_replace_dry_run( $old, $new, $table_args, $flags ) {
 		global $wpdb;
 		$preview = array(
@@ -800,24 +884,37 @@ trait WPVibe_CLI_Db {
 			return $preview;
 		}
 
+		list( $skip_columns, $include_columns, ) = $this->search_replace_column_filters( $flags );
+		$old_json = $this->json_encode_strip_quotes( $old );
+
 		$deadline      = microtime( true ) + 15;
 		$cap           = 1000;
 		$counts        = array();
 		$not_previewed = 0;
+		$where_by_table = array();
 		foreach ( $tables as $table ) {
 			if ( microtime( true ) > $deadline ) {
 				$not_previewed++;
 				continue;
 			}
 			list( , $text_columns ) = $this->table_columns( $table );
-			if ( empty( $text_columns ) ) {
-				continue;
-			}
 			$conds = array();
 			foreach ( $text_columns as $col ) {
-				$conds[] = $this->esc_sql_ident( $col ) . $wpdb->prepare( ' LIKE BINARY %s', '%' . $wpdb->esc_like( $old ) . '%' );
+				if ( ! $this->search_replace_column_in_scope( $table, $col, $skip_columns, $include_columns ) ) {
+					continue;
+				}
+				$col_sql = $this->esc_sql_ident( $col );
+				$cond    = $col_sql . $wpdb->prepare( ' LIKE BINARY %s', '%' . $wpdb->esc_like( $old ) . '%' );
+				if ( $old_json !== $old ) {
+					$cond = '( ' . $cond . ' OR ' . $col_sql . $wpdb->prepare( ' LIKE BINARY %s', '%' . $wpdb->esc_like( $old_json ) . '%' ) . ' )';
+				}
+				$conds[] = $cond;
 			}
-			$sql = 'SELECT COUNT(*) FROM (SELECT 1 FROM ' . $this->esc_sql_ident( $table ) . ' WHERE ' . implode( ' OR ', $conds ) . ' LIMIT ' . ( $cap + 1 ) . ') AS subq';
+			if ( empty( $conds ) ) {
+				continue;
+			}
+			$where = implode( ' OR ', $conds );
+			$sql   = 'SELECT COUNT(*) FROM (SELECT 1 FROM ' . $this->esc_sql_ident( $table ) . ' WHERE ' . $where . ' LIMIT ' . ( $cap + 1 ) . ') AS subq';
 			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 			$n = $wpdb->get_var( $sql ); // nosemgrep: direct-db-query
 			if ( null === $n || ! empty( $wpdb->last_error ) ) {
@@ -825,12 +922,23 @@ trait WPVibe_CLI_Db {
 			}
 			$n = (int) $n;
 			if ( $n > 0 ) {
-				$counts[ $table ] = ( $n > $cap ) ? $cap . '+' : $n;
+				$counts[ $table ]         = ( $n > $cap ) ? $cap . '+' : $n;
+				$where_by_table[ $table ] = $where;
 			}
 		}
 
 		$preview['tables_in_scope']          = count( $tables );
 		$preview['matching_rows_per_table']  = $counts;
+		// Few posts rows and nothing else: name them, so the reviewer (and the
+		// Worker's nudge) can route the edit through content/edit instead.
+		$posts_table = $wpdb->prefix . 'posts';
+		if ( 0 === $not_previewed && 1 === count( $counts ) && isset( $counts[ $posts_table ] ) && is_int( $counts[ $posts_table ] ) && $counts[ $posts_table ] <= 3 ) {
+			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$ids = $wpdb->get_col( 'SELECT ID FROM ' . $this->esc_sql_ident( $posts_table ) . ' WHERE ' . $where_by_table[ $posts_table ] . ' LIMIT 4' ); // nosemgrep: direct-db-query
+			if ( is_array( $ids ) && ! empty( $ids ) && empty( $wpdb->last_error ) ) {
+				$preview['matching_post_ids'] = array_map( 'intval', array_slice( $ids, 0, 3 ) );
+			}
+		}
 		if ( $not_previewed > 0 ) {
 			/* translators: %d: table count */
 			$preview['preview_truncated'] = sprintf( __( '%d table(s) not scanned for the preview (time budget); they will still be processed on execution.', 'vibe-ai' ), $not_previewed );

@@ -27,6 +27,7 @@ require_once __DIR__ . '/cli/trait-wpvibe-cli-security.php';
 require_once __DIR__ . '/cli/trait-wpvibe-cli-plugin.php';
 require_once __DIR__ . '/cli/trait-wpvibe-cli-theme.php';
 require_once __DIR__ . '/cli/trait-wpvibe-cli-post.php';
+require_once __DIR__ . '/cli/trait-wpvibe-cli-comment.php';
 require_once __DIR__ . '/cli/trait-wpvibe-cli-option.php';
 require_once __DIR__ . '/cli/trait-wpvibe-cli-db.php';
 require_once __DIR__ . '/cli/trait-wpvibe-cli-cache.php';
@@ -43,6 +44,7 @@ class WPVibe_CLI {
 	use WPVibe_CLI_Plugin;
 	use WPVibe_CLI_Theme;
 	use WPVibe_CLI_Post;
+	use WPVibe_CLI_Comment;
 	use WPVibe_CLI_Option;
 	use WPVibe_CLI_Db;
 	use WPVibe_CLI_Cache;
@@ -54,6 +56,12 @@ class WPVibe_CLI {
 	/** Set when the Worker calls run_approved(); allows handlers to proceed past destructive gates. */
 	private $skip_destructive = false;
 	private $approved_state   = null;
+	/** Running out of band (WPVibe_Detached_Ops): no request deadline applies. */
+	private $detached = false;
+
+	public function set_detached( $on ) {
+		$this->detached = (bool) $on;
+	}
 
 	/** Resolved allowlist key of the command being dispatched (for handlers shared across aliases). */
 	private $current_command = '';
@@ -78,6 +86,14 @@ class WPVibe_CLI {
 		'media list'       => array( 'tier' => 'read', 'cap' => 'upload_files' ),
 		'comment list'     => array( 'tier' => 'read', 'cap' => 'moderate_comments' ),
 		'comment count'    => array( 'tier' => 'read', 'cap' => 'moderate_comments' ),
+		'comment create'   => array( 'tier' => 'write', 'cap' => 'moderate_comments' ),
+		'comment approve'  => array( 'tier' => 'write', 'cap' => 'moderate_comments' ),
+		'comment unapprove' => array( 'tier' => 'write', 'cap' => 'moderate_comments' ),
+		'comment spam'     => array( 'tier' => 'write', 'cap' => 'moderate_comments' ),
+		'comment unspam'   => array( 'tier' => 'write', 'cap' => 'moderate_comments' ),
+		'comment trash'    => array( 'tier' => 'write', 'cap' => 'moderate_comments' ),
+		'comment untrash'  => array( 'tier' => 'write', 'cap' => 'moderate_comments' ),
+		'comment delete'   => array( 'tier' => 'write', 'cap' => 'moderate_comments', 'bulk' => array( 'label' => 'comment' ) ),
 		'menu list'        => array( 'tier' => 'read', 'cap' => 'edit_theme_options' ),
 		'widget list'      => array( 'tier' => 'read', 'cap' => 'edit_theme_options' ),
 		'sidebar list'     => array( 'tier' => 'read', 'cap' => 'edit_theme_options' ),
@@ -89,6 +105,16 @@ class WPVibe_CLI {
 		'db prefix'        => array( 'tier' => 'read', 'cap' => 'manage_options' ),
 		'core version'     => array( 'tier' => 'read', 'cap' => 'manage_options' ),
 		'core check-update' => array( 'tier' => 'read', 'cap' => 'update_core' ),
+		// Auto-update enrollment is the same toggle wp-admin's Plugins screen
+		// offers; auto_update_plugins itself stays hard-blocked, this verb is
+		// the narrow door. Upstream requires update_plugins for all three.
+		'plugin auto-updates enable'  => array( 'tier' => 'write', 'cap' => 'update_plugins' ),
+		'plugin auto-updates disable' => array( 'tier' => 'write', 'cap' => 'update_plugins' ),
+		'plugin auto-updates status'  => array( 'tier' => 'read', 'cap' => 'update_plugins' ),
+		// Resolve before the blocked "core" base check, same as verify-checksums;
+		// core download/install/etc. stay refused via the base list.
+		'core update'    => array( 'tier' => 'write', 'cap' => 'update_core', 'check_file_mods' => true ),
+		'core update-db' => array( 'tier' => 'write', 'cap' => 'update_core' ),
 		// Checksum verification is read-only; listed here so it resolves before
 		// the blocked "core" base-command check in resolve_command().
 		'core verify-checksums'   => array( 'tier' => 'read', 'cap' => 'manage_options' ),
@@ -302,6 +328,7 @@ class WPVibe_CLI {
 	);
 
 	const BLOCKED_OPTIONS = array(
+		'wpvibe_op_proof_key',
 		'siteurl',
 		'home',
 		'admin_email',
@@ -379,6 +406,14 @@ class WPVibe_CLI {
 		'media list'        => 'handle_media_list',
 		'comment list'      => 'handle_comment_list',
 		'comment count'     => 'handle_comment_count',
+		'comment create'    => 'handle_comment_create',
+		'comment approve'   => 'handle_comment_approve',
+		'comment unapprove' => 'handle_comment_unapprove',
+		'comment spam'      => 'handle_comment_spam',
+		'comment unspam'    => 'handle_comment_unspam',
+		'comment trash'     => 'handle_comment_trash',
+		'comment untrash'   => 'handle_comment_untrash',
+		'comment delete'    => 'handle_comment_delete',
 		'menu list'         => 'handle_menu_list',
 		'widget list'       => 'handle_widget_list',
 		'sidebar list'      => 'handle_sidebar_list',
@@ -404,6 +439,11 @@ class WPVibe_CLI {
 		'db prefix'         => 'handle_db_prefix',
 		'core version'      => 'handle_core_version',
 		'core check-update' => 'handle_core_check_update',
+		'core update'       => 'handle_core_update',
+		'core update-db'    => 'handle_core_update_db',
+		'plugin auto-updates enable'  => 'handle_plugin_auto_updates_enable',
+		'plugin auto-updates disable' => 'handle_plugin_auto_updates_disable',
+		'plugin auto-updates status'  => 'handle_plugin_auto_updates_status',
 		'core verify-checksums'   => 'handle_core_verify_checksums',
 		'plugin verify-checksums' => 'handle_plugin_verify_checksums',
 		'plugin get'        => 'handle_plugin_status',
@@ -505,8 +545,8 @@ class WPVibe_CLI {
 		'option get'              => 'option get <key>',
 		'option pluck'            => 'option pluck <option> <key-path>... (read one nested key without fetching the whole option)',
 		'option list'             => 'option list [--search=<pattern>] [--autoload=<on|off>] [--transients] [--format=json|ids|count] (transients are excluded unless --transients; capped at 100 rows)',
-		'user list'               => 'user list [--role=<role>] [--number=<n>] [--format=json|ids|count] (defaults to 100 rows, max 1000)',
-		'post list'               => 'post list [--post_type=<type>] [--post_status=<status>] [--posts_per_page=<n>] [--s=<search>] [--author=<id>] [--year=<yyyy>] [--monthnum=<1-12>] [--format=json|ids|count] (defaults to 20 rows, max 100)',
+		'user list'               => 'user list [--role=<role>] [--number=<n>] [--paged=<n>|--offset=<n>] [--format=json|ids|count] (defaults to 100 rows, max 1000; page with --paged)',
+		'post list'               => 'post list [--post_type=<type>] [--post_status=<status>] [--posts_per_page=<n>] [--paged=<n>|--offset=<n>] [--s=<search>] [--author=<id>] [--year=<yyyy>] [--monthnum=<1-12>] [--format=json|ids|count] (defaults to 20 rows, max 100; page with --paged)',
 		'post get'                => 'post get <id> [--fields=<fields>]',
 		'post meta get'           => 'post meta get <id> [<key>] [--all]',
 		'post meta list'          => 'post meta list <id> [--all]',
@@ -516,8 +556,16 @@ class WPVibe_CLI {
 		'taxonomy list'           => 'taxonomy list [--public=<bool>]',
 		'term list'               => 'term list <taxonomy> [--number=<n>] [--search=<term>]',
 		'media list'              => 'media list [--post_mime_type=<type>] [--posts_per_page=<n>]',
-		'comment list'            => 'comment list [--status=<status>] [--post_id=<id>] [--number=<n>]',
+		'comment list'            => 'comment list [--status=approve|hold|spam|trash|all] [--post_id=<id>] [--number=<n>] [--offset=<n>] [--orderby=comment_date_gmt|comment_ID] [--order=ASC|DESC] [--comment__in=<ids>] [--format=json|ids|count] [--fields=<list>] (max 100 rows per call; use comment count for totals)',
 		'comment count'           => 'comment count [<post-id>]',
+		'comment create'          => 'comment create --comment_post_ID=<id> --comment_content=<text> [--comment_content_base64=<b64>] [--comment_parent=<id>] [--comment_author=<name>] [--comment_author_email=<email>] [--comment_approved=1|0] [--porcelain] (a reply is a create with --comment_parent; author defaults to the connected user; use base64 when content mixes quote types)',
+		'comment approve'         => 'comment approve <id> [<id>...]',
+		'comment unapprove'       => 'comment unapprove <id> [<id>...]',
+		'comment spam'            => 'comment spam <id> [<id>...]',
+		'comment unspam'          => 'comment unspam <id> [<id>...]',
+		'comment trash'           => 'comment trash <id> [<id>...]',
+		'comment untrash'         => 'comment untrash <id> [<id>...]',
+		'comment delete'          => 'comment delete <id> [<id>...] [--force] (without --force moves to trash; --force permanently deletes and needs approval; for more than ~25 comments, or to clear all spam, use start_fleet_job)',
 		'menu list'               => 'menu list',
 		'menu location list'      => 'menu location list',
 		'widget list'             => 'widget list',
@@ -530,6 +578,8 @@ class WPVibe_CLI {
 		'db prefix'               => 'db prefix',
 		'core version'            => 'core version [--extra]',
 		'core check-update'       => 'core check-update',
+		'core update'             => 'core update [--minor] [--version=<version>] (updates WordPress core; pauses for browser approval; downgrades and locales are not supported, use wp-admin > Updates for those)',
+		'core update-db'          => 'core update-db (runs the database upgrade routine after a core update)',
 		'core verify-checksums'   => 'core verify-checksums [--include-root] [--exclude=<files>] [--version=<version>] [--locale=<locale>]',
 		'post-type list'          => 'post-type list [--fields=<fields>]',
 		'post type list'          => 'post type list [--fields=<fields>]',
@@ -550,7 +600,10 @@ class WPVibe_CLI {
 		'plugin activate'         => 'plugin activate <slug>',
 		'plugin deactivate'       => 'plugin deactivate <slug>',
 		'plugin install'          => 'plugin install <slug> [--version=<version>] [--activate] [--force] (--force replaces an existing install, e.g. rollback to an older version; needs approval)',
-		'plugin update'           => 'plugin update <slug>... | --all [--exclude=<slugs>] [--dry-run]',
+		'plugin update'           => 'plugin update <slug>... | --all [--exclude=<slugs>] [--dry-run] [--expect-version=<version>] (expect-version is a WPVibe extension, single slug only: refuses if the available update is a different version; updating vibe-ai itself is scheduled out-of-band and reported as status: scheduled)',
+		'plugin auto-updates enable'  => 'plugin auto-updates enable <slug>... | --all [--disabled-only]',
+		'plugin auto-updates disable' => 'plugin auto-updates disable <slug>... | --all [--enabled-only]',
+		'plugin auto-updates status'  => 'plugin auto-updates status <slug>... | --all [--enabled-only] [--disabled-only] [--fields=<fields>] [--format=json]',
 		'plugin uninstall'        => 'plugin uninstall <slug> [<slug>...]',
 		'option update'           => 'option update <key> <value> [--format=json|plaintext] (values are plain strings; pass --format=json for arrays/objects)',
 		'option add'              => 'option add <key> <value> [--format=json|plaintext] [--autoload=<yes|no>]',
@@ -579,7 +632,7 @@ class WPVibe_CLI {
 		'cron event run'          => 'cron event run <hook> [<hook>...]',
 		'cron event delete'       => 'cron event delete <hook> [<hook>...]',
 		'theme install'           => 'theme install <slug> [--version=<version>] [--activate]',
-		'theme update'            => 'theme update <slug>',
+		'theme update'            => 'theme update <slug>... | --all [--exclude=<slugs>] [--dry-run] [--expect-version=<version>] (expect-version is a WPVibe extension, single slug only: refuses if the available update is a different version)',
 		'theme delete'            => 'theme delete <slug> [<slug>...]',
 		'cap add'                 => 'cap add <role> <cap>... [--grant=<true|false>]',
 		'cap remove'              => 'cap remove <role> <cap>...',
@@ -788,7 +841,11 @@ class WPVibe_CLI {
 		// (post-approval execution), we keep the classification so the audit
 		// log can record the dry-run preview alongside the result.
 		$destructive = $this->classify_destructive( $command_key, $meta, $args, $key_length );
-		if ( $destructive && ! $skip_destructive ) {
+		// An unapprovable target (identity tables via raw SQL) is refused here on
+		// both paths; minting an approval the executor would refuse only hands a
+		// human an approve button for something that can never run.
+		$refusal = $destructive && ! empty( $destructive['refuse'] ) ? $destructive['refuse'] : null;
+		if ( $destructive && ! $refusal && ! $skip_destructive ) {
 			return new WP_Error(
 				'approval_required',
 				$destructive['reason'],
@@ -805,7 +862,7 @@ class WPVibe_CLI {
 		// against a state snapshot; refuse if the site no longer matches it.
 		// Reuses the classification computed above — never classify twice, the
 		// dry-run builders run preview SQL.
-		if ( $skip_destructive ) {
+		if ( $skip_destructive && ! $refusal ) {
 			$drift = $this->check_approved_state_drift( $destructive );
 			if ( is_wp_error( $drift ) ) {
 				return $drift;
@@ -814,7 +871,7 @@ class WPVibe_CLI {
 
 		// Dispatch to native handler.
 		$start  = microtime( true );
-		$result = $this->dispatch( $args, $key_length, $command_key, $confirm_write );
+		$result  = $refusal ? $refusal : $this->dispatch( $args, $key_length, $command_key, $confirm_write );
 		$elapsed = (int) ( ( microtime( true ) - $start ) * 1000 );
 
 		if ( is_wp_error( $result ) ) {
@@ -823,14 +880,20 @@ class WPVibe_CLI {
 
 		// Append-only audit log for destructive operations. Only writes on the
 		// run_approved path so the audit log records actually-executed destructive
-		// ops, not every command. Failures are swallowed inside log_execution.
+		// ops, not every command. Refusals of unapprovable targets are logged
+		// too: a repeated attempt to write wp_users through the approved
+		// endpoint is exactly the trail an operator needs, and leaving it out
+		// would make an escalation attempt invisible. Failures are swallowed
+		// inside log_execution.
 		if ( $this->skip_destructive && $destructive && empty( $result['requires_confirmation'] ) ) {
 			WPVibe_Audit_Log::log_execution( array(
 				'operation'      => $destructive['operation'],
 				'command'        => 'wp ' . $command_key,
 				'params'         => array( 'positional' => $this->redact_sensitive_flags( $args ), 'key_length' => $key_length ),
 				'dry_run'        => $destructive['dry_run'],
-				'result_summary' => isset( $result['stdout'] ) ? mb_substr( (string) $result['stdout'], 0, 500 ) : '',
+				'result_summary' => $refusal
+					? 'REFUSED: ' . mb_substr( (string) ( $result['stderr'] ?? '' ), 0, 480 )
+					: ( isset( $result['stdout'] ) ? mb_substr( (string) $result['stdout'], 0, 500 ) : '' ),
 			) );
 		}
 
