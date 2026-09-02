@@ -160,6 +160,11 @@ trait WPVibe_CLI_Comment {
 		if ( '' === trim( wp_unslash( $content ) ) ) {
 			return $this->error_result( __( 'Comment content required (--comment_content or --comment_content_base64).', 'vibe-ai' ) );
 		}
+		// wp_insert_comment skips the kses pipeline core runs for comment authors
+		// who lack unfiltered_html (multisite non-super-admins, DISALLOW_UNFILTERED_HTML).
+		if ( ! current_user_can( 'unfiltered_html' ) ) {
+			$content = wp_slash( wp_kses_data( wp_unslash( $content ) ) );
+		}
 
 		$approved = '1';
 		if ( isset( $flags['comment_approved'] ) ) {

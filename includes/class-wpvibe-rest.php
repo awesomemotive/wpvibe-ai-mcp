@@ -1440,11 +1440,30 @@ class WPVibe_REST {
 	// Rendered HTML (localhost fallback for get_page_html)
 	// ------------------------------------------------------------------
 
+	/**
+	 * Absolute URL for the front-end fetch, built from the raw home option.
+	 * home_url() runs the home_url filter, which multilingual plugins (WPML,
+	 * Polylang) use to rewrite the path into the REST request's language, so
+	 * a /de/ path could come back as the default-language page.
+	 *
+	 * @param string $path Path plus optional query string, as the Worker sent it.
+	 * @return string
+	 */
+	public static function loopback_url( $path ) {
+		$home = untrailingslashit( (string) get_option( 'home' ) );
+		if ( '' === $home ) {
+			return home_url( $path );
+		}
+		if ( is_ssl() ) {
+			$home = set_url_scheme( $home, 'https' );
+		}
+		return $home . '/' . ltrim( (string) $path, '/' );
+	}
+
 	public function get_rendered_html( $request ) {
 		$path = sanitize_text_field( $request->get_param( 'path' ) ?: '/' );
 
-		// Build the full URL including any preview token.
-		$url = home_url( $path );
+		$url   = self::loopback_url( $path );
 		$token = get_option( 'wpvibe_preview_token' );
 		if ( $token ) {
 			$url = add_query_arg( 'wpvibe_preview', $token, $url );
@@ -1470,6 +1489,62 @@ class WPVibe_REST {
 	// ------------------------------------------------------------------
 	// Media Upload
 	// ------------------------------------------------------------------
+
+	/**
+	 * Mirror the file-type gate in core's _wp_handle_upload() before the
+	 * sideload so a denial reports as one instead of as a filesystem failure.
+	 *
+	 * @param string $tmp                   Downloaded temp file.
+	 * @param string $filename              Filename the sideload will use.
+	 * @param bool   $can_unfiltered_upload Whether the user holds unfiltered_upload.
+	 * @return WP_Error|null
+	 */
+	public static function check_sideload_file( $tmp, $filename, $can_unfiltered_upload ) {
+		$size = is_file( $tmp ) ? (int) filesize( $tmp ) : 0;
+		if ( $size <= 0 ) {
+			return new WP_Error(
+				'empty_file',
+				__( 'The URL returned an empty file (0 bytes), so there is nothing to add to the Media Library. Check that the URL points directly at the image file rather than an HTML page, a login redirect, or a hotlink-protected asset.', 'vibe-ai' ),
+				WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) )
+			);
+		}
+		if ( $can_unfiltered_upload ) {
+			return null;
+		}
+		$check = wp_check_filetype_and_ext( $tmp, $filename );
+		if ( empty( $check['type'] ) || empty( $check['ext'] ) ) {
+			$ext = strtolower( (string) pathinfo( $filename, PATHINFO_EXTENSION ) );
+			return new WP_Error(
+				'invalid_file_type',
+				sprintf(
+					/* translators: %s: file extension */
+					__( 'WordPress does not allow uploading this file type (.%s) on this site. The allowed list is site policy, set by the upload_mimes filter (a file-type plugin or theme code, or Network Settings > Upload Settings on multisite); it is not a permissions or storage problem. Use a standard image format (jpg, png, gif, webp) or ask a site administrator to permit the type.', 'vibe-ai' ),
+					'' !== $ext ? $ext : '?'
+				),
+				WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 415 ) )
+			);
+		}
+		return null;
+	}
+
+	/**
+	 * Wrap a media_handle_sideload() failure that passed the type gate: what is
+	 * left is the move/write/directory family, so the filesystem cause holds.
+	 *
+	 * @param WP_Error $inner
+	 * @return WP_Error
+	 */
+	public static function sideload_failure_error( $inner ) {
+		return new WP_Error(
+			'upload_failed',
+			sprintf(
+				/* translators: %s: error message */
+				__( 'Failed to upload image: %s', 'vibe-ai' ),
+				$inner->get_error_message()
+			),
+			WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500, 'inner_code' => (string) $inner->get_error_code() ) )
+		);
+	}
 
 	/**
 	 * Download an image from a URL and add it to the WordPress media library.
@@ -1561,6 +1636,12 @@ class WPVibe_REST {
 		}
 		$filename = self::ensure_image_extension( $filename, $detected_mime, current_user_can( 'manage_options' ) );
 
+		$rejection = self::check_sideload_file( $tmp, $filename, current_user_can( 'unfiltered_upload' ) );
+		if ( is_wp_error( $rejection ) ) {
+			wp_delete_file( $tmp );
+			return $rejection;
+		}
+
 		$file_array = array(
 			'name'     => $filename,
 			'tmp_name' => $tmp,
@@ -1572,15 +1653,7 @@ class WPVibe_REST {
 		// Clean up temp file if sideload failed.
 		if ( is_wp_error( $attachment_id ) ) {
 			wp_delete_file( $tmp );
-			return new WP_Error(
-				'upload_failed',
-				sprintf(
-					/* translators: %s: error message */
-					__( 'Failed to upload image: %s', 'vibe-ai' ),
-					$attachment_id->get_error_message()
-				),
-				WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) )
-			);
+			return self::sideload_failure_error( $attachment_id );
 		}
 
 		// Set alt text if provided.

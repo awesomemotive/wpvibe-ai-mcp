@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WPVibe – Connect Your Site to Claude, ChatGPT & AI Assistants
  * Description: Connect any AI assistant to your WordPress site. Manage content, edit themes, and automate site tasks with Claude, ChatGPT, Cursor & more via MCP.
- * Version: 1.16.0
+ * Version: 1.16.1
  * Author: SeedProd
  * Author URI: https://wpvibe.ai
  * License: GPL-2.0-or-later
@@ -14,7 +14,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WPVIBE_VERSION', '1.16.0' );
+define( 'WPVIBE_VERSION', '1.16.1' );
 define( 'WPVIBE_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'WPVIBE_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 define( 'WPVIBE_PLUGIN_BASENAME', plugin_basename( __FILE__ ) );
@@ -45,6 +45,7 @@ require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-admin.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-dashboard-widget.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-ping.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-review-notice.php';
+require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-uninstall-notice.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-audit-log.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-op-receipts.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-op-proof.php';
@@ -162,6 +163,7 @@ function wpvibe_init() {
 		WPVibe_Meta_Boxes::instance();
 		WPVibe_Settings::instance();
 		WPVibe_Post_Sidebar::instance();
+		WPVibe_Uninstall_Notice::instance();
 		// Review-request nudge is paused for now — feature lives in the MCP layer instead.
 		// Uncomment to re-enable the in-plugin admin notice; class + assets remain intact.
 		// WPVibe_Review_Notice::instance();
