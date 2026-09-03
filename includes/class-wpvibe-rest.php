@@ -888,15 +888,23 @@ class WPVibe_REST {
 	}
 
 	/**
-	 * Read theme files — edit_themes capability.
-	 * Same capability WordPress requires for the Theme File Editor.
+	 * Read theme files.
+	 *
+	 * edit_themes normally, as the Theme File Editor requires. The file-editor
+	 * lock constants strip that capability from every role, but they disable a
+	 * write surface: reading theme files is what the same admins do over SFTP,
+	 * so a locked site admits reads on edit_theme_options instead. Writes and
+	 * draft creation stay behind can_edit_themes and the constants.
 	 */
 	public function can_read_themes() {
-		$locked = $this->file_lock_error();
-		if ( $locked ) {
-			return $locked;
+		if ( current_user_can( 'edit_themes' ) ) {
+			return true;
 		}
-		return current_user_can( 'edit_themes' ) ? true : $this->missing_capability_error( 'edit_themes' );
+		// Core keeps edit_themes for super admins on multisite; a subsite admin never had theme source and the lock must not grant it.
+		if ( $this->file_lock_error() && ( ! is_multisite() || is_super_admin() ) ) {
+			return current_user_can( 'edit_theme_options' ) ? true : $this->missing_capability_error( 'edit_theme_options' );
+		}
+		return $this->missing_capability_error( 'edit_themes' );
 	}
 
 	/**
@@ -1014,10 +1022,10 @@ class WPVibe_REST {
 		// An admin approving a new connection in the browser is the only event
 		// that may drop the proof key; the Worker owning the new credential
 		// provisions its own on first contact.
-		if ( current_user_can( 'manage_options' ) ) {
-			WPVibe_Op_Proof::reset();
-		}
 		list( $password, $item ) = $created;
+		if ( current_user_can( 'manage_options' ) ) {
+			WPVibe_Op_Proof::reset( isset( $item['uuid'] ) ? (string) $item['uuid'] : '' );
+		}
 		return rest_ensure_response( array(
 			'password' => $password,
 			'uuid'     => isset( $item['uuid'] ) ? $item['uuid'] : '',

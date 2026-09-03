@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.16.2] - 2026-09-03
+- Fix: on sites that lock the file editor (DISALLOW_FILE_EDIT or DISALLOW_FILE_MODS), the read-only theme tools work again: listing files, reading a file, previews, and page HTML. Reads come from the draft theme when one exists and otherwise from the active theme, so a site can be inspected before an edit is proposed. Writes and draft creation stay locked.
+- Improvement: the reminder that deactivating or deleting WPVibe does not disconnect the site has moved off the Plugins screen and onto the WPVibe settings page, shown once the site is connected. The confirm on Deactivate stays.
+- Hardening: once a site has a proof key, the routes that require one refuse a request without it instead of falling back to plain authentication, including the window between a reconnect and the first signed call.
+- Hardening: after a reconnect, only the application password that reconnect created can register the next proof key, so a credential entered by hand cannot seed one.
+- Hardening: the proof-key options are blocked from `option get`, `option update`, and `option delete`.
+
 ## [1.16.1] - 2026-09-02
 - Fix: uploading a file type WordPress does not allow (or an empty file) now says so, with the extension and where to allow it, instead of reporting a filesystem error that sent people checking folder permissions.
 - Fix: reading a translated page's HTML on a WPML site with language directories now returns that language's page instead of the default one.

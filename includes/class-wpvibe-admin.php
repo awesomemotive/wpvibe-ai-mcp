@@ -310,6 +310,10 @@ class WPVibe_Admin {
 					</form>
 				</div>
 
+				<?php if ( $connected ) : ?>
+					<?php echo WPVibe_Uninstall_Notice::settings_html(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped piecewise in settings_html(). ?>
+				<?php endif; ?>
+
 				<!-- Footer links -->
 				<div class="wpvibe-footer">
 					<a href="<?php echo esc_url( $footer_home ); ?>" target="_blank" rel="noopener"><?php esc_html_e( 'wpvibe.ai', 'vibe-ai' ); ?></a>

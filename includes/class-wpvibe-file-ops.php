@@ -46,13 +46,38 @@ class WPVibe_File_Ops {
 	}
 
 	/**
+	 * Where reads come from: the draft when one exists, else the active theme.
+	 *
+	 * Reads never mutate, so a site with no draft (or one locked against file
+	 * editing) can still be inspected before an edit is proposed.
+	 *
+	 * @return array{dir:string,scope:string,theme:string}
+	 */
+	private function get_read_dir() {
+		$draft_slug = get_option( 'wpvibe_draft_theme' );
+		if ( $draft_slug && is_dir( get_theme_root() . '/' . $draft_slug ) ) {
+			return array( 'dir' => get_theme_root() . '/' . $draft_slug, 'scope' => 'draft', 'theme' => $draft_slug, 'editable' => $this->file_editing_allowed() );
+		}
+		$live = get_stylesheet_directory();
+		if ( ! is_dir( $live ) ) {
+			return new WP_Error( 'theme_missing', __( 'The active theme directory does not exist on disk.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
+		}
+		return array( 'dir' => $live, 'scope' => 'live', 'theme' => get_stylesheet(), 'editable' => $this->file_editing_allowed() );
+	}
+
+	/** Whether theme files can be edited here at all (the file-editor lock constants). */
+	private function file_editing_allowed() {
+		return ! ( defined( 'DISALLOW_FILE_EDIT' ) && DISALLOW_FILE_EDIT ) && ! ( defined( 'DISALLOW_FILE_MODS' ) && DISALLOW_FILE_MODS );
+	}
+
+	/**
 	 * Resolve and validate a file path within the draft theme.
 	 *
 	 * @param string $relative_path Relative path within the theme.
 	 * @return string|WP_Error Absolute path or error.
 	 */
-	private function resolve_path( $relative_path ) {
-		$draft_dir = $this->get_draft_dir();
+	private function resolve_path( $relative_path, $base_dir = null ) {
+		$draft_dir = null === $base_dir ? $this->get_draft_dir() : $base_dir;
 		if ( is_wp_error( $draft_dir ) ) {
 			return $draft_dir;
 		}
@@ -62,7 +87,11 @@ class WPVibe_File_Ops {
 			return new WP_Error( 'path_traversal', __( 'Path traversal is not allowed.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'security_gate', false, array( 'status' => 403 ) ) );
 		}
 
-		$full_path = realpath( $draft_dir ) . '/' . ltrim( $relative_path, '/' );
+		$base = realpath( $draft_dir );
+		if ( false === $base ) {
+			return new WP_Error( 'path_traversal', __( 'The theme directory could not be resolved.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'security_gate', false, array( 'status' => 403 ) ) );
+		}
+		$full_path = $base . '/' . ltrim( $relative_path, '/' );
 
 		// Walk up to the nearest existing ancestor; new subdirs (e.g. dist/) are
 		// created later by write(), but realpath() needs an extant path here.
@@ -71,8 +100,15 @@ class WPVibe_File_Ops {
 			$probe = dirname( $probe );
 		}
 		$real = realpath( $probe );
-		if ( false === $real || strpos( $real, realpath( $draft_dir ) ) !== 0 ) {
+		if ( false === $real || ( $real !== $base && strpos( $real, $base . '/' ) !== 0 ) ) {
 			return new WP_Error( 'path_traversal', __( 'Resolved path is outside the draft theme.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'security_gate', false, array( 'status' => 403 ) ) );
+		}
+		// The directory walk above cannot see a symlinked file; the file itself must resolve inside too.
+		if ( file_exists( $full_path ) ) {
+			$real_file = realpath( $full_path );
+			if ( false === $real_file || ( $real_file !== $base && strpos( $real_file, $base . '/' ) !== 0 ) ) {
+				return new WP_Error( 'path_traversal', __( 'Resolved path is outside the draft theme.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'security_gate', false, array( 'status' => 403 ) ) );
+			}
 		}
 
 		return $full_path;
@@ -153,7 +189,11 @@ class WPVibe_File_Ops {
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public function read( $path, $start_line = null, $end_line = null ) {
-		$full_path = $this->resolve_path( $path );
+		$source = $this->get_read_dir();
+		if ( is_wp_error( $source ) ) {
+			return $source;
+		}
+		$full_path = $this->resolve_path( $path, $source['dir'] );
 		if ( is_wp_error( $full_path ) ) {
 			return $full_path;
 		}
@@ -186,6 +226,9 @@ class WPVibe_File_Ops {
 				'start_line' => $start + 1,
 				'end_line'   => $start + count( $slice ),
 				'total_lines' => $total,
+				'scope'      => $source['scope'],
+				'theme'      => $source['theme'],
+			'editable'   => $source['editable'],
 			) );
 		}
 
@@ -193,6 +236,9 @@ class WPVibe_File_Ops {
 			'path'        => $path,
 			'content'     => $content,
 			'total_lines' => substr_count( $content, "\n" ) + 1,
+			'scope'       => $source['scope'],
+			'theme'       => $source['theme'],
+			'editable'    => $source['editable'],
 		) );
 	}
 
@@ -421,12 +467,13 @@ class WPVibe_File_Ops {
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public function list_files( $pattern = null ) {
-		$draft_dir = $this->get_draft_dir();
-		if ( is_wp_error( $draft_dir ) ) {
-			return $draft_dir;
+		$source = $this->get_read_dir();
+		if ( is_wp_error( $source ) ) {
+			return $source;
 		}
+		$draft_dir = $source['dir'];
 
-		$draft_slug = get_option( 'wpvibe_draft_theme' );
+		$draft_slug  = 'draft' === $source['scope'] ? $source['theme'] : null;
 		$max_entries = 5000;
 		$files       = array();
 		$truncated   = false;
@@ -468,6 +515,9 @@ class WPVibe_File_Ops {
 
 		return rest_ensure_response( array(
 			'draft_slug'  => $draft_slug,
+			'scope'       => $source['scope'],
+			'theme'       => $source['theme'],
+			'editable'    => $source['editable'],
 			'files'       => $files,
 			'total_files' => $file_count,
 			'truncated'   => $truncated,
@@ -484,10 +534,11 @@ class WPVibe_File_Ops {
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public function search_files( $pattern, $case_sensitive = false, $extensions = null, $max_results = 100 ) {
-		$draft_dir = $this->get_draft_dir();
-		if ( is_wp_error( $draft_dir ) ) {
-			return $draft_dir;
+		$source = $this->get_read_dir();
+		if ( is_wp_error( $source ) ) {
+			return $source;
 		}
+		$draft_dir = $source['dir'];
 
 		if ( empty( $pattern ) ) {
 			return new WP_Error( 'empty_pattern', __( 'Search pattern cannot be empty.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
@@ -558,6 +609,9 @@ class WPVibe_File_Ops {
 
 		return rest_ensure_response( array(
 			'pattern'        => $pattern,
+			'scope'          => $source['scope'],
+			'theme'          => $source['theme'],
+			'editable'       => $source['editable'],
 			'matches'        => $matches,
 			'total_matches'  => count( $matches ),
 			'files_searched' => $files_searched,
@@ -572,7 +626,11 @@ class WPVibe_File_Ops {
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public function outline( $path ) {
-		$full_path = $this->resolve_path( $path );
+		$source = $this->get_read_dir();
+		if ( is_wp_error( $source ) ) {
+			return $source;
+		}
+		$full_path = $this->resolve_path( $path, $source['dir'] );
 		if ( is_wp_error( $full_path ) ) {
 			return $full_path;
 		}
@@ -705,6 +763,9 @@ class WPVibe_File_Ops {
 			'type'        => $ext,
 			'total_lines' => $total_lines,
 			'outline'     => $outline,
+			'scope'       => $source['scope'],
+			'theme'       => $source['theme'],
+			'editable'    => $source['editable'],
 		) );
 	}
 }

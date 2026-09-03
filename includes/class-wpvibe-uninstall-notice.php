@@ -1,13 +1,13 @@
 <?php
 /**
- * Plugins-screen reminder that removing the plugin does not disconnect the site.
+ * Reminder that removing the plugin does not disconnect the site.
  *
  * Deactivating or deleting WPVibe leaves the WordPress Application Password
  * and the connection at mcp.wpvibe.ai in place: a connected site keeps
- * answering over core REST without the plugin. WordPress runs uninstall.php
- * only after Delete has been confirmed, so the reminder lives on plugins.php,
- * as a row under the plugin plus a confirm on its Delete link. Nothing here
- * revokes anything or contacts WPVibe.
+ * answering over core REST without the plugin. The reminder lives in two
+ * places: a confirm on the Deactivate link (the last moment the plugin can
+ * speak) and a section on the WPVibe settings page. Nothing here revokes
+ * anything or contacts WPVibe.
  *
  * @package WPVibe
  */
@@ -29,7 +29,6 @@ class WPVibe_Uninstall_Notice {
 	}
 
 	private function __construct() {
-		add_action( 'after_plugin_row_' . WPVIBE_PLUGIN_BASENAME, array( $this, 'render_plugin_row' ), 10, 1 );
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_confirm' ) );
 	}
 
@@ -57,26 +56,15 @@ class WPVibe_Uninstall_Notice {
 		return __( 'Deactivating or deleting WPVibe does not disconnect this site and does not revoke the WordPress Application Password it uses; connected AI assistants keep reaching the site through the WordPress REST API. To cut access, do both: revoke the WPVibe Application Password under Users > Profile > Application Passwords, and remove this site from your WPVibe account.', 'vibe-ai' );
 	}
 
-	public static function row_html() {
-		global $wp_list_table;
-		$colspan = ( is_object( $wp_list_table ) && method_exists( $wp_list_table, 'get_column_count' ) ) ? (int) $wp_list_table->get_column_count() : 4;
-		$active  = function_exists( 'is_plugin_active' ) && is_plugin_active( WPVIBE_PLUGIN_BASENAME ) ? ' active' : '';
-
+	public static function settings_html() {
 		$profile = '<a href="' . esc_url( admin_url( 'profile.php#application-passwords-section' ) ) . '">' . esc_html__( 'Revoke the Application Password', 'vibe-ai' ) . '</a>';
 		$account = '<a href="' . esc_url( self::ACCOUNT_URL ) . '" target="_blank" rel="noopener">' . esc_html__( 'Remove the site at mcp.wpvibe.ai', 'vibe-ai' ) . '</a>';
 
-		return '<tr class="plugin-update-tr wpvibe-uninstall-notice' . $active . '" data-slug="vibe-ai">'
-			. '<td colspan="' . $colspan . '" class="plugin-update colspanchange">'
-			. '<div class="notice inline notice-warning notice-alt"><p>'
-			. esc_html( self::message() ) . ' ' . $profile . ' &middot; ' . $account
-			. '</p></div></td></tr>';
-	}
-
-	public function render_plugin_row( $plugin_file ) {
-		if ( WPVIBE_PLUGIN_BASENAME !== $plugin_file || ! self::should_show() ) {
-			return;
-		}
-		echo self::row_html(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped piecewise in row_html().
+		return '<div class="wpvibe-disconnect">'
+			. '<strong>' . esc_html__( 'Disconnecting this site', 'vibe-ai' ) . '</strong>'
+			. '<p>' . esc_html( self::message() ) . '</p>'
+			. '<p class="wpvibe-disconnect-links">' . $profile . ' &middot; ' . $account . '</p>'
+			. '</div>';
 	}
 
 	/**

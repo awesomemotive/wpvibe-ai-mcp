@@ -329,6 +329,8 @@ class WPVibe_CLI {
 
 	const BLOCKED_OPTIONS = array(
 		'wpvibe_op_proof_key',
+		'wpvibe_op_proof_required',
+		'wpvibe_op_proof_minter',
 		'siteurl',
 		'home',
 		'admin_email',
