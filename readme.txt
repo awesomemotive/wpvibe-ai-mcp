@@ -4,7 +4,7 @@ Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.16.2
+Stable tag: 1.16.3
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -219,6 +219,9 @@ Yes. Connected sites are unlimited on every plan, including the free plan. Conne
 No. WPVibe lets you manage your WordPress site entirely through conversation with your AI assistant. No coding required for content management. Theme editing is also conversational, your AI writes the code for your WordPress theme.
 
 == Changelog ==
+
+= 1.16.3 =
+* Fix: sites on XSERVER with the WAF "Command" rule enabled can connect again. That rule blocks any URL containing "ping", which was the name of the route WPVibe checks before connecting. The check now also answers at /wpvibe/v1/health, and the plugin's own self-update loopback moved off that word too. The /ping route stays for older connections.
 
 = 1.16.2 =
 * Fix: on sites that lock the file editor (DISALLOW_FILE_EDIT or DISALLOW_FILE_MODS), the read-only theme tools work again: listing files, reading a file, previews, and page HTML. Reads come from the draft theme when one exists and otherwise from the active theme, so a site can be inspected before an edit is proposed. Writes and draft creation stay locked.

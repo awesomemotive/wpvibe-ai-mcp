@@ -1,5 +1,8 @@
 # Changelog
 
+## [1.16.3] - 2026-09-04
+- Fix: sites on XSERVER with the WAF "Command" rule enabled can connect again. That rule blocks any URL containing "ping", which was the name of the route WPVibe checks before connecting. The check now also answers at /wpvibe/v1/health, and the plugin's own self-update loopback moved off that word too. The /ping route stays for older connections.
+
 ## [1.16.2] - 2026-09-03
 - Fix: on sites that lock the file editor (DISALLOW_FILE_EDIT or DISALLOW_FILE_MODS), the read-only theme tools work again: listing files, reading a file, previews, and page HTML. Reads come from the draft theme when one exists and otherwise from the active theme, so a site can be inspected before an edit is proposed. Writes and draft creation stay locked.
 - Improvement: the reminder that deactivating or deleting WPVibe does not disconnect the site has moved off the Plugins screen and onto the WPVibe settings page, shown once the site is connected. The confirm on Deactivate stays.

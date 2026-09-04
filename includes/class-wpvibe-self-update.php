@@ -54,10 +54,10 @@ class WPVibe_Self_Update {
 	}
 
 	public function register_routes() {
-		// Registered here, not in class-wpvibe-rest.php's authed block: /ping is
+		// Registered here, not in class-wpvibe-rest.php's authed block: /health is
 		// the loopback probe (must answer without auth), and /run's auth is the
 		// one-time token, not an application password.
-		register_rest_route( 'wpvibe/v1', '/self-update/ping', array(
+		register_rest_route( 'wpvibe/v1', '/self-update/health', array(
 			'methods'             => 'GET',
 			'callback'            => array( $this, 'handle_ping_endpoint' ),
 			'permission_callback' => '__return_true',
@@ -133,7 +133,7 @@ class WPVibe_Self_Update {
 
 		// DISABLE_WP_CRON: prove the site can reach its own REST API before
 		// promising an out-of-band run (probing wp-cron.php proves nothing here).
-		$probe = wp_remote_get( rest_url( 'wpvibe/v1/self-update/ping' ), array(
+		$probe = wp_remote_get( rest_url( 'wpvibe/v1/self-update/health' ), array(
 			'timeout'   => 10,
 			'sslverify' => apply_filters( 'https_local_ssl_verify', false ),
 		) );

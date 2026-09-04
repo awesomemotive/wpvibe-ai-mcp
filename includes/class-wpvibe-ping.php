@@ -30,12 +30,15 @@ class WPVibe_Ping {
 	}
 
 	public function register_route() {
-		register_rest_route( 'wpvibe/v1', '/ping', array(
-			'methods'             => 'GET',
-			'callback'            => array( $this, 'ping' ),
-			'permission_callback' => '__return_true',
-			'args'                => array(),
-		) );
+		// XSERVER's Command WAF 501s any URL containing "ping"; /health is the same payload under a name off that list.
+		foreach ( array( '/ping', '/health' ) as $route ) {
+			register_rest_route( 'wpvibe/v1', $route, array(
+				'methods'             => 'GET',
+				'callback'            => array( $this, 'ping' ),
+				'permission_callback' => '__return_true',
+				'args'                => array(),
+			) );
+		}
 	}
 
 	/**

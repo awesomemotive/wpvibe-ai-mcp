@@ -97,7 +97,7 @@ class WPVibe_Detached_Ops {
 				spawn_cron();
 			}
 		} else {
-			$probe = wp_remote_get( rest_url( 'wpvibe/v1/self-update/ping' ), array(
+			$probe = wp_remote_get( rest_url( 'wpvibe/v1/self-update/health' ), array(
 				'timeout'   => 10,
 				'sslverify' => apply_filters( 'https_local_ssl_verify', false ),
 			) );
