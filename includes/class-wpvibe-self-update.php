@@ -6,11 +6,12 @@
  * process doing the swap is also the transport serving the request, and our
  * own code keeps running after the swap (CLI result, REST serialization,
  * audit log), so anything dying in that tail is an opaque 500 with no way to
- * know whether the update landed. This class mirrors core's own model
- * instead: the CLI handler only writes a state option and schedules a
- * one-shot job (WP-Cron, or a token-authenticated loopback when cron is
- * disabled); a throwaway process runs the upgrade and records the outcome in
- * the state option, which the Worker polls.
+ * know whether the update landed. The CLI handler only writes a state
+ * option and hands the upgrade off: the same process runs it after releasing
+ * the connection (fastcgi_finish_request or its LiteSpeed twin), or the site
+ * posts a one-time token to itself. WP-Cron is never used (it does not fire
+ * on some hosts); the legacy hook only serves events an older version left
+ * queued. The outcome lands in the state option, which the Worker polls.
  *
  * It also owns the one shared read/write helper for the auto_update_plugins
  * SITE option, so the CLI verb and the white-label enrollment cannot drift
@@ -21,7 +22,10 @@ defined( 'ABSPATH' ) || exit;
 
 class WPVibe_Self_Update {
 
+	use WPVibe_Request_Detach;
+
 	const OPTION    = 'wpvibe_self_update_state';
+	/** Legacy (1.16.0-1.16.3) cron hook; only events those versions queued still arrive here. */
 	const CRON_HOOK = 'wpvibe_self_update';
 
 	/** Seconds a loopback token stays redeemable. */
@@ -119,52 +123,50 @@ class WPVibe_Self_Update {
 			$new['expect_version'] = (string) $expect_version;
 		}
 
-		if ( ! $this->cron_disabled() ) {
-			$new['method'] = 'cron';
+		if ( null !== $this->finish_request_function() ) {
+			$new['method'] = 'request';
 			update_option( self::OPTION, $new, false );
-			wp_schedule_single_event( time(), self::CRON_HOOK );
-			if ( function_exists( 'spawn_cron' ) ) {
-				// Even if this loopback fails, a system cron or the next visitor
-				// runs the event; the Worker's poll covers the wait.
-				spawn_cron();
-			}
+			add_filter( 'rest_pre_serve_request', function ( $served, $result ) {
+				if ( $served ) {
+					return $served;
+				}
+				$this->release_response( $result );
+				if ( function_exists( 'set_time_limit' ) ) {
+					@set_time_limit( 300 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+				}
+				$state = get_option( self::OPTION, array() );
+				if ( is_array( $state ) && 'scheduled' === ( $state['status'] ?? '' ) && 'request' === ( $state['method'] ?? '' ) ) {
+					$this->begin_running( $state );
+					$this->run_self_update( $state );
+				}
+				return true;
+			}, 0, 2 );
 			return $new;
 		}
 
-		// DISABLE_WP_CRON: prove the site can reach its own REST API before
-		// promising an out-of-band run (probing wp-cron.php proves nothing here).
-		$probe = wp_remote_get( rest_url( 'wpvibe/v1/self-update/health' ), array(
-			'timeout'   => 10,
-			'sslverify' => apply_filters( 'https_local_ssl_verify', false ),
-		) );
-		$code  = is_wp_error( $probe ) ? 0 : (int) wp_remote_retrieve_response_code( $probe );
-		if ( $code < 200 || $code >= 300 ) {
+		if ( ! $this->probe_loopback() ) {
 			return new WP_Error(
 				'wpvibe_self_update_unreachable',
-				__( 'WPVibe cannot update itself on this site right now: WP-Cron is disabled (DISABLE_WP_CRON) and the site cannot reach its own REST API for a loopback run. Update it from the Plugins screen in wp-admin, or run `plugin auto-updates enable vibe-ai` so WordPress keeps it current automatically.', 'vibe-ai' )
+				__( 'WPVibe cannot update itself on this site right now: PHP cannot release the connection early here and the site cannot reach its own REST API for a loopback run. Update it from the Plugins screen in wp-admin, or run `plugin auto-updates enable vibe-ai` so WordPress keeps it current automatically.', 'vibe-ai' )
 			);
 		}
 
-		$raw                = bin2hex( random_bytes( 32 ) );
-		$new['method']      = 'loopback';
-		$new['token_hash']  = hash( 'sha256', $raw );
+		$raw               = bin2hex( random_bytes( 32 ) );
+		$new['method']     = 'loopback';
+		$new['token_hash'] = hash( 'sha256', $raw );
 		update_option( self::OPTION, $new, false );
-		wp_remote_post( rest_url( 'wpvibe/v1/self-update/run' ), array(
-			'blocking'  => false,
-			'timeout'   => 2,
-			'sslverify' => apply_filters( 'https_local_ssl_verify', false ),
-			'body'      => array( 'token' => $raw ),
-		) );
+		$this->post_loopback( 'wpvibe/v1/self-update/run', array( 'token' => $raw ) );
 		return $new;
 	}
 
-	protected function cron_disabled() {
-		return defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON;
-	}
-
+	/** Legacy delivery of an event a 1.16.0-1.16.3 install queued: fresh ones still run, stale ones expire. */
 	public function run_self_update_cron() {
 		$state = get_option( self::OPTION, array() );
 		if ( ! is_array( $state ) || 'scheduled' !== ( $state['status'] ?? '' ) ) {
+			return;
+		}
+		if ( ( time() - (int) ( $state['scheduled_at'] ?? 0 ) ) >= self::STALE_AFTER ) {
+			$this->finish_failed( (string) ( $state['from_version'] ?? '' ), (string) ( $state['to_version'] ?? '' ), __( 'The update was queued for WP-Cron by an earlier plugin version and expired before it ran; nothing changed. Run `plugin update vibe-ai` again.', 'vibe-ai' ), false );
 			return;
 		}
 		$this->begin_running( $state );

@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.16.4] - 2026-09-05
+- Fix: approved long-running commands (a live `search-replace`, mutating `db query`) no longer depend on WP-Cron to run in the background. On some hosts WP-Cron never fires, so from 1.16.0 to 1.16.3 those commands could sit for 30 minutes and then report an unknown outcome without ever running. The request now answers immediately and keeps running the command in the same PHP process after releasing the connection (PHP-FPM and LiteSpeed); where PHP cannot release a connection early, the site hands the job to itself over a one-time token, and where it cannot reach itself either, the command simply runs inline. Jobs that an earlier version left queued for WP-Cron are expired if that cron ever fires, never run late.
+- Fix: a fatal error during a background run (memory, an engine time limit that could not be lifted) is now recorded in the operation receipt instead of leaving it open.
+- Fix: `plugin update vibe-ai` (WPVibe updating itself) uses the same hand-off and no longer depends on WP-Cron either.
+
 ## [1.16.3] - 2026-09-04
 - Fix: sites on XSERVER with the WAF "Command" rule enabled can connect again. That rule blocks any URL containing "ping", which was the name of the route WPVibe checks before connecting. The check now also answers at /wpvibe/v1/health, and the plugin's own self-update loopback moved off that word too. The /ping route stays for older connections.
 

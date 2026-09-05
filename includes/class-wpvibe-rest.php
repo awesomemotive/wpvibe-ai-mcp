@@ -1387,10 +1387,13 @@ class WPVibe_REST {
 				return new WP_Error( 'wpvibe_detach_needs_op_id', __( 'Detached execution needs an operation id header; the receipt is the only channel for its result.', 'vibe-ai' ), array( 'status' => 400 ) );
 			}
 			$scheduled = WPVibe_Detached_Ops::instance()->schedule( $op_id, $command, $confirm_write, $request->get_param( 'approved_state' ) );
-			if ( is_wp_error( $scheduled ) ) {
+			if ( ! is_wp_error( $scheduled ) ) {
+				return new WP_REST_Response( $scheduled, 202 );
+			}
+			if ( 'wpvibe_detach_unavailable' !== $scheduled->get_error_code() ) {
 				return $scheduled;
 			}
-			return new WP_REST_Response( $scheduled, 202 );
+			// No out-of-band path on this site: run it here, as the 503 copy promises.
 		}
 
 		$cli = new WPVibe_CLI();
