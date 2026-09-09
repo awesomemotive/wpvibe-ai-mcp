@@ -23,6 +23,126 @@ class WPVibe_File_Ops {
 	/** Allowed file extensions for write/create operations. */
 	const ALLOWED_EXTENSIONS = array( 'php', 'css', 'js', 'json', 'html', 'txt' );
 
+	// Bound local traversal, memory, and the compile service's 10 MiB JSON input.
+	const COMPILE_MAX_ENTRIES = 5000;
+	const COMPILE_MAX_FILE_BYTES = 1048576;
+	const COMPILE_MAX_BYTES = 4194304;
+	const COMPILE_MAX_JSON_BYTES = 9437184;
+	const COMPILE_MAX_SECONDS = 5;
+
+	/**
+	 * Collect Tailwind input in one host request, never a partial file list.
+	 * Draft-only: publishing must not accidentally compile the live theme.
+	 * Returns plain data so the same snapshot can guard the subsequent writes.
+	 */
+	public function compile_sources() {
+		$dir = $this->get_draft_dir();
+		if ( is_wp_error( $dir ) ) {
+			return $dir;
+		}
+		if ( ! is_readable( $dir ) ) {
+			return $this->compile_source_error( 'Cannot read the draft theme directory. Check its permissions.' );
+		}
+		$theme = get_option( 'wpvibe_draft_theme' );
+		$deadline = microtime( true ) + self::COMPILE_MAX_SECONDS;
+		$data = array( 'theme' => $theme, 'css' => null, 'files' => array() );
+		$css_path = $this->resolve_path( 'theme.css', $dir );
+		if ( is_wp_error( $css_path ) ) {
+			return $css_path;
+		}
+
+		// Only an absent root theme.css means "no compilation needed".
+		if ( file_exists( $css_path ) || is_link( $css_path ) ) {
+			$bytes = 0;
+			$css = $this->read_compile_source( 'theme.css', $dir, $bytes );
+			if ( is_wp_error( $css ) ) {
+				return $css;
+			}
+			$data['css'] = $css;
+			$count = 0;
+			try {
+				$iterator = new RecursiveIteratorIterator(
+					new RecursiveDirectoryIterator( $dir, RecursiveDirectoryIterator::SKIP_DOTS ),
+					RecursiveIteratorIterator::SELF_FIRST
+				);
+				foreach ( $iterator as $item ) {
+					if ( ++$count > self::COMPILE_MAX_ENTRIES || microtime( true ) > $deadline ) {
+						return $this->compile_source_error( 'Draft source collection exceeded the file or time limit. Reduce the theme size before publishing.' );
+					}
+					$relative = str_replace( '\\', '/', $iterator->getSubPathName() );
+					// Do not silently omit linked directories or follow links outside the sandbox.
+					if ( $item->isLink() ) {
+						return $this->compile_source_error( 'Draft source collection does not support symbolic links: ' . $relative );
+					}
+					if ( $item->isDir() || ! preg_match( '/\.(php|html|js)$/D', $relative ) || substr( $relative, -7 ) === '.min.js' ) {
+						continue;
+					}
+					$content = $this->read_compile_source( $relative, $dir, $bytes );
+					if ( is_wp_error( $content ) ) {
+						return $content;
+					}
+					$data['files'][ $relative ] = $content;
+				}
+			} catch ( UnexpectedValueException $e ) {
+				return $this->compile_source_error( 'Could not traverse all draft source files. Check the theme directory permissions.' );
+			}
+		}
+		if ( microtime( true ) > $deadline || $theme !== get_option( 'wpvibe_draft_theme' ) ) {
+			return $this->compile_source_error( 'The draft changed or source collection timed out. Retry publishing.' );
+		}
+		ksort( $data['files'], SORT_STRING );
+		$data['files'] = (object) $data['files']; // Empty templates must serialize as {}, not [].
+		$json = wp_json_encode( $data );
+		if ( false === $json || strlen( $json ) > self::COMPILE_MAX_JSON_BYTES ) {
+			return $this->compile_source_error( 'Draft source JSON exceeds the compile payload limit.' );
+		}
+		$data['source_hash'] = hash( 'sha256', $json );
+		return $data;
+	}
+
+	/** Recheck the source snapshot before writing CSS or publishing. */
+	public function check_compile_sources( $expected_hash ) {
+		if ( null === $expected_hash ) {
+			return true; // Existing clients do not send a compile snapshot.
+		}
+		if ( ! is_string( $expected_hash ) || ! preg_match( '/^[a-f0-9]{64}$/D', $expected_hash ) ) {
+			return new WP_Error( 'invalid_source_hash', 'Invalid draft source hash.', array( 'status' => 400 ) );
+		}
+		$data = $this->compile_sources();
+		if ( is_wp_error( $data ) ) {
+			return $data;
+		}
+		if ( ! hash_equals( $data['source_hash'], $expected_hash ) ) {
+			return new WP_Error( 'draft_sources_changed', 'The draft sources changed during publish preparation. Preview the latest draft and retry publishing.', array( 'status' => 409 ) );
+		}
+		return true;
+	}
+
+	private function compile_source_error( $message ) {
+		return new WP_Error( 'compile_sources_failed', $message, WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 400 ) ) );
+	}
+
+	/** Bounded reads also reject non-regular files (e.g. named pipes). */
+	private function read_compile_source( $relative, $dir, &$bytes ) {
+		$path = $this->resolve_path( $relative, $dir );
+		if ( is_wp_error( $path ) ) {
+			return $path;
+		}
+		if ( is_link( $path ) || ! is_file( $path ) || ! is_readable( $path ) ) {
+			return $this->compile_source_error( 'Cannot read draft source file: ' . $relative );
+		}
+		$limit = min( self::COMPILE_MAX_FILE_BYTES, self::COMPILE_MAX_BYTES - $bytes );
+		$content = file_get_contents( $path, false, null, 0, $limit + 1 );
+		if ( false === $content || strlen( $content ) > $limit ) {
+			return $this->compile_source_error( 'Cannot collect complete draft source within the byte limits: ' . $relative );
+		}
+		if ( ! preg_match( '//u', $content ) || ! preg_match( '//u', $relative ) ) {
+			return $this->compile_source_error( 'Draft source must be valid UTF-8: ' . $relative );
+		}
+		$bytes += strlen( $content );
+		return $content;
+	}
+
 	/**
 	 * Get the draft theme directory path.
 	 *

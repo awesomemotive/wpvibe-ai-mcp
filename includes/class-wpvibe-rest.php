@@ -394,6 +394,7 @@ class WPVibe_REST {
 			'callback'            => array( $this, 'write_file' ),
 			'permission_callback' => array( $this, 'can_edit_themes' ),
 			'args'                => array(
+				'expected_source_hash' => array( 'type' => 'string', 'pattern' => '^[a-f0-9]{64}$' ),
 				'path' => array(
 					'type'              => 'string',
 					'required'          => true,
@@ -467,6 +468,13 @@ class WPVibe_REST {
 
 		// --- Draft theme lifecycle ---
 
+		register_rest_route( $namespace, '/draft-theme/compile-sources', array(
+			'methods'             => 'GET',
+			'callback'            => array( $this, 'get_compile_sources' ),
+			'permission_callback' => array( $this, 'can_read_themes' ),
+			'args'                => array(),
+		) );
+
 		register_rest_route( $namespace, '/draft-theme', array(
 			'methods'             => 'POST',
 			'callback'            => array( $this, 'create_draft_theme' ),
@@ -478,7 +486,9 @@ class WPVibe_REST {
 			'methods'             => 'POST',
 			'callback'            => array( $this, 'publish_draft_theme' ),
 			'permission_callback' => array( $this, 'can_publish_theme' ),
-			'args'                => array(),
+			'args'                => array(
+				'expected_source_hash' => array( 'type' => 'string', 'pattern' => '^[a-f0-9]{64}$' ),
+			),
 		) );
 
 		register_rest_route( $namespace, '/draft-theme/preview', array(
@@ -1295,6 +1305,10 @@ class WPVibe_REST {
 		$content = $request->get_param( 'content' );
 
 		$file_ops = new WPVibe_File_Ops();
+		$check = $file_ops->check_compile_sources( $request->get_param( 'expected_source_hash' ) );
+		if ( is_wp_error( $check ) ) {
+			return $check;
+		}
 		return $file_ops->write( $path, $content );
 	}
 
@@ -1338,7 +1352,17 @@ class WPVibe_REST {
 		return $draft->create();
 	}
 
-	public function publish_draft_theme() {
+	public function get_compile_sources() {
+		$file_ops = new WPVibe_File_Ops();
+		return rest_ensure_response( $file_ops->compile_sources() );
+	}
+
+	public function publish_draft_theme( $request = null ) {
+		$file_ops = new WPVibe_File_Ops();
+		$check = $file_ops->check_compile_sources( $request ? $request->get_param( 'expected_source_hash' ) : null );
+		if ( is_wp_error( $check ) ) {
+			return $check;
+		}
 		$draft = new WPVibe_Draft_Theme();
 		return $draft->publish();
 	}

@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.16.5] - 2026-09-09
+* Fix: publishing Tailwind themes now collects source files in one request, reducing host rate-limit errors on themes with many templates.
+* Hardening: publishing stops if source files cannot be collected completely or if the draft changes during preparation, preventing incomplete or stale compiled styles from going live.
+
 ## [1.16.4] - 2026-09-05
 - Fix: approved long-running commands (a live `search-replace`, mutating `db query`) no longer depend on WP-Cron to run in the background. On some hosts WP-Cron never fires, so from 1.16.0 to 1.16.3 those commands could sit for 30 minutes and then report an unknown outcome without ever running. The request now answers immediately and keeps running the command in the same PHP process after releasing the connection (PHP-FPM and LiteSpeed); where PHP cannot release a connection early, the site hands the job to itself over a one-time token, and where it cannot reach itself either, the command simply runs inline. Jobs that an earlier version left queued for WP-Cron are expired if that cron ever fires, never run late.
 - Fix: a fatal error during a background run (memory, an engine time limit that could not be lifted) is now recorded in the operation receipt instead of leaving it open.

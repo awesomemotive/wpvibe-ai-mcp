@@ -4,7 +4,7 @@ Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.16.4
+Stable tag: 1.16.5
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -220,6 +220,10 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 
 == Changelog ==
 
+= 1.16.5 =
+* Fix: publishing Tailwind themes now collects source files in one request, reducing host rate-limit errors on themes with many templates.
+* Hardening: publishing stops if source files cannot be collected completely or if the draft changes during preparation, preventing incomplete or stale compiled styles from going live.
+
 = 1.16.4 =
 * Fix: approved long-running commands (a live `search-replace`, mutating `db query`) no longer depend on WP-Cron to run in the background. On some hosts WP-Cron never fires, so from 1.16.0 to 1.16.3 those commands could sit for 30 minutes and then report an unknown outcome without ever running. The request now answers immediately and keeps running the command in the same PHP process after releasing the connection (PHP-FPM and LiteSpeed); where PHP cannot release a connection early, the site hands the job to itself over a one-time token, and where it cannot reach itself either, the command simply runs inline. Jobs that an earlier version left queued for WP-Cron are expired if that cron ever fires, never run late.
 * Fix: a fatal error during a background run (memory, an engine time limit that could not be lifted) is now recorded in the operation receipt instead of leaving it open.
@@ -349,20 +353,6 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 = 1.13.0 =
 * Fix: WPVibe now works on hosts that strip the login header. On some servers, commonly Apache running PHP as CGI or FastCGI and some LiteSpeed setups, the web server removes the Authorization header before WordPress can read it. Every WPVibe request then arrived as a logged out visitor and failed with a permission error, even though the site was connected and the password was valid. WPVibe now sends the same credentials a second way that these servers pass through, and the plugin hands them back to WordPress before it checks who you are. Who is allowed to do what does not change, and sites that were already working are unaffected. To turn this off, define WPVIBE_DISABLE_AUTH_FALLBACK as true.
 * Improvement: permission errors now name the real cause. A request WordPress could not authenticate used to report a missing capability, which sent people off to reconnect with a different account when the actual problem was the server dropping the header, or Application Passwords being switched off. WPVibe now reports which of those it was, so the fix matches the problem.
-
-= 1.12.0 =
-* Fix: safer settings edits. Option values are now treated as plain text unless your AI explicitly asks for JSON (matching the real WP-CLI), and WPVibe refuses any write that would silently change a setting's stored type, which could previously corrupt cache plugin settings or take a site offline. Reading an option now tells your AI when a value is one string that merely looks like a list.
-* Fix: theme and code edits no longer fail on hosts whose security firewall mistakes legitimate code for an attack. Some hosting firewalls inspect the content of save requests and block anything that looks like PHP or SQL, which made edits to files like functions.php fail intermittently with a 403 error. When that happens, WPVibe now automatically resends the same edit in an encoded form the firewall does not misread, and the plugin decodes it before any of its usual security checks run. Nothing changes about what gets saved or who is allowed to save it.
-
-= 1.11.0 =
-* New: White label mode for agencies. One click on the WPVibe admin page (or one ask to your AI) hides WPVibe everywhere in the WordPress dashboard: the admin menu, dashboard widget, Plugins list entry, and editor sidebar. The site stays fully manageable through your AI. WordPress auto-updates keep the plugin current while hidden, and if the site goes 30 days without WPVibe activity the plugin reappears on its own, so it can never be lost.
-* Fix: Content edits now match straight and curly quotes interchangeably. WordPress converts quotes to the curly kind when it saves, which could make an edit fail with "no match" on text your AI had just written.
-* Fix: The WPVibe theme header is now registered on every request, so site_info correctly detects AI-built themes over REST. Props to Nick Kimuli for finding it and opening the fix on our GitHub mirror.
-
-= 1.10.0 =
-* New: Beaver Builder support. Your AI can now build and edit real Beaver Builder pages, landing pages, and layouts. The result is a native Beaver Builder layout: open it in the builder and every row, column, and module is there and individually editable, exactly as if you built it by hand. Works with both the free Beaver Builder (Lite) and the paid plugin.
-* New: Beaver Themer support. Build site-wide headers and footers (navigation menus included), plus archive, 404, and single-post layouts, each wired to the right location rules. Themer headers and footers need a Themer-compatible theme (the Beaver Builder Theme, Astra, GeneratePress, Kadence, and similar); WPVibe tells you up front when the active theme cannot render one instead of leaving a layout that shows nowhere.
-* New: "post meta add" appends a row to multi-value post meta, and "post meta delete" accepts an optional value to remove only the matching row. Previously update replaced every row of a key and delete wiped them all, which made multi-value metas effectively untouchable. Divi's Theme Builder links its templates through exactly this kind of meta, so your AI can now add a second Theme Builder template without destroying the first.
 
 = Older versions =
 WP.org caps the changelog at 5,000 words. For the full release history back to 1.0.0, see https://wpvibe.ai/changelog/
