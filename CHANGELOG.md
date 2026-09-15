@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.17.0] - 2026-09-15
+
+- New: Four-step setup page. Add WPVibe to your AI, connect the site with one prompt, and confirm with a read. Steps turn green on their own as WordPress approves and your AI reads the site.
+- New: Check site connectivity tests the site from inside and out before you open your AI: HTTPS, Application Passwords, a staging password gate or REST-blocking plugin, a maintenance page answering the API, a host that strips the Authorization header, and WPVibe reaching the site. Failures name the cause and the fix; the report carries the exact Cloudflare rule when a firewall is challenging WPVibe.
+- New: Allow for WPVibe permits Application Passwords for WPVibe requests only when a security plugin turns them off site-wide.
+- New: A signed confirmation when your AI completes its first read, plus a copyable report for support.
+- New: Administrators can read wp-content files for diagnostics (read-only, secrets redacted, audited); wp-content writes remain blocked.
+- New: The dashboard widget shows the same connection status as the setup page, with a Check connection link.
+- New: The setup page says when the site address is http:// and WPVibe needs https://, and links to Security and the DPA in the footer.
+- Change: Sites already connected read as connected from their recent activity after updating. Nothing to redo.
+- Fix: The approval page explains when this WordPress account cannot create Application Passwords, or has them disabled, instead of a generic error.
+- Fix: Check site connectivity runs when wp-admin is open at a different address than the site URL, such as with or without www.
+- Fix: live reload polling is bounded with timeout and backoff and stops after repeated failures instead of polling forever.
+- Hardening: reconnecting keeps the existing Application Password until the replacement verifies; the browser-approved credential can seed the proof key only once.
+- Fix: proof key provisioning, reset and rotation work on SQLite-backed sites (WordPress Studio, Playground, the SQLite integration plugin).
+
 ## [1.16.5] - 2026-09-09
 * Fix: publishing Tailwind themes now collects source files in one request, reducing host rate-limit errors on themes with many templates.
 * Hardening: publishing stops if source files cannot be collected completely or if the draft changes during preparation, preventing incomplete or stale compiled styles from going live.

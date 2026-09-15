@@ -69,14 +69,18 @@ class WPVibe_Authorize_Notice {
 			'beaconHosts'  => $hosts,
 			// Approve mints here instead of /wp/v2/users/me/application-passwords (#58).
 			'mintPath'     => '/wpvibe/v1/authorize',
+			'preflightPath' => '/wpvibe/v1/authorize/preflight',
+			'preserveProof' => isset( $_GET['wpvibe_preserve_proof'] ) && '1' === $_GET['wpvibe_preserve_proof'],
 			'i18n'         => array(
 				'title'     => __( 'Approve could not reach this site\'s REST API', 'vibe-ai' ),
 				/* translators: %s: what the request returned (e.g. "an HTML page (status 403)"). */
-				'came_back' => __( 'The request WordPress makes to create the application password came back as %s. WordPress needs a JSON answer from /wp/v2/users/me/application-passwords to finish.', 'vibe-ai' ),
+				'came_back' => __( 'The request WordPress makes to create the application password came back as %s. The WPVibe authorization route must return JSON to finish.', 'vibe-ai' ),
+				'cannot_create' => __( 'This WordPress account cannot create Application Passwords. Ask a site administrator to check this account\'s permissions.', 'vibe-ai' ),
+				'unavailable_for_user' => __( 'Application Passwords are disabled for this account. Ask a site administrator to review the setting before approving again.', 'vibe-ai' ),
 				/* translators: %s: vendor or plugin name detected in the response. */
 				'marker'    => __( 'The response looks like it came from %s.', 'vibe-ai' ),
 				'step1'     => __( 'Open this link in a private (incognito) window with browser extensions off, log in as an administrator, and click Approve once.', 'vibe-ai' ),
-				'step2'     => __( 'If it fails the same way, allow the REST API for logged-in administrators in your security plugin, or ask your host to allow /wp-json/wp/v2/users/ for admins.', 'vibe-ai' ),
+				'step2'     => __( 'If it fails again, ask your host to inspect the blocked request to /wp-json/wpvibe/v1/authorize and permit authenticated REST requests to that route.', 'vibe-ai' ),
 				'docs'      => __( 'Connection guide', 'vibe-ai' ),
 				/* translators: %s: support email address. */
 				'support'   => __( 'Still stuck? Email %s with the text of this notice.', 'vibe-ai' ),

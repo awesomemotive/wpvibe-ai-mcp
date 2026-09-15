@@ -90,6 +90,7 @@
 			if ( options && typeof options.path === 'string' && options.path.indexOf( '/wp/v2/users/me/application-passwords' ) === 0 && ( options.method || 'GET' ).toUpperCase() === 'POST' ) {
 				var q = options.path.indexOf( '?' );
 				options = $.extend( {}, options, { path: cfg.mintPath + ( q >= 0 ? options.path.slice( q ) : '' ) } );
+				if ( cfg.preserveProof ) options.data = $.extend( {}, options.data, { preserve_proof: true } );
 			}
 			return origApiRequest.call( this, options );
 		};
@@ -139,6 +140,7 @@
 		div.appendChild( h );
 		var p1 = document.createElement( 'p' );
 		p1.textContent = fmt( t.came_back, describe( verdict ) ) + ( verdict.marker ? ' ' + fmt( t.marker, verdict.marker ) : '' );
+		if ( verdict.kind === 'cannot_create' || verdict.kind === 'unavailable_for_user' ) p1.textContent = t[ verdict.kind ] || '';
 		div.appendChild( p1 );
 		var ol = document.createElement( 'ol' );
 		[ t.step1, t.step2 ].forEach( function ( s ) { var li = document.createElement( 'li' ); li.textContent = s || ''; ol.appendChild( li ); } );
@@ -182,7 +184,15 @@
 	// 2. Warn-only pre-flight of the same route, same headers auth-app.js will use.
 	$( function () {
 		try {
-			wp.apiRequest( { path: '/wp/v2/users/me/application-passwords?_locale=user', method: 'GET', timeout: 8000 } )
+			var preflight = wp.apiRequest( { path: ( cfg.preflightPath || '/wpvibe/v1/authorize/preflight' ) + '?_locale=user', method: 'GET', timeout: 8000 } );
+			if ( preflight.done ) preflight.done( function ( facts ) {
+				if ( facts && ( facts.reason === 'cannot_create' || facts.reason === 'unavailable_for_user' ) ) {
+					var verdict = { kind: facts.reason, status: 200, marker: null };
+					if ( ! document.querySelector( '.wpvibe-authorize-notice' ) ) place( buildNotice( verdict, 'warning', t.preflight || '' ) );
+					beacon( 'preflight', verdict );
+				}
+			} );
+			preflight
 				.fail( function ( jqXHR, textStatus ) {
 					try {
 						// A slow host (8s cap) or the user clicking Approve mid-flight is not a block.

@@ -93,10 +93,11 @@ class WPVibe_Live_Reload {
 			WPVIBE_VERSION
 		);
 
+		$this->enqueue_poller();
 		wp_enqueue_script(
 			'wpvibe-live-reload',
 			WPVIBE_PLUGIN_URL . 'assets/js/live-reload.js',
-			array(),
+			array( 'wpvibe-live-reload-poller' ),
 			WPVIBE_VERSION,
 			true // Load in footer.
 		);
@@ -127,10 +128,11 @@ class WPVibe_Live_Reload {
 			return;
 		}
 
+		$this->enqueue_poller();
 		wp_enqueue_script(
 			'wpvibe-live-reload-fallback',
 			WPVIBE_PLUGIN_URL . 'assets/js/live-reload-fallback.js',
-			array(),
+			array( 'wpvibe-live-reload-poller' ),
 			WPVIBE_VERSION,
 			false // Load in head so it fires even when admin_footer doesn't.
 		);
@@ -144,5 +146,9 @@ class WPVibe_Live_Reload {
 				'userId'   => (string) get_current_user_id(),
 			)
 		);
+	}
+
+	private function enqueue_poller() {
+		wp_enqueue_script( 'wpvibe-live-reload-poller', WPVIBE_PLUGIN_URL . 'assets/js/live-reload-poller.js', array(), WPVIBE_VERSION, false );
 	}
 }

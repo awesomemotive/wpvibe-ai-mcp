@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WPVibe – Connect Your Site to Claude, ChatGPT & AI Assistants
  * Description: Connect any AI assistant to your WordPress site. Manage content, edit themes, and automate site tasks with Claude, ChatGPT, Cursor & more via MCP.
- * Version: 1.16.5
+ * Version: 1.17.0
  * Author: SeedProd
  * Author URI: https://wpvibe.ai
  * License: GPL-2.0-or-later
@@ -14,7 +14,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WPVIBE_VERSION', '1.16.5' );
+define( 'WPVIBE_VERSION', '1.17.0' );
 define( 'WPVIBE_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'WPVIBE_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 define( 'WPVIBE_PLUGIN_BASENAME', plugin_basename( __FILE__ ) );
@@ -24,6 +24,7 @@ require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-error-contract.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-auth-fallback.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-auth-diagnostics.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-authorize-notice.php';
+require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-app-password-policy.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/trait-wpvibe-request-detach.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-self-update.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-detached-ops.php';
@@ -34,6 +35,7 @@ require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-beaver.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-breakdance.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-bricks.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-file-ops.php';
+require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-content-files.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-content-ops.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-draft-theme.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-preview.php';
@@ -50,6 +52,9 @@ require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-uninstall-notice.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-audit-log.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-op-receipts.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-op-proof.php';
+require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-connection-status.php';
+require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-connection-check.php';
+WPVibe_Connection_Check::register();
 WPVibe_Op_Proof::register();
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-php-guard.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-builder-login.php';
@@ -142,6 +147,7 @@ add_filter( 'extra_theme_headers', 'wpvibe_register_theme_header' );
 function wpvibe_init() {
 	WPVibe_Self_Update::instance();
 	WPVibe_Detached_Ops::instance()->maybe_purge_legacy_handoffs();
+	WPVibe_App_Password_Policy::init();
 	WPVibe_White_Label::instance();
 	WPVibe_Code_Snippet::load_wpcode_file_cache();
 	WPVibe_REST::instance();

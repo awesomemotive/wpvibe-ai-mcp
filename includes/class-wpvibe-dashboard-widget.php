@@ -81,8 +81,7 @@ class WPVibe_Dashboard_Widget {
 	 * the 30-day window must stay in lockstep with the admin page.
 	 */
 	private function is_connected() {
-		$last_active = (int) get_option( 'wpvibe_last_active', 0 );
-		return $last_active > 0 && ( time() - $last_active ) < 30 * DAY_IN_SECONDS;
+		return WPVibe_White_Label::site_is_connected();
 	}
 
 	private function render_disconnected() {
@@ -125,13 +124,10 @@ class WPVibe_Dashboard_Widget {
 			<p class="wpvibe-widget-status">
 				<span class="wpvibe-widget-dot" aria-hidden="true"></span>
 				<?php
-				printf(
-					/* translators: %s: human-readable time difference, e.g. "2 hours" */
-					esc_html__( 'Connected · active %s ago', 'vibe-ai' ),
-					esc_html( human_time_diff( $last_active ) )
-				);
+				echo esc_html( WPVibe_Connection_Status::badge() );
 				?>
 			</p>
+			<p><a href="<?php echo esc_url( WPVibe_Connection_Status::check_url() ); ?>" target="_blank" rel="noopener"><?php esc_html_e( 'Check connection', 'vibe-ai' ); ?></a></p>
 			<?php if ( ! empty( $activity ) ) : ?>
 				<h3 class="wpvibe-widget-heading"><?php esc_html_e( 'Recent activity', 'vibe-ai' ); ?></h3>
 				<ul class="wpvibe-widget-activity">

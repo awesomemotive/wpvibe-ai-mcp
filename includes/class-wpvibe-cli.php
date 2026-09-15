@@ -331,6 +331,8 @@ class WPVibe_CLI {
 		'wpvibe_op_proof_key',
 		'wpvibe_op_proof_required',
 		'wpvibe_op_proof_minter',
+		'wpvibe_op_proof_pending_minter',
+		'wpvibe_connection_status',
 		'siteurl',
 		'home',
 		'admin_email',

@@ -289,8 +289,9 @@ class WPVibe_REST {
 		register_rest_route( $namespace, '/file/read', array(
 			'methods'             => 'POST',
 			'callback'            => array( $this, 'read_file' ),
-			'permission_callback' => array( $this, 'can_read_themes' ),
+			'permission_callback' => array( $this, 'can_read_files' ),
 			'args'                => array(
+				'scope' => array( 'type' => 'string', 'enum' => array( 'theme', 'wp-content' ) ),
 				'path' => array(
 					'type'              => 'string',
 					'required'          => true,
@@ -312,8 +313,10 @@ class WPVibe_REST {
 		register_rest_route( $namespace, '/file/list', array(
 			'methods'             => 'GET',
 			'callback'            => array( $this, 'list_files' ),
-			'permission_callback' => array( $this, 'can_read_themes' ),
+			'permission_callback' => array( $this, 'can_read_files' ),
 			'args'                => array(
+				'scope' => array( 'type' => 'string', 'enum' => array( 'theme', 'wp-content' ) ),
+				'directory' => array( 'type' => 'string' ),
 				'pattern' => array(
 					'type'              => 'string',
 					'required'          => false,
@@ -616,7 +619,24 @@ class WPVibe_REST {
 			'args'                => array(
 				'name'   => array( 'type' => 'string', 'required' => true, 'sanitize_callback' => 'sanitize_text_field' ),
 				'app_id' => array( 'type' => 'string', 'required' => false, 'sanitize_callback' => 'sanitize_text_field' ),
+				'preserve_proof' => array( 'type' => 'boolean', 'default' => false ),
 			),
+		) );
+		register_rest_route( $namespace, '/authorize/preflight', array(
+			'methods' => 'GET',
+			'callback' => array( $this, 'authorize_preflight' ),
+			'permission_callback' => array( $this, 'can_authorize_session' ),
+		) );
+		register_rest_route( $namespace, '/connection-status', array(
+			'methods' => 'POST',
+			'callback' => array( 'WPVibe_Connection_Status', 'record' ),
+			'permission_callback' => array( 'WPVibe_Connection_Status', 'authorize' ),
+		) );
+		register_rest_route( $namespace, '/op-proof/activate', array(
+			'methods' => 'POST',
+			'callback' => array( $this, 'op_proof_activate' ),
+			'permission_callback' => array( $this, 'can_manage_options' ),
+			'args' => array( 'key' => array( 'type' => 'string', 'required' => true ), 'uuid' => array( 'type' => 'string', 'required' => true ) ),
 		) );
 
 		// Worker-provisioned key for the per-op proof the approval routes verify.
@@ -917,6 +937,26 @@ class WPVibe_REST {
 		return $this->missing_capability_error( 'edit_themes' );
 	}
 
+	public function can_read_files( $request ) {
+		$scope = $request->get_param( 'scope' );
+		if ( 'wp-content' === $scope ) {
+			if ( is_multisite() && ! is_super_admin() ) {
+				return $this->missing_capability_error( 'manage_network_options' );
+			}
+			return $this->can_manage_options();
+		}
+		$check = $this->require_theme_scope( $request );
+		return is_wp_error( $check ) ? $check : $this->can_read_themes();
+	}
+
+	private function require_theme_scope( $request ) {
+		$scope = $request->get_param( 'scope' );
+		if ( null !== $scope && 'theme' !== $scope ) {
+			return new WP_Error( 'read_only_scope', 'The wp-content scope supports only read_file and list_files. Theme writes remain confined to the draft theme.', WPVibe_Error_Contract::data( 'security_gate', false, array( 'status' => 403 ) ) );
+		}
+		return true;
+	}
+
 	/**
 	 * Write/edit/delete theme files — edit_themes + respects DISALLOW_FILE_EDIT.
 	 * WordPress uses this constant to lock down the Theme/Plugin File Editor.
@@ -999,15 +1039,37 @@ class WPVibe_REST {
 	 * auth (this must not become a firewall-bypass password factory for callers
 	 * that already hold one), and only for a user who may create their own.
 	 */
-	public function can_mint_app_password( $request ) {
+	public function can_authorize_session( $request ) {
 		$uid = get_current_user_id();
 		if ( $uid <= 0 ) {
 			return new WP_Error( 'wpvibe_authorize_login_required', __( 'Log in to WordPress in this browser to approve the connection.', 'vibe-ai' ), array( 'status' => 401 ) );
 		}
 		$auth_header = is_object( $request ) && method_exists( $request, 'get_header' ) ? (string) $request->get_header( 'authorization' ) : '';
-		if ( '' !== $auth_header || ! empty( $_SERVER['PHP_AUTH_USER'] ) || ( function_exists( 'wp_is_application_passwords_in_use' ) && wp_is_application_passwords_in_use() ) ) {
+		if ( '' !== $auth_header || ! empty( $_SERVER['PHP_AUTH_USER'] ) || ! empty( $_SERVER['HTTP_X_WPVIBE_AUTHORIZATION'] ) || $request->get_header( 'x_wpvibe_authorization' ) || ( function_exists( 'rest_get_authenticated_app_password' ) && null !== rest_get_authenticated_app_password() ) ) {
 			return new WP_Error( 'wpvibe_authorize_session_only', __( 'This route accepts the logged-in browser session only.', 'vibe-ai' ), array( 'status' => 403 ) );
 		}
+		$nonce = $request->get_header( 'x_wp_nonce' );
+		if ( ! $nonce ) {
+			$nonce = $request->get_param( '_wpnonce' );
+		}
+		if ( ! is_string( $nonce ) || ! wp_verify_nonce( $nonce, 'wp_rest' ) ) {
+			return new WP_Error( 'wpvibe_authorize_nonce', __( 'Refresh this browser page and approve the connection again.', 'vibe-ai' ), array( 'status' => 403 ) );
+		}
+		return true;
+	}
+
+	public function authorize_preflight( $request ) {
+		$can_create = current_user_can( 'create_app_password', get_current_user_id() );
+		$available = ! function_exists( 'wp_is_application_passwords_available_for_user' ) || wp_is_application_passwords_available_for_user( get_current_user_id() );
+		return rest_ensure_response( array( 'available_for_user' => $available, 'can_create' => $can_create, 'is_ssl' => is_ssl(), 'reason' => ! $can_create ? 'cannot_create' : ( ! $available ? 'unavailable_for_user' : 'ok' ) ) );
+	}
+
+	public function can_mint_app_password( $request ) {
+		$session = $this->can_authorize_session( $request );
+		if ( true !== $session ) {
+			return $session;
+		}
+		$uid = get_current_user_id();
 		if ( ! current_user_can( 'create_app_password', $uid ) ) {
 			return new WP_Error( 'wpvibe_authorize_forbidden', __( 'This account cannot create application passwords.', 'vibe-ai' ), array( 'status' => 403 ) );
 		}
@@ -1034,7 +1096,15 @@ class WPVibe_REST {
 		// provisions its own on first contact.
 		list( $password, $item ) = $created;
 		if ( current_user_can( 'manage_options' ) ) {
-			WPVibe_Op_Proof::reset( isset( $item['uuid'] ) ? (string) $item['uuid'] : '' );
+			$uuid = isset( $item['uuid'] ) ? (string) $item['uuid'] : '';
+			if ( $request->get_param( 'preserve_proof' ) ) {
+				if ( ! WPVibe_Op_Proof::provisioned() ) {
+					WPVibe_Op_Proof::reset( $uuid );
+				}
+				WPVibe_Op_Proof::stage_minter( $uuid );
+			} else {
+				WPVibe_Op_Proof::reset( $uuid );
+			}
 		}
 		return rest_ensure_response( array(
 			'password' => $password,
@@ -1066,6 +1136,11 @@ class WPVibe_REST {
 			return $set;
 		}
 		return rest_ensure_response( array( 'status' => 'set' ) );
+	}
+
+	public function op_proof_activate( $request ) {
+		$result = WPVibe_Op_Proof::activate_staged_key( $request );
+		return is_wp_error( $result ) ? $result : rest_ensure_response( array( 'status' => 'set' ) );
 	}
 
 	/**
@@ -1165,7 +1240,7 @@ class WPVibe_REST {
 	 * MCP to compare WPVIBE_VERSION strings — flags are forward-compatible.
 	 */
 	public static function feature_flags() {
-		return array( 'content_edit', 'content_search', 'code_snippet', 'beaver_save', 'breakdance_save', 'bricks_save', 'armor', 'authorize_mint', 'op_proof', 'detached_ops' );
+		return array( 'content_edit', 'content_search', 'code_snippet', 'beaver_save', 'breakdance_save', 'bricks_save', 'armor', 'authorize_mint', 'op_proof', 'detached_ops', 'connection_readiness', 'connection_status' );
 	}
 
 	public function get_site_info() {
@@ -1283,6 +1358,13 @@ class WPVibe_REST {
 	// ------------------------------------------------------------------
 
 	public function read_file( $request ) {
+		$check = $this->can_read_files( $request );
+		if ( is_wp_error( $check ) ) {
+			return $check;
+		}
+		if ( 'wp-content' === $request->get_param( 'scope' ) ) {
+			return ( new WPVibe_Content_Files() )->read( $request->get_param( 'path' ), $request->get_param( 'start_line' ), $request->get_param( 'end_line' ) );
+		}
 		$path       = sanitize_text_field( $request->get_param( 'path' ) );
 		$start_line = $request->get_param( 'start_line' );
 		$end_line   = $request->get_param( 'end_line' );
@@ -1292,6 +1374,10 @@ class WPVibe_REST {
 	}
 
 	public function edit_file( $request ) {
+		$check = $this->require_theme_scope( $request );
+		if ( is_wp_error( $check ) ) {
+			return $check;
+		}
 		$path        = sanitize_text_field( $request->get_param( 'path' ) );
 		$old_content = $request->get_param( 'old_content' );
 		$new_content = $request->get_param( 'new_content' );
@@ -1301,6 +1387,10 @@ class WPVibe_REST {
 	}
 
 	public function write_file( $request ) {
+		$check = $this->require_theme_scope( $request );
+		if ( is_wp_error( $check ) ) {
+			return $check;
+		}
 		$path    = sanitize_text_field( $request->get_param( 'path' ) );
 		$content = $request->get_param( 'content' );
 
@@ -1313,6 +1403,10 @@ class WPVibe_REST {
 	}
 
 	public function delete_file( $request ) {
+		$check = $this->require_theme_scope( $request );
+		if ( is_wp_error( $check ) ) {
+			return $check;
+		}
 		$path = sanitize_text_field( $request->get_param( 'path' ) );
 
 		$file_ops = new WPVibe_File_Ops();
@@ -1320,6 +1414,13 @@ class WPVibe_REST {
 	}
 
 	public function list_files( $request ) {
+		$check = $this->can_read_files( $request );
+		if ( is_wp_error( $check ) ) {
+			return $check;
+		}
+		if ( 'wp-content' === $request->get_param( 'scope' ) ) {
+			return ( new WPVibe_Content_Files() )->list_files( $request->get_param( 'pattern' ), $request->get_param( 'directory' ) ?? '' );
+		}
 		$pattern = $request->get_param( 'pattern' );
 
 		$file_ops = new WPVibe_File_Ops();
@@ -1327,6 +1428,10 @@ class WPVibe_REST {
 	}
 
 	public function search_files( $request ) {
+		$check = $this->require_theme_scope( $request );
+		if ( is_wp_error( $check ) ) {
+			return $check;
+		}
 		$pattern        = $request->get_param( 'pattern' );
 		$case_sensitive = (bool) $request->get_param( 'case_sensitive' );
 		$extensions     = $request->get_param( 'extensions' );
@@ -1337,6 +1442,10 @@ class WPVibe_REST {
 	}
 
 	public function file_outline( $request ) {
+		$check = $this->require_theme_scope( $request );
+		if ( is_wp_error( $check ) ) {
+			return $check;
+		}
 		$path = sanitize_text_field( $request->get_param( 'path' ) );
 
 		$file_ops = new WPVibe_File_Ops();

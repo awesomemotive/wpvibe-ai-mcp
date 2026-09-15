@@ -46,11 +46,29 @@ class WPVibe_Ping {
 	 * site metadata — keep the public surface tiny.
 	 */
 	public function ping() {
-		return rest_ensure_response( array(
+		$payload = array(
 			'plugin'         => 'wpvibe',
 			'plugin_version' => defined( 'WPVIBE_VERSION' ) ? WPVIBE_VERSION : '',
 			'wp_version'     => get_bloginfo( 'version' ),
 			'features'       => class_exists( 'WPVibe_REST' ) ? WPVibe_REST::feature_flags() : array(),
-		) );
+		);
+		$echo = $this->loopback_echo();
+		if ( null !== $echo ) {
+			$payload['auth_headers_seen'] = $echo;
+		}
+		return rest_ensure_response( $payload );
+	}
+
+	// Only the site's own connectivity check (holding the loopback token) learns which auth headers survive the host; values are never echoed.
+	private function loopback_echo() {
+		$token = isset( $_SERVER['HTTP_X_WPVIBE_LOOPBACK'] ) ? (string) $_SERVER['HTTP_X_WPVIBE_LOOPBACK'] : '';
+		if ( '' === $token || ! class_exists( 'WPVibe_Connection_Check' ) || ! WPVibe_Connection_Check::loopback_token_valid( $token ) ) {
+			return null;
+		}
+		// WPVibe_Auth_Fallback::apply() may have copied the fallback header into HTTP_AUTHORIZATION by now; the constants record what actually arrived.
+		return array(
+			'authorization' => defined( 'WPVIBE_AUTH_HEADER_SEEN' ) ? (bool) WPVIBE_AUTH_HEADER_SEEN : ( ! empty( $_SERVER['HTTP_AUTHORIZATION'] ) || ! empty( $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ) || ! empty( $_SERVER['PHP_AUTH_USER'] ) ),
+			'fallback'      => defined( 'WPVIBE_AUTH_FALLBACK_SEEN' ) ? (bool) WPVIBE_AUTH_FALLBACK_SEEN : ! empty( $_SERVER['HTTP_X_WPVIBE_AUTHORIZATION'] ),
+		);
 	}
 }

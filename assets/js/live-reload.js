@@ -12,7 +12,7 @@
 	'use strict';
 
 	var config = window.wpvibeLiveReload;
-	if ( ! config || ! config.endpoint ) {
+	if ( ! config || ! config.endpoint || ! window.WPVibePoller ) {
 		return;
 	}
 
@@ -22,65 +22,30 @@
 	var currentPostId = parseInt( config.postId, 10 ) || 0;
 	var currentUserId = parseInt( config.userId, 10 ) || 0;
 	var pollInterval  = 2500;
-	var idleTimeout   = 300000; // 5 minutes
 	var toastDuration = 15000;
 
 	var lastTimestamp = 0;
-	var lastChangeAt = Date.now();
-	var timer        = null;
 	var toastTimer   = null;
 
-	function poll() {
-		if ( Date.now() - lastChangeAt > idleTimeout ) {
-			clearInterval( timer );
-			return;
-		}
-
-		var url = lastTimestamp
+	function pollUrl() {
+		return lastTimestamp
 			? endpoint + ( endpoint.indexOf( '?' ) !== -1 ? '&' : '?' ) + 'since=' + lastTimestamp
 			: endpoint;
+	}
 
-		fetch( url, {
-			headers: { 'X-WP-Nonce': nonce },
-			credentials: 'same-origin',
-		} )
-			.then( function ( r ) {
-				return r.ok ? r.json() : null;
-			} )
-			.then( function ( data ) {
-				if ( ! data ) return;
-
-				// New format: { changes: [...] }
-				if ( data.changes ) {
-					if ( ! data.changes.length ) return;
-
-					// First poll — record timestamp, don't act.
-					if ( lastTimestamp === 0 ) {
-						lastTimestamp = data.changes[ data.changes.length - 1 ].timestamp;
-						return;
-					}
-
-					for ( var i = 0; i < data.changes.length; i++ ) {
-						handleChange( data.changes[ i ] );
-					}
-
-					lastTimestamp = data.changes[ data.changes.length - 1 ].timestamp;
-					lastChangeAt = Date.now();
-					return;
-				}
-
-				// Legacy fallback: single object (old server or no since param).
-				if ( data.timestamp && data.timestamp > lastTimestamp ) {
-					if ( lastTimestamp === 0 ) {
-						lastTimestamp = data.timestamp;
-						return;
-					}
-					lastTimestamp = data.timestamp;
-					lastChangeAt = Date.now();
-					handleChange( data );
-				}
-			} )
-			.catch( function () {} );
+	function receiveChanges( data ) {
+		var changes = data.changes || ( data.timestamp ? [ data ] : [] );
+		var baseline = lastTimestamp === 0;
+		var changed = false;
+		for ( var i = 0; i < changes.length; i++ ) {
+			if ( changes[ i ].timestamp <= lastTimestamp ) continue;
+			lastTimestamp = changes[ i ].timestamp;
+			if ( ! baseline ) {
+				handleChange( changes[ i ] );
+				changed = true;
+			}
+		}
+		return changed;
 	}
 
 	function handleChange( change ) {
@@ -165,6 +130,5 @@
 	// Mark that the full script loaded (prevents head fallback from running).
 	window.__wpvibe_live_reload = true;
 
-	timer = setInterval( poll, pollInterval );
-	poll();
+	window.WPVibePoller.start( { url: pollUrl, nonce: nonce, interval: pollInterval, onData: receiveChanges } );
 })();

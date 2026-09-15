@@ -16,6 +16,8 @@ delete_option( 'wpvibe_draft_source' );
 delete_option( 'wpvibe_preview_token' );
 delete_option( 'wpvibe_preview_token_issued' );
 delete_option( 'wpvibe_last_active' );
+delete_option( 'wpvibe_connection_check_snapshot' );
+delete_option( 'wpvibe_allow_app_passwords' );
 delete_option( 'wpvibe_installed_at' );
 delete_option( 'wpvibe_review_eligible_since' );
 delete_option( 'wpvibe_review_notice_status' );
@@ -23,6 +25,11 @@ delete_option( 'wpvibe_audit_log_schema' );
 delete_option( 'wpvibe_op_receipts_schema' );
 delete_option( 'wpvibe_recent_activity' );
 delete_option( 'wpvibe_hide_from_admins' );
+delete_option( 'wpvibe_connection_status' );
+delete_option( 'wpvibe_op_proof_key' );
+delete_option( 'wpvibe_op_proof_required' );
+delete_option( 'wpvibe_op_proof_minter' );
+delete_option( 'wpvibe_op_proof_pending_minter' );
 
 // Drop our auto-update enrollment (white label adds it) now that the plugin is gone.
 $wpvibe_auto = get_option( 'auto_update_plugins' );

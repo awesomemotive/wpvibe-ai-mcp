@@ -84,7 +84,7 @@ class WPVibe_Audit_Log {
 		global $wpdb;
 		$table = self::table_name();
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		$wpdb->insert(
+		$inserted = $wpdb->insert(
 			$table,
 			array(
 				'user_id'        => get_current_user_id(),
@@ -97,7 +97,11 @@ class WPVibe_Audit_Log {
 			array( '%d', '%s', '%s', '%s', '%s', '%s' )
 		);
 
+		if ( false === $inserted ) {
+			return false;
+		}
 		self::trim_to_max_rows();
+		return true;
 	}
 
 	/**

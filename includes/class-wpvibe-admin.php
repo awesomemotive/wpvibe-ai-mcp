@@ -23,6 +23,7 @@ class WPVibe_Admin {
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_assets' ) );
 		add_action( 'admin_init', array( $this, 'maybe_redirect_after_activation' ) );
 		add_action( 'admin_post_wpvibe_white_label', array( $this, 'handle_white_label_save' ) );
+		add_action( 'admin_post_wpvibe_app_passwords', array( $this, 'handle_app_password_policy' ) );
 		register_activation_hook( WPVIBE_PLUGIN_DIR . 'vibe-ai.php', array( $this, 'on_activate' ) );
 	}
 
@@ -59,6 +60,17 @@ class WPVibe_Admin {
 	 * Enable white label mode from the admin page. Enable-only: once hidden
 	 * this page no longer exists, so disabling happens via the AI or WP-CLI.
 	 */
+	public function handle_app_password_policy() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'You do not have permission to do this.', 'vibe-ai' ), 403 );
+		}
+		check_admin_referer( 'wpvibe_app_passwords' );
+		update_option( WPVibe_App_Password_Policy::OPTION, empty( $_POST['disable'] ), false );
+		delete_transient( WPVibe_Connection_Check::COOLDOWN );
+		wp_safe_redirect( admin_url( 'admin.php?page=vibe-ai&wpvibe_recheck=1' ) );
+		exit;
+	}
+
 	public function handle_white_label_save() {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			wp_die( esc_html__( 'You do not have permission to do this.', 'vibe-ai' ), 403 );
@@ -168,15 +180,32 @@ class WPVibe_Admin {
 	 * Render the admin page.
 	 */
 	public function render_page() {
+		$auth_record   = WPVibe_Connection_Status::current_observation();
+		$auth_state    = $auth_record ? $auth_record['state'] : 'not_checked';
+		$authorized    = in_array( $auth_state, array( 'verified', 'limited' ), true );
+		$ai_read       = WPVibe_Connection_Status::current_ai_read();
 		$connected     = $this->is_connected();
+		$check_result  = WPVibe_Connection_Check::last_result();
+		$legacy_live   = ! $authorized && 0 !== strpos( $auth_state, 'failing:' ) && ! WPVibe_Op_Proof::awaiting_confirmation() && $connected;
+		$last_active   = (int) get_option( 'wpvibe_last_active', 0 );
+		// Approval itself makes an authenticated read; only activity after that moment shows the AI is using the site.
+		$active        = $connected && 0 !== strpos( $auth_state, 'failing:' ) && ( ! $auth_record || $last_active > (int) floor( $auth_record['observed_at'] / 1000 ) + 60 );
+		$check_state   = $check_result ? $check_result['state'] : ( $authorized || $legacy_live || WPVibe_Op_Proof::awaiting_confirmation() ? '' : 'current' );
 		$site_url      = site_url();
+		$https         = 'https' === wp_parse_url( $site_url, PHP_URL_SCHEME );
+		$app_pw_ok     = WPVibe_App_Password_Policy::available_for_wpvibe( wp_get_current_user() );
+		$app_pw_block  = $app_pw_ok ? null : WPVibe_App_Password_Policy::blocker();
+		$app_pw_allow  = WPVibe_App_Password_Policy::enabled();
 		$mcp_url       = 'https://mcp.wpvibe.ai/mcp';
-		$connect_cta   = $this->utm( 'https://mcp.wpvibe.ai/?connect=' . rawurlencode( $site_url ), 'cta_connect', 'cta' );
-		$app_cta       = $this->utm( 'https://wpvibe.ai/app/', 'cta_open_app', 'cta' );
+		$connect_cta   = $this->utm( 'https://wpvibe.ai/docs/ai-client-setup/', 'cta_connect', 'cta' );
+		$chatgpt_app   = WPVibe_Dashboard_Widget::CHATGPT_APP_URL;
 		$footer_home   = $this->utm( 'https://wpvibe.ai/', 'footer_home' );
 		$footer_docs   = $this->utm( 'https://wpvibe.ai/docs/', 'footer_docs' );
 		$footer_supp   = $this->utm( 'https://wpvibe.ai/support/', 'footer_support' );
+		$footer_security = $this->utm( 'https://wpvibe.ai/security/', 'footer_security' );
+		$footer_dpa    = $this->utm( 'https://wpvibe.ai/dpa/', 'footer_dpa' );
 		$ai_prompt     = sprintf( __( 'Connect my site at %s', 'vibe-ai' ), $site_url );
+		$verify_prompt = sprintf( __( 'Use WPVibe to read my site at %s (the site_info tool). Tell me the site name and address it returns. If it fails, show me the error and what to do next. Do not change anything.', 'vibe-ai' ), $site_url );
 		?>
 		<div class="wpvibe-admin-wrap">
 			<div class="wpvibe-admin-page">
@@ -211,14 +240,10 @@ class WPVibe_Admin {
 				</div>
 
 				<!-- Status badge -->
-				<div class="wpvibe-status <?php echo $connected ? 'wpvibe-status--connected' : 'wpvibe-status--disconnected'; ?>">
+				<div class="wpvibe-status <?php echo 'verified' === $auth_state || $legacy_live ? 'wpvibe-status--connected' : ( 0 === strpos( $auth_state, 'failing:' ) ? 'wpvibe-status--disconnected' : ( 'limited' === $auth_state ? 'wpvibe-status--limited' : 'wpvibe-status--neutral' ) ); ?>">
 					<span class="wpvibe-status-dot"></span>
 					<?php
-					if ( $connected ) {
-						esc_html_e( 'Connected', 'vibe-ai' );
-					} else {
-						esc_html_e( 'Not Connected', 'vibe-ai' );
-					}
+					echo esc_html( WPVibe_Connection_Status::badge() );
 					?>
 				</div>
 
@@ -230,18 +255,12 @@ class WPVibe_Admin {
 					<?php esc_html_e( 'Connect this site to WPVibe to manage content, edit themes, and build pages using AI assistants like Claude, ChatGPT, and Cursor.', 'vibe-ai' ); ?>
 				</p>
 
-				<!-- CTA -->
-				<div class="wpvibe-cta">
-					<?php if ( $connected ) : ?>
-						<a href="<?php echo esc_url( $app_cta ); ?>" class="wpvibe-btn wpvibe-btn--primary" target="_blank" rel="noopener">
-							<?php esc_html_e( 'Open WPVibe', 'vibe-ai' ); ?>
-						</a>
-					<?php else : ?>
-						<a href="<?php echo esc_url( $connect_cta ); ?>" class="wpvibe-btn wpvibe-btn--primary" target="_blank" rel="noopener">
-							<?php esc_html_e( 'Get Setup Instructions', 'vibe-ai' ); ?>
-						</a>
-					<?php endif; ?>
+				<?php if ( ! $https ) : ?>
+				<div class="wpvibe-https-notice" role="alert">
+					<strong><?php esc_html_e( 'This site needs HTTPS before it can connect.', 'vibe-ai' ); ?></strong>
+					<p><?php echo esc_html( sprintf( __( 'Your WordPress Address is %s. WPVibe only connects to https:// sites, so it can never send your login over an unencrypted link. Ask your host to turn on HTTPS, update the WordPress Address and Site Address in Settings > General to https://, then come back to this page.', 'vibe-ai' ), $site_url ) ); ?></p>
 				</div>
+				<?php endif; ?>
 
 				<!-- Steps -->
 				<div class="wpvibe-steps">
@@ -252,43 +271,158 @@ class WPVibe_Admin {
 							<span><?php esc_html_e( 'You\'re here, plugin is active.', 'vibe-ai' ); ?></span>
 						</div>
 					</div>
-					<div class="wpvibe-step">
-						<div class="wpvibe-step-num">2</div>
-						<div class="wpvibe-step-content">
-							<strong><?php esc_html_e( 'Add the MCP server URL to your AI client', 'vibe-ai' ); ?></strong>
-							<span><?php esc_html_e( 'Paste this URL into Claude, ChatGPT, Cursor, or any MCP-compatible AI client:', 'vibe-ai' ); ?></span>
-							<div class="wpvibe-copy-row">
-								<code class="wpvibe-copy-text"><?php echo esc_html( $mcp_url ); ?></code>
-								<button type="button" class="wpvibe-copy-btn" data-wpvibe-copy="<?php echo esc_attr( $mcp_url ); ?>">
-									<?php esc_html_e( 'Copy', 'vibe-ai' ); ?>
-								</button>
+					<div id="wpvibe-step-2" class="wpvibe-step<?php echo $check_state ? ' wpvibe-step--' . esc_attr( $check_state ) : ''; ?>">
+						<div class="wpvibe-step-num" id="wpvibe-step-number-2"><?php echo 'done' === $check_state ? '&#10003;' : '2'; ?></div>
+						<div class="wpvibe-step-content" id="wpvibe-connection-check" data-last-check="<?php echo esc_attr( wp_json_encode( $check_result ) ); ?>" data-cooldown="<?php echo (int) max( 0, (int) get_transient( WPVibe_Connection_Check::COOLDOWN ) - time() ); ?>" data-auth-state="<?php echo esc_attr( $auth_state ); ?>" data-ai-observed-at="<?php echo esc_attr( $ai_read ? $ai_read['observed_at'] : '' ); ?>" data-ai-client="<?php echo esc_attr( $ai_read && ! empty( $ai_read['client'] ) ? $ai_read['client'] : '' ); ?>" data-auth-observed-at="<?php echo esc_attr( $auth_record ? $auth_record['observed_at'] : '' ); ?>" data-site-url="<?php echo esc_attr( $site_url ); ?>" data-ajax-url="<?php echo esc_url( admin_url( 'admin-ajax.php', 'relative' ) ); ?>" data-nonce="<?php echo esc_attr( wp_create_nonce( WPVibe_Connection_Check::NONCE ) ); ?>">
+							<strong><?php esc_html_e( 'Check your connection', 'vibe-ai' ); ?></strong>
+							<span><?php echo $authorized || $legacy_live ? esc_html__( 'Optional once connected. Run it if your AI reports a connection problem.', 'vibe-ai' ) : esc_html__( 'Can your site reach WPVibe, and can WPVibe reach your site?', 'vibe-ai' ); ?></span>
+							<button type="button" class="wpvibe-btn wpvibe-btn--primary" id="wpvibe-run-check"<?php echo $https ? '' : ' disabled'; ?>><?php esc_html_e( 'Check site connectivity', 'vibe-ai' ); ?></button>
+							<small id="wpvibe-check-retry-status" aria-live="polite"></small>
+							<small class="wpvibe-step-hint" id="wpvibe-check-privacy-hint"<?php echo $check_result ? ' hidden' : ''; ?>><?php esc_html_e( 'Sends your site address and a temporary verification code to WPVibe. No passwords are sent and no security settings are changed.', 'vibe-ai' ); ?></small>
+							<p id="wpvibe-check-progress" role="status" aria-live="polite"></p>
+							<?php if ( $https && ( ! $app_pw_ok || $app_pw_allow ) ) : ?>
+							<div class="wpvibe-fix-card<?php echo $app_pw_ok ? ' wpvibe-fix-card--ok' : ''; ?>">
+								<?php if ( ! $app_pw_ok && ! is_ssl() ) : ?>
+								<strong><?php esc_html_e( 'WordPress does not see this site as HTTPS.', 'vibe-ai' ); ?></strong>
+								<p><?php esc_html_e( 'Your address uses https://, but a proxy or CDN terminates SSL before WordPress, so WordPress turns Application Passwords off. Add this line to wp-config.php above the "That\'s all, stop editing" comment, then run the check again:', 'vibe-ai' ); ?></p>
+								<div class="wpvibe-copy-row">
+									<code class="wpvibe-copy-text">if ( isset( $_SERVER['HTTP_X_FORWARDED_PROTO'] ) &amp;&amp; 'https' === $_SERVER['HTTP_X_FORWARDED_PROTO'] ) { $_SERVER['HTTPS'] = 'on'; }</code>
+									<button type="button" class="wpvibe-copy-btn" data-wpvibe-copy="if ( isset( $_SERVER['HTTP_X_FORWARDED_PROTO'] ) &amp;&amp; 'https' === $_SERVER['HTTP_X_FORWARDED_PROTO'] ) { $_SERVER['HTTPS'] = 'on'; }"><?php esc_html_e( 'Copy', 'vibe-ai' ); ?></button>
+								</div>
+								<?php elseif ( ! $app_pw_ok ) : ?>
+								<strong><?php echo $app_pw_block ? esc_html( sprintf( __( 'Application Passwords are turned off by %s.', 'vibe-ai' ), $app_pw_block['name'] ) ) : esc_html__( 'Application Passwords are turned off on this site.', 'vibe-ai' ); ?></strong>
+								<p><?php echo $app_pw_block ? esc_html( sprintf( __( 'WPVibe connects with a WordPress Application Password. Turn that off in %1$s (%2$s), or allow Application Passwords for WPVibe only: requests that identify as WPVibe, from accounts that authorized WPVibe. Everything else stays under your security plugin\'s policy.', 'vibe-ai' ), $app_pw_block['name'], isset( $app_pw_block['setting'] ) ? $app_pw_block['setting'] : __( 'its settings', 'vibe-ai' ) ) ) : esc_html__( 'WPVibe connects with a WordPress Application Password. Allow them for WPVibe only: requests that identify as WPVibe, from accounts that authorized WPVibe. Everything else stays under your security settings.', 'vibe-ai' ); ?></p>
+								<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" class="wpvibe-inline-form">
+									<input type="hidden" name="action" value="wpvibe_app_passwords" />
+									<?php wp_nonce_field( 'wpvibe_app_passwords' ); ?>
+									<button type="submit" class="wpvibe-btn wpvibe-btn--primary wpvibe-btn--compact"><?php esc_html_e( 'Allow for WPVibe', 'vibe-ai' ); ?></button>
+								</form>
+								<?php else : ?>
+								<strong><?php esc_html_e( 'Application Passwords are allowed for WPVibe requests.', 'vibe-ai' ); ?></strong>
+								<p><?php esc_html_e( 'Your security plugin still controls every other request. Turn this off if you no longer use WPVibe on this site.', 'vibe-ai' ); ?></p>
+								<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" class="wpvibe-inline-form">
+									<input type="hidden" name="action" value="wpvibe_app_passwords" />
+									<input type="hidden" name="disable" value="1" />
+									<?php wp_nonce_field( 'wpvibe_app_passwords' ); ?>
+									<button type="submit" class="wpvibe-btn wpvibe-btn--secondary"><?php esc_html_e( 'Stop allowing for WPVibe', 'vibe-ai' ); ?></button>
+								</form>
+								<?php endif; ?>
 							</div>
-							<a href="<?php echo esc_url( $connect_cta ); ?>" target="_blank" rel="noopener" class="wpvibe-inline-link">
-								<?php esc_html_e( 'See per-client setup instructions &rarr;', 'vibe-ai' ); ?>
-							</a>
+							<?php endif; ?>
+							<div id="wpvibe-connection-overview"></div>
+							<div id="wpvibe-check-results"></div>
+							<div id="wpvibe-check-report-actions" hidden>
+								<button type="button" class="wpvibe-copy-btn" id="wpvibe-copy-report"><?php esc_html_e( 'Copy report to clipboard', 'vibe-ai' ); ?></button>
+								<button type="button" class="wpvibe-copy-btn" id="wpvibe-download-report"><?php esc_html_e( 'Download report', 'vibe-ai' ); ?></button>
+							</div>
+
 						</div>
 					</div>
-					<div class="wpvibe-step <?php echo $connected ? 'wpvibe-step--done' : ''; ?>">
-						<div class="wpvibe-step-num"><?php echo $connected ? '&#10003;' : '3'; ?></div>
+					<?php
+					$failing_auth     = 0 === strpos( $auth_state, 'failing:' );
+					$awaiting         = ! $authorized && ! $failing_auth && WPVibe_Op_Proof::awaiting_confirmation();
+					$legacy_connected = ! $authorized && ! $failing_auth && ! $awaiting && $connected;
+					$setup_collapsed  = $authorized || $failing_auth || $legacy_connected || $awaiting;
+					?>
+					<div id="wpvibe-step-3" class="wpvibe-step<?php echo 'verified' === $auth_state || $legacy_connected ? ' wpvibe-step--done' : ( 'limited' === $auth_state || $failing_auth ? ' wpvibe-step--attention' : '' ); ?>" data-awaiting="<?php echo $awaiting ? '1' : '0'; ?>" data-legacy="<?php echo $legacy_connected ? '1' : '0'; ?>" data-active="<?php echo $active ? '1' : '0'; ?>">
+						<div class="wpvibe-step-num" id="wpvibe-step-number-3"><?php echo 'verified' === $auth_state || $legacy_connected ? '&#10003;' : '3'; ?></div>
 						<div class="wpvibe-step-content">
-							<strong><?php esc_html_e( 'Tell your AI to connect this site', 'vibe-ai' ); ?></strong>
-							<?php if ( $connected ) : ?>
-								<span><?php esc_html_e( 'Site is connected and ready.', 'vibe-ai' ); ?></span>
+							<strong id="wpvibe-step-title-3"><?php
+							if ( 'verified' === $auth_state ) {
+								esc_html_e( 'Site connected', 'vibe-ai' );
+							} elseif ( 'limited' === $auth_state ) {
+								esc_html_e( 'Site connected with limited permissions', 'vibe-ai' );
+							} elseif ( $failing_auth ) {
+								esc_html_e( 'WordPress access needs attention', 'vibe-ai' );
+							} elseif ( $awaiting ) {
+								esc_html_e( 'Approved, waiting for confirmation', 'vibe-ai' );
+							} elseif ( $legacy_connected ) {
+								esc_html_e( 'Site connected', 'vibe-ai' );
+							} else {
+								esc_html_e( 'Add WPVibe to your AI and connect this site', 'vibe-ai' );
+							}
+							?></strong>
+							<div id="wpvibe-authorization-status"></div>
+							<?php if ( $awaiting ) : ?>
+							<span><?php esc_html_e( 'WordPress approved the connection, but WPVibe could not confirm access in time. Run Step 4; a successful read confirms it and turns both steps green.', 'vibe-ai' ); ?></span>
+							<?php elseif ( $legacy_connected ) : ?>
+							<span><?php echo esc_html( sprintf( __( 'Your AI used this site %s ago. No reconnect is needed unless your AI reports an error.', 'vibe-ai' ), human_time_diff( $last_active ) ) ); ?></span>
+							<?php elseif ( $failing_auth ) : ?>
+							<span><?php esc_html_e( 'Your saved connection is kept. Use Check authorized access to see what failed and the next step.', 'vibe-ai' ); ?></span>
+							<?php endif; ?>
+							<?php if ( $setup_collapsed ) : ?>
+							<p class="wpvibe-troubleshooting-link">
+								<a class="wpvibe-btn wpvibe-btn--secondary" href="<?php echo esc_url( WPVibe_Connection_Status::check_url() ); ?>" target="_blank" rel="noopener"><?php esc_html_e( 'Check authorized access', 'vibe-ai' ); ?></a>
+								<br><small><?php esc_html_e( 'Tests whether WPVibe can still reach this site with the access you approved. Requires WPVibe sign-in.', 'vibe-ai' ); ?></small>
+							</p>
+							<details class="wpvibe-check-details">
+								<summary><?php esc_html_e( 'Reconnect or connect from another AI client', 'vibe-ai' ); ?></summary>
+							<?php endif; ?>
+							<span class="wpvibe-step-label wpvibe-step-label--first"><strong><?php esc_html_e( 'A.', 'vibe-ai' ); ?></strong> <?php esc_html_e( 'Add WPVibe to your AI. Already have it? Skip to B.', 'vibe-ai' ); ?></span>
+							<div class="wpvibe-client-links">
+								<a class="wpvibe-btn wpvibe-btn--secondary" href="<?php echo esc_url( $chatgpt_app ); ?>" target="_blank" rel="noopener"><?php esc_html_e( 'Add to ChatGPT', 'vibe-ai' ); ?></a>
+								<a class="wpvibe-btn wpvibe-btn--secondary" href="<?php echo esc_url( $connect_cta ); ?>" target="_blank" rel="noopener"><?php esc_html_e( 'Claude setup guide', 'vibe-ai' ); ?></a>
+								<a class="wpvibe-btn wpvibe-btn--secondary" href="<?php echo esc_url( $connect_cta ); ?>" target="_blank" rel="noopener"><?php esc_html_e( 'Cursor and other clients', 'vibe-ai' ); ?></a>
+							</div>
+							<span class="wpvibe-step-hint"><?php esc_html_e( 'WPVibe has an official ChatGPT app. Other clients add it as a custom connector with the address below. Sign in with your WPVibe account when the client asks.', 'vibe-ai' ); ?></span>
+							<span class="wpvibe-step-label"><?php esc_html_e( 'MCP server address:', 'vibe-ai' ); ?></span>
+							<div class="wpvibe-copy-row">
+								<code class="wpvibe-copy-text"><?php echo esc_html( $mcp_url ); ?></code>
+								<button type="button" class="wpvibe-copy-btn" data-wpvibe-copy="<?php echo esc_attr( $mcp_url ); ?>"><?php esc_html_e( 'Copy', 'vibe-ai' ); ?></button>
+							</div>
+							<?php if ( $https ) : ?>
+							<span class="wpvibe-step-label wpvibe-step-label--part"><strong><?php esc_html_e( 'B.', 'vibe-ai' ); ?></strong> <?php esc_html_e( 'Paste this into your AI to connect this site.', 'vibe-ai' ); ?></span>
+							<div class="wpvibe-copy-row">
+								<code class="wpvibe-copy-text"><?php echo esc_html( $ai_prompt ); ?></code>
+								<button type="button" class="wpvibe-copy-btn" data-wpvibe-copy="<?php echo esc_attr( $ai_prompt ); ?>" data-wpvibe-watch="auth"><?php esc_html_e( 'Copy', 'vibe-ai' ); ?></button>
+							</div>
+							<span class="wpvibe-step-hint" id="wpvibe-watch-auth"><?php esc_html_e( 'Your AI replies with a link. Open it and approve access while logged in to this site. This step turns green once you approve.', 'vibe-ai' ); ?></span>
 							<?php else : ?>
-								<span><?php esc_html_e( 'In your AI chat, paste this prompt:', 'vibe-ai' ); ?></span>
-								<div class="wpvibe-copy-row">
-									<code class="wpvibe-copy-text"><?php echo esc_html( $ai_prompt ); ?></code>
-									<button type="button" class="wpvibe-copy-btn" data-wpvibe-copy="<?php echo esc_attr( $ai_prompt ); ?>">
-										<?php esc_html_e( 'Copy', 'vibe-ai' ); ?>
-									</button>
-								</div>
-								<span class="wpvibe-step-hint"><?php esc_html_e( 'Your AI will return a one-click authorization link. Approve it and you\'re connected.', 'vibe-ai' ); ?></span>
+							<span><?php esc_html_e( 'Connecting is available once this site uses HTTPS. See the notice above.', 'vibe-ai' ); ?></span>
+							<?php endif; ?>
+							<?php if ( ! $setup_collapsed ) : ?>
+							<?php if ( WPVibe_Connection_Status::has_connection_history() ) : ?>
+							<p class="wpvibe-troubleshooting-link">
+								<?php esc_html_e( 'Already authorized but having trouble?', 'vibe-ai' ); ?>
+								<br><a class="wpvibe-btn wpvibe-btn--secondary" href="<?php echo esc_url( WPVibe_Connection_Status::check_url() ); ?>" target="_blank" rel="noopener"><?php esc_html_e( 'Check authorized access', 'vibe-ai' ); ?></a>
+							</p>
+							<?php endif; ?>
+							<?php else : ?>
+							</details>
+							<?php endif; ?>
+						</div>
+					</div>
+					<?php $step4_done = $ai_read || $active; ?>
+					<div id="wpvibe-step-4" class="wpvibe-step<?php echo $step4_done ? ' wpvibe-step--done' : ( $authorized || $awaiting ? ' wpvibe-step--current' : '' ); ?>"<?php echo ( $authorized || $awaiting ) && ! $step4_done ? ' aria-current="step"' : ''; ?>>
+						<div class="wpvibe-step-num" id="wpvibe-step-number-4"><?php echo $step4_done ? '&#10003;' : '4'; ?></div>
+						<div class="wpvibe-step-content">
+							<strong id="wpvibe-step-title-4"><?php echo $step4_done ? esc_html__( 'Your AI has used this site', 'vibe-ai' ) : esc_html__( 'Confirm your AI can read this site', 'vibe-ai' ); ?></strong>
+							<?php if ( $ai_read ) : ?>
+							<span><?php echo esc_html( sprintf( __( 'Confirmed at %s UTC.', 'vibe-ai' ), gmdate( 'Y-m-d H:i:s', (int) floor( $ai_read['observed_at'] / 1000 ) ) ) ); ?><?php if ( ! empty( $ai_read['client'] ) ) : ?> <?php echo esc_html( sprintf( __( 'Client: %s.', 'vibe-ai' ), $ai_read['client'] ) ); ?><?php endif; ?></span>
+							<?php elseif ( $step4_done ) : ?>
+							<span><?php echo esc_html( sprintf( __( 'Your AI used this site %s ago.', 'vibe-ai' ), human_time_diff( $last_active ) ) ); ?></span>
+							<?php endif; ?>
+							<?php if ( $step4_done ) : ?>
+							<details class="wpvibe-check-details">
+								<summary><?php esc_html_e( 'Test another AI client', 'vibe-ai' ); ?></summary>
+							<?php endif; ?>
+							<span><?php esc_html_e( 'Paste this into your AI. This step turns green when your AI answers with your site name and address.', 'vibe-ai' ); ?></span>
+							<div class="wpvibe-copy-row">
+								<code class="wpvibe-copy-text"><?php echo esc_html( $verify_prompt ); ?></code>
+								<button type="button" class="wpvibe-copy-btn" data-wpvibe-copy="<?php echo esc_attr( $verify_prompt ); ?>" data-wpvibe-watch="ai"><?php esc_html_e( 'Copy', 'vibe-ai' ); ?></button>
+							</div>
+							<span class="wpvibe-step-hint" id="wpvibe-watch-ai"></span>
+							<?php if ( $step4_done ) : ?>
+							</details>
+							<?php else : ?>
+							<span class="wpvibe-step-hint"><?php esc_html_e( 'If your AI says it has no WPVibe tool, go back to Step 3. If the tool returns an error, follow its next step, then run Step 2 again. Still stuck? Send the error and the Step 2 report to support@wpvibe.ai.', 'vibe-ai' ); ?></span>
 							<?php endif; ?>
 						</div>
 					</div>
 				</div>
 
 				<!-- White label -->
+				<?php if ( $connected || $authorized ) : ?>
 				<div class="wpvibe-white-label">
 					<strong><?php esc_html_e( 'White label', 'vibe-ai' ); ?></strong>
 					<p><?php esc_html_e( 'Hide WPVibe everywhere in this WordPress dashboard: the admin menu, dashboard widget, Plugins list entry, and editor sidebar. For agencies managing this site for a client. The site stays connected and fully manageable through your AI.', 'vibe-ai' ); ?></p>
@@ -297,18 +431,12 @@ class WPVibe_Admin {
 						<input type="hidden" name="action" value="wpvibe_white_label" />
 						<input type="hidden" name="enable" value="1" />
 						<?php wp_nonce_field( 'wpvibe_white_label' ); ?>
-						<?php if ( $connected ) : ?>
 							<button type="submit" class="wpvibe-btn wpvibe-btn--secondary" onclick="return confirm( '<?php echo esc_js( __( 'Hide WPVibe from this WordPress dashboard for all users?', 'vibe-ai' ) ); ?>' );">
 								<?php esc_html_e( 'Hide WPVibe from wp-admin', 'vibe-ai' ); ?>
 							</button>
-						<?php else : ?>
-							<button type="submit" class="wpvibe-btn wpvibe-btn--secondary" disabled>
-								<?php esc_html_e( 'Hide WPVibe from wp-admin', 'vibe-ai' ); ?>
-							</button>
-							<p class="wpvibe-white-label-hint"><?php esc_html_e( 'Available once the site is connected to WPVibe.', 'vibe-ai' ); ?></p>
-						<?php endif; ?>
 					</form>
 				</div>
+				<?php endif; ?>
 
 				<?php if ( $connected ) : ?>
 					<?php echo WPVibe_Uninstall_Notice::settings_html(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped piecewise in settings_html(). ?>
@@ -321,6 +449,10 @@ class WPVibe_Admin {
 					<a href="<?php echo esc_url( $footer_docs ); ?>" target="_blank" rel="noopener"><?php esc_html_e( 'Documentation', 'vibe-ai' ); ?></a>
 					<span class="wpvibe-footer-sep">&middot;</span>
 					<a href="<?php echo esc_url( $footer_supp ); ?>" target="_blank" rel="noopener"><?php esc_html_e( 'Support', 'vibe-ai' ); ?></a>
+					<span class="wpvibe-footer-sep">&middot;</span>
+					<a href="<?php echo esc_url( $footer_security ); ?>" target="_blank" rel="noopener"><?php esc_html_e( 'Security', 'vibe-ai' ); ?></a>
+					<span class="wpvibe-footer-sep">&middot;</span>
+					<a href="<?php echo esc_url( $footer_dpa ); ?>" target="_blank" rel="noopener"><?php esc_html_e( 'DPA', 'vibe-ai' ); ?></a>
 				</div>
 
 			</div>

@@ -23,6 +23,7 @@ class WPVibe_Op_Proof {
 	const REQUIRED = 'wpvibe_op_proof_required';
 	/** The application password the last authorize minted: the only credential that may seed the next key. */
 	const MINTER   = 'wpvibe_op_proof_minter';
+	const PENDING_MINTER = 'wpvibe_op_proof_pending_minter';
 	const HEADER   = 'x_wpvibe_op_proof';
 	/** Seconds a proof's expiry may sit in the future (clock skew + relay time). */
 	const MAX_TTL = 3600;
@@ -63,6 +64,12 @@ class WPVibe_Op_Proof {
 		return is_string( $key ) && preg_match( '/^[a-f0-9]{64}$/', $key ) ? $key : '';
 	}
 
+	public static function awaiting_confirmation() {
+		if ( self::provisioned() ) { return false; }
+		$pending = get_option( self::PENDING_MINTER, array() );
+		return is_array( $pending ) && ! empty( $pending['expires'] ) && (int) $pending['expires'] > time();
+	}
+
 	public static function provisioned() {
 		return '' !== self::key();
 	}
@@ -81,22 +88,114 @@ class WPVibe_Op_Proof {
 		if ( ! preg_match( '/^[a-f0-9]{64}$/', $raw ) ) {
 			return new WP_Error( 'wpvibe_op_proof_bad_key', __( 'The proof key must be 64 hex characters.', 'vibe-ai' ), array( 'status' => 400 ) );
 		}
-		if ( self::provisioned() ) {
+		$previous = get_option( self::OPTION, false );
+		$minter = get_option( self::MINTER, false );
+		$had_key = is_string( $previous ) && preg_match( '/^[a-f0-9]{64}$/', $previous );
+		if ( $had_key ) {
 			$ok = self::verify( $request, '/wpvibe/v1/op-proof/key', $raw );
 			if ( true !== $ok ) {
 				return new WP_Error( 'wpvibe_op_proof_rotation_denied', __( 'A proof key is already set; rotating it needs a proof signed with the current key. Reconnect the site from WPVibe to reset it.', 'vibe-ai' ), array( 'status' => 403 ) );
 			}
 		} else {
 			// After a reconnect, only the credential that reconnect minted may seed the key.
-			$minter = (string) get_option( self::MINTER, '' );
-			if ( '' !== $minter && $minter !== self::$auth_uuid && ! self::request_carries( $minter ) ) {
+			if ( false !== $minter && '' !== (string) $minter && (string) $minter !== self::$auth_uuid && ! self::request_carries( $minter ) ) {
 				return new WP_Error( 'wpvibe_op_proof_minter_mismatch', __( 'The first proof key after a reconnect must arrive under the application password that reconnect created. Approve the connection again from the WPVibe connect link in your browser; entering credentials by hand does not issue a new key.', 'vibe-ai' ), array( 'status' => 403 ) );
 			}
 		}
-		update_option( self::OPTION, $raw, false );
+		$changed = self::portable_storage() ? self::store_key_portable( $raw, $previous, $minter ) : self::store_key_atomic( $raw, $previous, $minter );
+		if ( 1 !== $changed ) {
+			return new WP_Error( 'wpvibe_op_proof_provision_conflict', __( 'The connection changed while provisioning its proof key. Retry the connection check.', 'vibe-ai' ), array( 'status' => 409 ) );
+		}
+		self::clear_key_cache();
 		update_option( self::REQUIRED, 1, false );
-		delete_option( self::MINTER );
+		// A key set under this approval settles it; the staged uuid must not stay usable for a later rotation.
+		delete_option( self::PENDING_MINTER );
+		if ( ! $had_key && false !== $minter ) {
+			self::consume_minter( $minter, $raw );
+			self::clear_key_cache();
+		}
 		return true;
+	}
+
+	/** SQLite installs (Studio, Playground, the SQLite integration plugin) cannot run the multi-table statements below. */
+	private static function portable_storage() {
+		global $wpdb;
+		if ( ( defined( 'DB_ENGINE' ) && 'sqlite' === strtolower( (string) DB_ENGINE ) ) || ( defined( 'DATABASE_TYPE' ) && 'sqlite' === strtolower( (string) DATABASE_TYPE ) ) ) {
+			return true;
+		}
+		if ( class_exists( 'WP_SQLite_DB' ) && $wpdb instanceof WP_SQLite_DB ) {
+			return true;
+		}
+		return (bool) apply_filters( 'wpvibe_op_proof_portable_storage', false );
+	}
+
+	/** A raw statement the engine rejected outright (not merely zero rows) hands over to the option API. */
+	private static function rejected( $result ) {
+		global $wpdb;
+		return false === $result && '' !== (string) $wpdb->last_error;
+	}
+
+	private static function minter_matches( $minter ) {
+		$current = get_option( self::MINTER, false );
+		return false === $minter ? false === $current : false !== $current && maybe_serialize( $current ) === maybe_serialize( $minter );
+	}
+
+	private static function store_key_atomic( $raw, $previous, $minter ) {
+		global $wpdb;
+		$minter_present = false === $minter ? 0 : 1;
+		$minter_guard = '((%d = 0 AND minter.option_id IS NULL) OR (%d = 1 AND BINARY minter.option_value = %s))';
+		$join = "LEFT JOIN {$wpdb->options} AS minter ON minter.option_name = %s";
+		if ( false === $previous ) {
+			$changed = $wpdb->query( $wpdb->prepare( "INSERT IGNORE INTO {$wpdb->options} (option_name,option_value,autoload) SELECT %s,%s,'no' FROM (SELECT 1) AS seed LEFT JOIN {$wpdb->options} AS active_key ON active_key.option_name = %s {$join} WHERE active_key.option_id IS NULL AND {$minter_guard}", self::OPTION, $raw, self::OPTION, self::MINTER, $minter_present, $minter_present, maybe_serialize( $minter ) ) );
+		} elseif ( $raw === $previous ) {
+			$present = $wpdb->get_var( $wpdb->prepare( "SELECT active_key.option_value FROM {$wpdb->options} AS active_key {$join} WHERE active_key.option_name = %s AND BINARY active_key.option_value = %s AND {$minter_guard}", self::MINTER, self::OPTION, $raw, $minter_present, $minter_present, maybe_serialize( $minter ) ) );
+			$changed = '' !== (string) $wpdb->last_error && null === $present ? false : ( $raw === $present ? 1 : 0 );
+		} else {
+			$changed = $wpdb->query( $wpdb->prepare( "UPDATE {$wpdb->options} AS active_key {$join} SET active_key.option_value = %s WHERE active_key.option_name = %s AND BINARY active_key.option_value = %s AND {$minter_guard}", self::MINTER, $raw, self::OPTION, maybe_serialize( $previous ), $minter_present, $minter_present, maybe_serialize( $minter ) ) );
+		}
+		return self::rejected( $changed ) ? self::store_key_portable( $raw, $previous, $minter ) : $changed;
+	}
+
+	private static function store_key_portable( $raw, $previous, $minter ) {
+		self::clear_key_cache();
+		if ( ! self::minter_matches( $minter ) ) {
+			return 0;
+		}
+		if ( false === $previous ) {
+			if ( ! add_option( self::OPTION, $raw, '', false ) ) {
+				return 0;
+			}
+			if ( ! self::minter_matches( $minter ) ) {
+				delete_option( self::OPTION );
+				return 0;
+			}
+			return 1;
+		}
+		$current = get_option( self::OPTION, false );
+		if ( $raw === $previous ) {
+			return $current === $raw ? 1 : 0;
+		}
+		return $current === $previous && update_option( self::OPTION, $raw, false ) ? 1 : 0;
+	}
+
+	private static function consume_minter( $minter, $raw ) {
+		global $wpdb;
+		if ( ! self::portable_storage() ) {
+			$result = $wpdb->query( $wpdb->prepare( "DELETE minter FROM {$wpdb->options} AS minter INNER JOIN {$wpdb->options} AS active_key ON active_key.option_name = %s WHERE minter.option_name = %s AND BINARY minter.option_value = %s AND BINARY active_key.option_value = %s", self::OPTION, self::MINTER, maybe_serialize( $minter ), $raw ) );
+			if ( ! self::rejected( $result ) ) {
+				return;
+			}
+		}
+		self::clear_key_cache();
+		if ( get_option( self::OPTION, false ) === $raw && self::minter_matches( $minter ) ) {
+			delete_option( self::MINTER );
+		}
+	}
+
+	private static function clear_key_cache() {
+		foreach ( array( self::OPTION, self::MINTER, self::PENDING_MINTER, 'alloptions', 'notoptions' ) as $option ) {
+			wp_cache_delete( $option, 'options' );
+		}
 	}
 
 	/**
@@ -105,15 +204,73 @@ class WPVibe_Op_Proof {
 	 * contact the approved routes refuse rather than fall back to bare auth.
 	 */
 	public static function reset( $minter_uuid = '' ) {
+		delete_option( self::PENDING_MINTER );
 		if ( self::provisioned() ) {
 			update_option( self::REQUIRED, 1, false );
 		}
-		delete_option( self::OPTION );
 		if ( '' !== (string) $minter_uuid ) {
 			update_option( self::MINTER, (string) $minter_uuid, false );
+			self::delete_key_for_minter( (string) $minter_uuid );
+			self::clear_key_cache();
 		} else {
+			delete_option( self::OPTION );
 			delete_option( self::MINTER );
 		}
+	}
+
+	private static function delete_key_for_minter( $minter_uuid ) {
+		global $wpdb;
+		if ( ! self::portable_storage() ) {
+			$result = $wpdb->query( $wpdb->prepare( "DELETE active_key FROM {$wpdb->options} AS active_key INNER JOIN {$wpdb->options} AS minter ON minter.option_name = %s WHERE active_key.option_name = %s AND BINARY minter.option_value = %s", self::MINTER, self::OPTION, $minter_uuid ) );
+			if ( ! self::rejected( $result ) ) {
+				return;
+			}
+		}
+		self::clear_key_cache();
+		if ( (string) get_option( self::MINTER, '' ) === $minter_uuid ) {
+			delete_option( self::OPTION );
+		}
+	}
+
+	public static function stage_minter( $uuid ) {
+		update_option( self::PENDING_MINTER, array( 'uuid' => (string) $uuid, 'user_id' => get_current_user_id(), 'expires' => time() + DAY_IN_SECONDS ), false );
+	}
+
+	/** A cookie-authorized replacement can recover a lost key without disabling the old key while pending. */
+	public static function activate_staged_key( $request ) {
+		$pending = get_option( self::PENDING_MINTER, array() );
+		$uuid = (string) $request->get_param( 'uuid' );
+		$key = (string) $request->get_param( 'key' );
+		if ( ! current_user_can( 'manage_options' ) || ! is_array( $pending ) || empty( $pending['uuid'] ) || $uuid !== $pending['uuid'] || (int) $pending['user_id'] !== get_current_user_id() || (int) $pending['expires'] < time() || ( self::$auth_uuid !== $uuid && ! self::request_carries( $uuid ) ) ) {
+			return new WP_Error( 'wpvibe_op_proof_activation_denied', __( 'This key activation requires the application password from the latest browser-approved connection.', 'vibe-ai' ), array( 'status' => 403 ) );
+		}
+		if ( ! preg_match( '/^[a-f0-9]{64}$/', $key ) ) {
+			return new WP_Error( 'wpvibe_op_proof_bad_key', __( 'The proof key must be 64 hex characters.', 'vibe-ai' ), array( 'status' => 400 ) );
+		}
+		global $wpdb;
+		$previous_key = self::key();
+		if ( '' === $previous_key ) {
+			return new WP_Error( 'wpvibe_op_proof_activation_denied', __( 'No active key exists. Provision the key using the newly approved application password.', 'vibe-ai' ), array( 'status' => 409 ) );
+		}
+		$changed = self::portable_storage() ? false : $wpdb->query( $wpdb->prepare( "UPDATE {$wpdb->options} AS active_key INNER JOIN {$wpdb->options} AS staged ON staged.option_name = %s SET active_key.option_value = %s WHERE active_key.option_name = %s AND BINARY active_key.option_value = %s AND BINARY staged.option_value = %s", self::PENDING_MINTER, $key, self::OPTION, $previous_key, maybe_serialize( $pending ) ) );
+		if ( self::portable_storage() || self::rejected( $changed ) ) {
+			self::clear_key_cache();
+			$changed = get_option( self::OPTION, false ) === $previous_key && maybe_serialize( get_option( self::PENDING_MINTER, array() ) ) === maybe_serialize( $pending ) && update_option( self::OPTION, $key, false ) ? 1 : 0;
+		}
+		if ( 1 !== $changed ) {
+			return new WP_Error( 'wpvibe_op_proof_activation_conflict', __( 'The connection changed during key activation. Approve a fresh connection.', 'vibe-ai' ), array( 'status' => 409 ) );
+		}
+		self::clear_key_cache();
+		update_option( self::REQUIRED, 1, false );
+		$result = self::portable_storage() ? false : $wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->options} WHERE option_name = %s AND BINARY option_value = %s", self::PENDING_MINTER, maybe_serialize( $pending ) ) );
+		if ( self::portable_storage() || self::rejected( $result ) ) {
+			self::clear_key_cache();
+			if ( maybe_serialize( get_option( self::PENDING_MINTER, array() ) ) === maybe_serialize( $pending ) ) {
+				delete_option( self::PENDING_MINTER );
+			}
+		}
+		self::clear_key_cache();
+		return true;
 	}
 
 	/**
