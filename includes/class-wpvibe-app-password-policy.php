@@ -46,7 +46,12 @@ class WPVibe_App_Password_Policy {
 		if ( ! $user_id || ! class_exists( 'WP_Application_Passwords' ) ) {
 			return $available;
 		}
+		// The authorize link carries a fixed app_id the approver cannot edit; the name prefix covers passwords minted before it was recorded.
+		$app_id = class_exists( 'WPVibe_Authorize_Notice' ) ? WPVibe_Authorize_Notice::APP_ID : '';
 		foreach ( (array) WP_Application_Passwords::get_user_application_passwords( $user_id ) as $item ) {
+			if ( '' !== $app_id && isset( $item['app_id'] ) && $app_id === (string) $item['app_id'] ) {
+				return true;
+			}
 			if ( isset( $item['name'] ) && 0 === strpos( (string) $item['name'], 'WPVibe' ) ) {
 				return true;
 			}
@@ -60,7 +65,7 @@ class WPVibe_App_Password_Policy {
 		return 'authorize-application.php' === $script && is_string( $app ) && 0 === strpos( $app, 'WPVibe' );
 	}
 
-	/** Evaluate availability the way a WPVibe request would see it. */
+	// The browser approval routes (cookie + nonce, never an app password) carry no WPVibe header, so they evaluate here too.
 	public static function available_for_wpvibe( $user ) {
 		self::$forced = true;
 		try {

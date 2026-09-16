@@ -325,6 +325,8 @@ class WPVibe_CLI {
 	const READABLE_BLOCKED_OPTIONS = array(
 		'users_can_register',
 		'default_role',
+		'wpvibe_self_update_state',
+		'wpvibe_detached_*',
 	);
 
 	const BLOCKED_OPTIONS = array(
@@ -333,6 +335,10 @@ class WPVibe_CLI {
 		'wpvibe_op_proof_minter',
 		'wpvibe_op_proof_pending_minter',
 		'wpvibe_connection_status',
+		'wpvibe_allow_app_passwords',
+		// Loopback hand-off state: the public run routes trust it, so a seeded row would run as the stored admin.
+		'wpvibe_self_update_state',
+		'wpvibe_detached_*',
 		'siteurl',
 		'home',
 		'admin_email',
@@ -697,7 +703,7 @@ class WPVibe_CLI {
 	public static function match_option_name( $name, $list ) {
 		$name = trim( (string) $name );
 		foreach ( $list as $candidate ) {
-			if ( 0 === strcasecmp( $name, (string) $candidate ) ) {
+			if ( self::option_name_is( $name, $candidate ) ) {
 				return $candidate;
 			}
 		}
@@ -713,11 +719,28 @@ class WPVibe_CLI {
 			return null;
 		}
 		foreach ( $list as $candidate ) {
-			if ( 0 === strcasecmp( (string) $canonical, (string) $candidate ) ) {
+			if ( self::option_name_is( (string) $canonical, $candidate ) ) {
 				return $candidate;
 			}
 		}
 		return null;
+	}
+
+	/** The prefix a list entry ending in `*` stands for, or null for an exact name (a bare `*` is not a wildcard). */
+	public static function option_list_prefix( $candidate ) {
+		$candidate = (string) $candidate;
+		if ( strlen( $candidate ) < 2 || '*' !== substr( $candidate, -1 ) ) {
+			return null;
+		}
+		return substr( $candidate, 0, -1 );
+	}
+
+	private static function option_name_is( $name, $candidate ) {
+		$prefix = self::option_list_prefix( $candidate );
+		if ( null !== $prefix ) {
+			return 0 === strncasecmp( $name, $prefix, strlen( $prefix ) );
+		}
+		return 0 === strcasecmp( $name, (string) $candidate );
 	}
 
 	/** Ask the DB which stored option_name a given name resolves to under the live collation, or null. */

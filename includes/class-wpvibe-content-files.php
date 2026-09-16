@@ -80,7 +80,7 @@ class WPVibe_Content_Files {
 	}
 
 	public static function redact( $content ) {
-		$keys = '(?:[a-z0-9_]*?(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|authorization|cookie|db[_-]?(?:user|name|host))|[a-z0-9_]*_salt|(?:auth|secure_auth|logged_in|nonce)_key)';
+		$keys = '(?:[a-z0-9_]*?(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|op[_-]?proof|authorization|cookie|db[_-]?(?:user|name|host))|[a-z0-9_]*_salt|(?:auth|secure_auth|logged_in|nonce)_key)';
 		$patterns = array(
 			// Keep quote context until redaction is done; line slicing comes afterwards.
 			'~(\bdefine\s*\(\s*[\'\"]' . $keys . '[\'\"]\s*,\s*)([\'\"])(?:\\\\.|(?!\2)[\s\S])*?(?:\2|\z)~i' => '$1\'[REDACTED]\'',
@@ -93,6 +93,8 @@ class WPVibe_Content_Files {
 			'~[a-z0-9.!#$%&\'*+/=?^_`{|}\~-]+@[a-z0-9.-]+\.[a-z]{2,}~i' => '[REDACTED EMAIL]',
 			'~\b(?:sk|pk|rk)_(?:live_|test_|proj_)?[a-z0-9_-]{12,}\b|\b(?:gh[pousr]_|github_pat_)[a-z0-9_]{12,}\b|\bAKIA[A-Z0-9]{16}\b~i' => '[REDACTED KEY]',
 			'~\beyJ[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+\b~i' => '[REDACTED TOKEN]',
+			// A failed wp_options write logs the whole statement, proof key included; the key is a bare 64-hex string.
+			'~\b[a-f0-9]{64}\b~i' => '[REDACTED HEX]',
 		);
 		foreach ( $patterns as $pattern => $replacement ) {
 			$content = preg_replace( $pattern, $replacement, $content );

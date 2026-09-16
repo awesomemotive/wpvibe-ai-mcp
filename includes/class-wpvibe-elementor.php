@@ -74,8 +74,8 @@ class WPVibe_Elementor {
 				'id'            => array( 'type' => 'integer', 'required' => false, 'sanitize_callback' => 'absint' ),
 				'title'         => array( 'type' => 'string',  'required' => false, 'sanitize_callback' => 'sanitize_text_field' ),
 				'post_type'     => array( 'type' => 'string',  'default'  => 'page', 'sanitize_callback' => 'sanitize_key' ),
-				'status'        => array( 'type' => 'string',  'default'  => 'publish', 'sanitize_callback' => 'sanitize_key' ),
-				'template_type' => array( 'type' => 'string',  'default'  => 'wp-page', 'sanitize_callback' => 'sanitize_key' ),
+				'status'        => array( 'type' => 'string',  'required' => false, 'sanitize_callback' => 'sanitize_key' ),
+				'template_type' => array( 'type' => 'string',  'required' => false, 'sanitize_callback' => 'sanitize_key' ),
 				'page_template' => array( 'type' => 'string',  'required' => false, 'sanitize_callback' => 'sanitize_text_field' ),
 				'data'          => array( 'type' => 'array',   'required' => true ),
 			),
@@ -89,7 +89,7 @@ class WPVibe_Elementor {
 				'id'         => array( 'type' => 'integer', 'required' => false, 'sanitize_callback' => 'absint' ),
 				'title'      => array( 'type' => 'string',  'required' => false, 'sanitize_callback' => 'sanitize_text_field' ),
 				'type'       => array( 'type' => 'string',  'required' => true,  'sanitize_callback' => 'sanitize_key' ),
-				'status'     => array( 'type' => 'string',  'default'  => 'publish', 'sanitize_callback' => 'sanitize_key' ),
+				'status'     => array( 'type' => 'string',  'required' => false, 'sanitize_callback' => 'sanitize_key' ),
 				'data'       => array( 'type' => 'array',   'required' => true ),
 				'conditions' => array(
 					'type'              => 'array',
@@ -617,6 +617,13 @@ class WPVibe_Elementor {
 
 		$warnings = array();
 		$document = null;
+		// Defaults belong to creates; an update keeps the post's status and document type unless the caller sets them.
+		if ( ! $id ) {
+			$status        = $status ?: 'publish';
+			$template_type = $template_type ?: 'wp-page';
+		} elseif ( ! $template_type ) {
+			$template_type = (string) get_post_meta( $id, '_elementor_template_type', true ) ?: 'wp-page';
+		}
 
 		if ( $id ) {
 			$post = get_post( $id );
@@ -756,6 +763,9 @@ class WPVibe_Elementor {
 
 		$warnings = array();
 		$document = null;
+		if ( ! $id ) {
+			$status = $status ?: 'publish';
+		}
 
 		if ( $id ) {
 			$post = get_post( $id );

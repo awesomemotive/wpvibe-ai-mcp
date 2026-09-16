@@ -326,6 +326,10 @@ trait WPVibe_CLI_Db {
 	 * string test. Fully parsing SQL is out of scope.
 	 */
 	private function sql_names_option( $normalized, $name ) {
+		$prefix = WPVibe_CLI::option_list_prefix( $name );
+		if ( null !== $prefix ) {
+			return (bool) preg_match( '/["\']\s*' . preg_quote( strtoupper( $prefix ), '/' ) . '/', $normalized );
+		}
 		return (bool) preg_match( '/["\']\s*' . preg_quote( strtoupper( (string) $name ), '/' ) . '\s*["\']/', $normalized );
 	}
 

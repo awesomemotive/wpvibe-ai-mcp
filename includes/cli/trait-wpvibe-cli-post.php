@@ -704,7 +704,7 @@ trait WPVibe_CLI_Post {
 				$results[] = array( 'id' => $post_id, 'status' => 'error', 'error' => $cap_check->get_error_message() );
 				continue;
 			}
-			$res = wp_update_post( array_merge( array( 'ID' => $post_id ), $fields ), true );
+			$res = wp_update_post( WPVibe_Content_Ops::keep_page_template( array_merge( array( 'ID' => $post_id ), $fields ) ), true );
 			if ( is_wp_error( $res ) ) {
 				$results[] = array( 'id' => $post_id, 'status' => 'error', 'error' => $res->get_error_message() );
 				continue;
@@ -765,6 +765,10 @@ trait WPVibe_CLI_Post {
 		if ( count( $positional ) < 3 ) {
 			return $this->error_result( __( 'Usage: post meta update <post_id> <key> <value>', 'vibe-ai' ) );
 		}
+		$extra = $this->too_many_positionals( $positional, 3 );
+		if ( $extra ) {
+			return $extra;
+		}
 
 		$post_id = (int) $positional[0];
 		$post    = get_post( $post_id );
@@ -795,7 +799,8 @@ trait WPVibe_CLI_Post {
 
 		$value = $this->maybe_decode_meta_value( $positional[2] );
 
-		update_post_meta( $post_id, $key, $value );
+		// update_metadata() unslashes on the way in, as WP-CLI's own handler accounts for.
+		update_post_meta( $post_id, $key, wp_slash( $value ) );
 
 		WPVibe_Change_Tracker::mark( array(
 			'summary'      => "Post meta updated: #{$post_id} → {$key}",
@@ -826,6 +831,10 @@ trait WPVibe_CLI_Post {
 		if ( count( $positional ) < 3 ) {
 			return $this->error_result( __( 'Usage: post meta add <post_id> <key> <value>', 'vibe-ai' ) );
 		}
+		$extra = $this->too_many_positionals( $positional, 3 );
+		if ( $extra ) {
+			return $extra;
+		}
 
 		$post_id = (int) $positional[0];
 		$post    = get_post( $post_id );
@@ -855,7 +864,7 @@ trait WPVibe_CLI_Post {
 
 		$value = $this->maybe_decode_meta_value( $positional[2] );
 
-		add_post_meta( $post_id, $key, $value );
+		add_post_meta( $post_id, $key, wp_slash( $value ) );
 
 		WPVibe_Change_Tracker::mark( array(
 			'summary'      => "Post meta added: #{$post_id} → {$key}",

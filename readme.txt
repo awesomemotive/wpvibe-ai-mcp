@@ -4,7 +4,7 @@ Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.17.0
+Stable tag: 1.17.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -220,6 +220,15 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 
 == Changelog ==
 
+= 1.17.1 =
+* Fix: saving Elementor data into an existing draft page or template no longer publishes it. The post keeps its status unless you ask for a change.
+* Fix: Allow for WPVibe now applies to the Approve click itself. Sites where a security plugin turns off Application Passwords passed the connectivity check but still refused the approval; both now agree.
+* Fix: WP-CLI commands that spell an apostrophe inside a single-quoted value the POSIX way (closing quote, backslash apostrophe, reopening quote) now reach the handler byte for byte, and post meta values keep their backslashes. Shortcode values written that way lost their quotes. Two backslashes outside quotes now collapse to one, as in a shell.
+* Security: the background-run and self-update hand-off records can no longer be written with option add, option update, option patch, or raw SQL sent by an AI, so a seeded record cannot start a run through the public loopback route. Reading them for status still works.
+* Fix: editing a page whose saved template no longer exists (theme switched, builder canvas template with the builder off) failed with "Invalid page template" and a misleading crash hint. Content edits and post updates now leave the stored template alone.
+* Security: wp-content diagnostic reads redact the connection proof key and bare 64-character hex secrets that a failed database write can leave in debug.log.
+* Hardening: the Allow for WPVibe setting can no longer be changed through WP-CLI commands sent by an AI; only the button on the WPVibe page changes it.
+
 = 1.17.0 =
 * New: Four-step setup page. Add WPVibe to your AI, connect the site with one prompt, and confirm with a read. Steps turn green on their own as WordPress approves and your AI reads the site.
 * New: Check site connectivity tests the site from inside and out before you open your AI: HTTPS, Application Passwords, a staging password gate or REST-blocking plugin, a maintenance page answering the API, a host that strips the Authorization header, and WPVibe reaching the site. Failures name the cause and the fix; the report carries the exact Cloudflare rule when a firewall is challenging WPVibe.
@@ -355,19 +364,6 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 * Improvement: a failed edit now shows what is actually stored nearby. When an edit misses because the text is not quite what is stored, the error includes the closest matching passages from the real content, so the retry is informed instead of a guess. When an edit matches more than one place, the error now lists those places instead of only counting them.
 * Improvement: edits now report what was actually saved. WordPress filters and security plugins can quietly alter content as it is saved. After every edit the plugin re-reads the stored value and says so when the site changed what was written, so an AI never builds its next edit on a version of the content that no longer exists.
 * Improvement: theme editing denials now name their real cause. On multisite networks only network super admins can edit theme files, and some security plugins remove that ability even from administrators. In both cases the old error advised reconnecting with a more privileged account, which cannot work; the error now says which situation applies and what actually helps.
-
-= 1.13.1 =
-* Security: WordPress settings that WPVibe protects can no longer be changed through the content editing route. WPVibe keeps a list of settings that are never writable, including the ones controlling whether anyone can register and what role new accounts get, plus your site's security keys and salts. The WP-CLI commands honoured that list, but the content editing route wrote settings directly and did not, so an AI acting on your site could change them without the usual approval step. That route now enforces the same list, and the security keys can no longer be read back through it either. Ordinary settings are unaffected.
-* Fix: commands no longer report success for work they did not do. Some WP-CLI options were accepted and then quietly ignored, so a request could come back successful while part of what you asked for never happened, which is the one kind of failure your AI cannot notice. Those options now return a clear error naming what is unsupported. If a command you rely on has been dropping an option, you will see an error where you previously saw a false success. The error is the accurate answer, and the earlier success was not.
-* Fix: search and replace can no longer damage stored passwords. The user_pass column is now always excluded, even if it is explicitly requested, so a replacement that happens to match text inside a password hash cannot corrupt it and lock someone out.
-* Fix: listing a post's custom fields now matches WP-CLI. A field with more than one stored value was folded into a single entry using field names WP-CLI does not use, so your AI could not tell how many values existed or reliably remove just one of them. Every stored row is now listed separately, using the standard post_id, meta_key and meta_value names. Nothing about how values are stored has changed.
-* Improvement: two more edits that cannot be undone now ask first. Removing a key from inside a setting, and removing every stored value of a custom field when the protected-field guard is overridden, now show a preview and wait for your approval. WordPress keeps no trash for settings and no revision history for custom fields, so page builder layouts and template settings cannot be recovered afterwards. Removing one specific value still runs without a prompt, because that only affects the row you named.
-* Improvement: long lists now say when they were cut short. Listing options, users, or posts stops at a row limit, and the reply had no way to signal that more existed, so an AI could work through what looked like a complete set and quietly miss the rest. Those listings now warn when the limit was reached and say not to treat the result as complete.
-* Improvement: reporting options behave as WP-CLI does. --format=ids and --porcelain now return the bare values they are meant to, which makes them usable for chaining one command into the next.
-
-= 1.13.0 =
-* Fix: WPVibe now works on hosts that strip the login header. On some servers, commonly Apache running PHP as CGI or FastCGI and some LiteSpeed setups, the web server removes the Authorization header before WordPress can read it. Every WPVibe request then arrived as a logged out visitor and failed with a permission error, even though the site was connected and the password was valid. WPVibe now sends the same credentials a second way that these servers pass through, and the plugin hands them back to WordPress before it checks who you are. Who is allowed to do what does not change, and sites that were already working are unaffected. To turn this off, define WPVIBE_DISABLE_AUTH_FALLBACK as true.
-* Improvement: permission errors now name the real cause. A request WordPress could not authenticate used to report a missing capability, which sent people off to reconnect with a different account when the actual problem was the server dropping the header, or Application Passwords being switched off. WPVibe now reports which of those it was, so the fix matches the problem.
 
 = Older versions =
 WP.org caps the changelog at 5,000 words. For the full release history back to 1.0.0, see https://wpvibe.ai/changelog/

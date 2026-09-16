@@ -351,6 +351,10 @@ trait WPVibe_CLI_Security {
 					|| ( class_exists( 'WPVibe_White_Label' ) && WPVibe_White_Label::OPTION === $key ) ) {
 					continue;
 				}
+				// The handler refuses a protected key outright; minting an approval would only burn a click and put the value in the preview.
+				if ( null !== self::match_option_name( $key, self::BLOCKED_OPTIONS ) ) {
+					return null;
+				}
 				$gated[] = $key;
 			}
 			if ( empty( $gated ) ) {
@@ -385,8 +389,9 @@ trait WPVibe_CLI_Security {
 			if ( '' === $key || empty( $path )
 				|| 0 === strpos( $key, 'wpvibe_task_' )
 				|| 0 === strpos( $key, '_transient_' )
-				|| 0 === strpos( $key, '_site_transient_' ) ) {
-				return null; // Handler returns a usage error, or AI temp state.
+				|| 0 === strpos( $key, '_site_transient_' )
+				|| null !== self::match_option_name( $key, self::BLOCKED_OPTIONS ) ) {
+				return null; // Handler returns a usage error or the protected refusal, or AI temp state.
 			}
 			return array(
 				'operation' => 'option patch delete:' . $key . ':' . implode( '.', $path ),

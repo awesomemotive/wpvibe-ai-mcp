@@ -62,9 +62,15 @@ trait WPVibe_CLI_Parse {
 		for ( $i = 0; $i < $len; $i++ ) {
 			$char = $input[ $i ];
 			if ( $in_quote ) {
-				if ( $char === $quote_char ) {
+				if ( '"' === $quote_char && '\\' === $char && $i + 1 < $len && ( '"' === $input[ $i + 1 ] || '\\' === $input[ $i + 1 ] ) ) {
+					$i++;
+				} elseif ( $char === $quote_char ) {
 					$in_quote = false;
 				}
+				continue;
+			}
+			if ( '\\' === $char && $i + 1 < $len && self::is_unquoted_escape( $input[ $i + 1 ] ) ) {
+				$i++;
 				continue;
 			}
 			if ( '"' === $char || "'" === $char ) {
@@ -93,6 +99,7 @@ trait WPVibe_CLI_Parse {
 		$tokens   = array();
 		$current  = '';
 		$in_quote = false;
+		$quoted   = false;
 		$quote_char = '';
 		$len = strlen( $input );
 
@@ -109,22 +116,47 @@ trait WPVibe_CLI_Parse {
 				} else {
 					$current .= $char;
 				}
+			} elseif ( '\\' === $char && $i + 1 < $len && self::is_unquoted_escape( $input[ $i + 1 ] ) ) {
+				// POSIX: outside quotes a backslash escapes a quote or a backslash; this is how '\'' spells an apostrophe inside single quotes.
+				$current .= $input[ $i + 1 ];
+				$i++;
 			} elseif ( $char === '"' || $char === "'" ) {
 				$in_quote   = true;
+				$quoted     = true;
 				$quote_char = $char;
 			} elseif ( $char === ' ' || $char === "\t" ) {
-				if ( '' !== $current ) {
+				if ( '' !== $current || $quoted ) {
 					$tokens[] = $current;
 					$current  = '';
+					$quoted   = false;
 				}
 			} else {
 				$current .= $char;
 			}
 		}
-		if ( '' !== $current ) {
+		if ( '' !== $current || $quoted ) {
 			$tokens[] = $current;
 		}
 		return $tokens;
+	}
+
+
+	// Outside quotes `\\` collapses to one backslash as in a shell; a backslash before any other byte stays literal.
+	private static function is_unquoted_escape( $next ) {
+		return "'" === $next || '"' === $next || '\\' === $next;
+	}
+
+
+	/** Real WP-CLI refuses extra positionals; silently dropping them turns a misquoted value into a wrong-success. */
+	private function too_many_positionals( $positional, $max ) {
+		if ( count( $positional ) <= $max ) {
+			return null;
+		}
+		return $this->error_result( sprintf(
+			/* translators: %s: the unexpected arguments */
+			__( 'Too many positional arguments: %s. Quote a value that contains spaces (single quotes keep every byte) and pass options as --flag=value.', 'vibe-ai' ),
+			implode( ' ', array_slice( $positional, $max ) )
+		) );
 	}
 
 

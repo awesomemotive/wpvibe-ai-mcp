@@ -1060,7 +1060,7 @@ class WPVibe_REST {
 
 	public function authorize_preflight( $request ) {
 		$can_create = current_user_can( 'create_app_password', get_current_user_id() );
-		$available = ! function_exists( 'wp_is_application_passwords_available_for_user' ) || wp_is_application_passwords_available_for_user( get_current_user_id() );
+		$available = WPVibe_App_Password_Policy::available_for_wpvibe( get_current_user_id() );
 		return rest_ensure_response( array( 'available_for_user' => $available, 'can_create' => $can_create, 'is_ssl' => is_ssl(), 'reason' => ! $can_create ? 'cannot_create' : ( ! $available ? 'unavailable_for_user' : 'ok' ) ) );
 	}
 
@@ -1073,7 +1073,7 @@ class WPVibe_REST {
 		if ( ! current_user_can( 'create_app_password', $uid ) ) {
 			return new WP_Error( 'wpvibe_authorize_forbidden', __( 'This account cannot create application passwords.', 'vibe-ai' ), array( 'status' => 403 ) );
 		}
-		if ( function_exists( 'wp_is_application_passwords_available_for_user' ) && ! wp_is_application_passwords_available_for_user( $uid ) ) {
+		if ( ! WPVibe_App_Password_Policy::available_for_wpvibe( $uid ) ) {
 			return new WP_Error( 'wpvibe_authorize_unavailable', __( 'Application passwords are not available for this account on this site.', 'vibe-ai' ), array( 'status' => 501 ) );
 		}
 		return true;

@@ -796,15 +796,20 @@ class WPVibe_Content_Ops {
 		);
 	}
 
+	// Core folds the stored template into every update and refuses the edit when the theme no longer offers it; an empty value skips that and leaves the meta untouched.
+	public static function keep_page_template( array $postarr ) {
+		return $postarr + array( 'page_template' => '' );
+	}
+
 	/** @return true|WP_Error */
 	private function store( $type, $args, $updated ) {
 		switch ( $type ) {
 			case 'post':
 				// wp_update_post expects slashed data; it unslashes internally.
-				$res = wp_update_post( array(
+				$res = wp_update_post( self::keep_page_template( array(
 					'ID'           => (int) $args['post_id'],
 					$args['field'] => wp_slash( $updated ),
-				), true );
+				) ), true );
 				if ( is_wp_error( $res ) ) {
 					return $res;
 				}

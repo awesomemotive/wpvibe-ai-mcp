@@ -15,12 +15,8 @@ trait WPVibe_CLI_Option {
 			return $this->error_result( __( 'Option key required.', 'vibe-ai' ) );
 		}
 
-		if ( null !== self::match_option_name( $positional[0], self::READABLE_BLOCKED_OPTIONS ) ) {
-			$value = get_option( $positional[0], null );
-			return $this->success_result( array( 'value' => $value ) );
-		}
-
-		if ( null !== self::match_option_name( $positional[0], self::BLOCKED_OPTIONS ) ) {
+		$readable = null !== self::match_option_name( $positional[0], self::READABLE_BLOCKED_OPTIONS );
+		if ( ! $readable && null !== self::match_option_name( $positional[0], self::BLOCKED_OPTIONS ) ) {
 			return $this->error_result(
 				sprintf(
 					/* translators: %s: option key */
@@ -182,7 +178,7 @@ trait WPVibe_CLI_Option {
 		foreach ( $rows as $row ) {
 			// Canonicalize rather than strict compare: a stored row name that
 			// differs only by case from a blocked one must still be filtered out.
-			if ( null !== self::match_option_name( $row['option_name'], self::BLOCKED_OPTIONS ) ) {
+			if ( null === self::match_option_name( $row['option_name'], self::READABLE_BLOCKED_OPTIONS ) && null !== self::match_option_name( $row['option_name'], self::BLOCKED_OPTIONS ) ) {
 				continue;
 			}
 			if ( strlen( $row['option_value'] ) > 200 ) {
@@ -233,6 +229,10 @@ trait WPVibe_CLI_Option {
 	private function handle_option_update( $positional, $flags ) {
 		if ( count( $positional ) < 2 ) {
 			return $this->error_result( __( 'Usage: option update {key} {value} [--format=json|plaintext]', 'vibe-ai' ) );
+		}
+		$extra = $this->too_many_positionals( $positional, 2 );
+		if ( $extra ) {
+			return $extra;
 		}
 		$key   = $positional[0];
 
@@ -303,6 +303,10 @@ trait WPVibe_CLI_Option {
 	private function handle_option_add( $positional, $flags ) {
 		if ( count( $positional ) < 2 ) {
 			return $this->error_result( __( 'Usage: option add <key> <value> [--autoload=no]', 'vibe-ai' ) );
+		}
+		$extra = $this->too_many_positionals( $positional, 2 );
+		if ( $extra ) {
+			return $extra;
 		}
 		$key = $positional[0];
 
