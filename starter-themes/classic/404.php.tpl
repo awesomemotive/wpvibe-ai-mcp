@@ -21,7 +21,7 @@
 
 		<p class="mt-8">
 			<a href="<?php echo esc_url( home_url( '/' ) ); ?>" class="inline-flex items-center text-primary-500 hover:underline">
-				&larr; <?php esc_html_e( 'Back to {{THEME_NAME}}', 'vibe-ai' ); ?>
+				&larr; <?php esc_html_e( 'Back to {{THEME_NAME_PHP}}', 'vibe-ai' ); ?>
 			</a>
 		</p>
 	</section>

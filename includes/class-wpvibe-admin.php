@@ -186,11 +186,11 @@ class WPVibe_Admin {
 		$ai_read       = WPVibe_Connection_Status::current_ai_read();
 		$connected     = $this->is_connected();
 		$check_result  = WPVibe_Connection_Check::last_result();
-		$legacy_live   = ! $authorized && 0 !== strpos( $auth_state, 'failing:' ) && ! WPVibe_Op_Proof::awaiting_confirmation() && $connected;
+		$legacy_live   = ! $authorized && 0 !== strpos( $auth_state, 'failing:' ) && ! WPVibe_Connection_Status::awaiting_confirmation() && $connected;
 		$last_active   = (int) get_option( 'wpvibe_last_active', 0 );
 		// Approval itself makes an authenticated read; only activity after that moment shows the AI is using the site.
 		$active        = $connected && 0 !== strpos( $auth_state, 'failing:' ) && ( ! $auth_record || $last_active > (int) floor( $auth_record['observed_at'] / 1000 ) + 60 );
-		$check_state   = $check_result ? $check_result['state'] : ( $authorized || $legacy_live || WPVibe_Op_Proof::awaiting_confirmation() ? '' : 'current' );
+		$check_state   = $check_result ? $check_result['state'] : ( $authorized || $legacy_live || WPVibe_Connection_Status::awaiting_confirmation() ? '' : 'current' );
 		$site_url      = site_url();
 		$https         = 'https' === wp_parse_url( $site_url, PHP_URL_SCHEME );
 		$app_pw_ok     = WPVibe_App_Password_Policy::available_for_wpvibe( wp_get_current_user() );
@@ -320,7 +320,7 @@ class WPVibe_Admin {
 					</div>
 					<?php
 					$failing_auth     = 0 === strpos( $auth_state, 'failing:' );
-					$awaiting         = ! $authorized && ! $failing_auth && WPVibe_Op_Proof::awaiting_confirmation();
+					$awaiting         = ! $authorized && ! $failing_auth && WPVibe_Connection_Status::awaiting_confirmation();
 					$legacy_connected = ! $authorized && ! $failing_auth && ! $awaiting && $connected;
 					$setup_collapsed  = $authorized || $failing_auth || $legacy_connected || $awaiting;
 					?>

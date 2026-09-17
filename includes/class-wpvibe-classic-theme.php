@@ -19,6 +19,12 @@ class WPVibe_Classic_Theme {
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public function create( $theme_name, $description = '' ) {
+		return WPVibe_Draft_Lock::run( function () use ( $theme_name, $description ) {
+			return $this->create_locked( $theme_name, $description );
+		} );
+	}
+
+	private function create_locked( $theme_name, $description = '' ) {
 		if ( empty( $theme_name ) ) {
 			return new WP_Error( 'invalid_args', __( 'Theme name is required.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
 		}
@@ -28,23 +34,20 @@ class WPVibe_Classic_Theme {
 			return new WP_Error( 'no_starter', __( 'Starter theme files are missing from the plugin.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'host_environment', false, array( 'status' => 500 ) ) );
 		}
 
-		// Delete any existing draft first.
-		$existing_draft = get_option( 'wpvibe_draft_theme' );
-		if ( $existing_draft ) {
-			$draft = new WPVibe_Draft_Theme();
-			$draft->delete();
-		}
-
 		$slug = sanitize_title( $theme_name );
 
 		// Ensure the slug produces a valid PHP function prefix.
 		$prefix = str_replace( '-', '_', $slug );
-		if ( ! preg_match( '/^[a-z_][a-z0-9_]*$/', $prefix ) ) {
+		if ( strlen( $slug ) > 180 || ! preg_match( '/^[a-z_][a-z0-9_]*$/', $prefix ) ) {
 			return new WP_Error(
 				'invalid_theme_name',
 				__( 'Theme name must start with a letter and contain only letters, numbers, hyphens, and spaces.', 'vibe-ai' ),
 				WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) )
 			);
+		}
+
+		if ( get_option( 'wpvibe_draft_theme' ) || get_option( 'wpvibe_draft_source' ) ) {
+			return WPVibe_Draft_Lock::conflict();
 		}
 
 		$theme_root = get_theme_root();
@@ -56,23 +59,25 @@ class WPVibe_Classic_Theme {
 		clearstatcache( true, $draft_dir );
 		clearstatcache( true, $theme_dir );
 
-		if ( is_dir( $theme_dir ) || is_dir( $draft_dir ) ) {
+		if ( file_exists( $theme_dir ) || is_link( $theme_dir ) || file_exists( $draft_dir ) || is_link( $draft_dir ) ) {
 			/* translators: %s: theme slug */
 			return new WP_Error( 'exists', sprintf( __( 'Theme \'%s\' already exists.', 'vibe-ai' ), $slug ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 409 ) ) );
 		}
 
-		if ( ! wp_mkdir_p( $draft_dir ) && ! is_dir( $draft_dir ) ) {
-			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- Fallback for environments where wp_mkdir_p() fails.
-			if ( ! @mkdir( $draft_dir, 0755, true ) && ! is_dir( $draft_dir ) ) {
-				/* translators: %s: directory path */
-				return new WP_Error( 'mkdir_failed', sprintf( __( 'Could not create draft directory: %s', 'vibe-ai' ), $draft_dir ), WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) ) );
-			}
+		// Exclusive creation: never adopt a directory left by an interrupted request.
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir
+		if ( ! @mkdir( $draft_dir, 0755 ) ) {
+			return WPVibe_Draft_Lock::conflict();
 		}
 
+		// Names appear in headers/comments and in PHP strings in the starter.
+		$comment_name = str_replace( array( '*/', "\r", "\n" ), array( '* /', ' ', ' ' ), $theme_name );
+
 		$tokens = array(
-			'{{THEME_NAME}}'        => $theme_name,
+			'{{THEME_NAME}}'        => $comment_name,
+			'{{THEME_NAME_PHP}}'    => str_replace( array( "\\", "'" ), array( "\\\\", "\\'" ), $theme_name ),
 			'{{THEME_SLUG}}'        => $slug,
-			'{{THEME_DESCRIPTION}}' => $description ? $description : 'A custom classic WordPress theme.',
+			'{{THEME_DESCRIPTION}}' => str_replace( array( '*/', "\r", "\n" ), array( '* /', ' ', ' ' ), $description ? $description : 'A custom classic WordPress theme.' ),
 			'{{FUNCTION_PREFIX}}'   => $prefix,
 		);
 
@@ -91,8 +96,10 @@ class WPVibe_Classic_Theme {
 		}
 
 		// Set as the active draft, so file-editing tools target this draft.
-		update_option( 'wpvibe_draft_theme', $draft_slug );
-		update_option( 'wpvibe_draft_source', $slug );
+		$registered = WPVibe_Draft_Lock::register( $draft_slug, $slug );
+		if ( is_wp_error( $registered ) ) {
+			return $registered;
+		}
 
 		// Generate a preview token so live reload can redirect to the preview immediately.
 		$token = wp_generate_password( 32, false );

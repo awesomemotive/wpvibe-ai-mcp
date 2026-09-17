@@ -157,6 +157,9 @@ class WPVibe_File_Ops {
 		return new WP_Error( 'no_draft', __( 'No draft theme active. Create one first with create_draft_theme.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 400 ) ) );
 		}
 
+		if ( ! WPVibe_Draft_Lock::valid_slug( $draft_slug ) || $draft_slug === get_option( 'stylesheet' ) || is_link( get_theme_root() . '/' . $draft_slug ) ) {
+			return WPVibe_Draft_Lock::conflict();
+		}
 		$dir = get_theme_root() . '/' . $draft_slug;
 		if ( ! is_dir( $dir ) ) {
 			return new WP_Error( 'draft_missing', __( 'Draft theme directory not found.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
@@ -373,6 +376,12 @@ class WPVibe_File_Ops {
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public function edit( $path, $old_content, $new_content ) {
+		return WPVibe_Draft_Lock::run( function () use ( $path, $old_content, $new_content ) {
+			return $this->edit_locked( $path, $old_content, $new_content );
+		} );
+	}
+
+	private function edit_locked( $path, $old_content, $new_content ) {
 		$full_path = $this->resolve_path( $path );
 		if ( is_wp_error( $full_path ) ) {
 			return $full_path;
@@ -460,6 +469,12 @@ class WPVibe_File_Ops {
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public function write( $path, $content ) {
+		return WPVibe_Draft_Lock::run( function () use ( $path, $content ) {
+			return $this->write_locked( $path, $content );
+		} );
+	}
+
+	private function write_locked( $path, $content ) {
 		$full_path = $this->resolve_path( $path );
 		if ( is_wp_error( $full_path ) ) {
 			return $full_path;
@@ -552,6 +567,12 @@ class WPVibe_File_Ops {
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public function delete( $path ) {
+		return WPVibe_Draft_Lock::run( function () use ( $path ) {
+			return $this->delete_locked( $path );
+		} );
+	}
+
+	private function delete_locked( $path ) {
 		$full_path = $this->resolve_path( $path );
 		if ( is_wp_error( $full_path ) ) {
 			return $full_path;

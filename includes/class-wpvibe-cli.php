@@ -335,6 +335,7 @@ class WPVibe_CLI {
 		'wpvibe_op_proof_minter',
 		'wpvibe_op_proof_pending_minter',
 		'wpvibe_connection_status',
+		'wpvibe_authorization_pending_at',
 		'wpvibe_allow_app_passwords',
 		// Loopback hand-off state: the public run routes trust it, so a seeded row would run as the stored admin.
 		'wpvibe_self_update_state',

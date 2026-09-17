@@ -8,6 +8,14 @@ class WPVibe_Connection_Status {
 	const MAX_AGE = 300;
 	const STATES = array( 'verified', 'limited', 'failing:auth_blocked', 'failing:credential_rejected', 'failing:app_passwords_unavailable', 'stored_unverified' );
 
+	protected static function public_keys() { return WPVibe_Op_Proof_V2::PUBLIC_KEYS; }
+	protected static function verify_proof( $request ) { return WPVibe_Op_Proof::verify( $request, self::ROUTE, self::subject( $request ) ); }
+	public static function awaiting_confirmation() {
+		$at = (int) get_option( 'wpvibe_authorization_pending_at', 0 );
+		$record = static::current_observation();
+		return $at > time() - DAY_IN_SECONDS && ( ! $record || $record['observed_at'] < $at * 1000 );
+	}
+
 	public static function subject( $request ) {
 		$source = $request->get_param( 'source' );
 		$parts = array( null === $source ? 'connection-status-v1' : 'connection-status-v2', $request->get_param( 'connection_id' ), $request->get_param( 'generation' ), $request->get_param( 'observed_at' ), $request->get_param( 'state' ), $request->get_param( 'via' ) );
@@ -35,24 +43,24 @@ class WPVibe_Connection_Status {
 		if ( null !== $source && ( 'mcp_site_info' !== $source || ! in_array( $request->get_param( 'state' ), array( 'verified', 'limited' ), true ) || ! is_string( $client ) || ! preg_match( '~^[a-zA-Z0-9 ._()/+\-]{0,80}$~D', $client ) ) ) {
 			return self::error( 'invalid', 'Invalid MCP read observation.', 400 );
 		}
-		$proof = (string) $request->get_header( WPVibe_Op_Proof::HEADER );
-		if ( ! WPVibe_Op_Proof::provisioned() || ! preg_match( '/^v1\.([0-9]{1,12})\.[a-f0-9]{64}$/', $proof, $parts ) || (int) $parts[1] > time() + self::MAX_AGE ) {
+		$proof = (string) $request->get_header( WPVibe_Op_Proof_V2::HEADER );
+		if ( ! preg_match( '/^v2\.([a-zA-Z0-9_-]{1,64})\.([0-9]{1,12})\.[a-zA-Z0-9_-]{86}$/D', $proof, $parts ) || (int) $parts[2] > time() + self::MAX_AGE ) {
 			return self::error( 'unsigned', 'A recent WPVibe-signed observation is required.' );
 		}
-		return WPVibe_Op_Proof::verify( $request, self::ROUTE, self::subject( $request ) );
+		return static::verify_proof( $request );
 	}
 
 	public static function record( $request ) {
-		$allowed = self::authorize( $request );
+		$allowed = static::authorize( $request );
 		if ( true !== $allowed ) {
 			return $allowed;
 		}
 		$previous = get_option( self::OPTION, false );
 		$records = is_array( $previous ) ? $previous : array();
 		$id = $request->get_param( 'connection_id' );
-		$fingerprint = hash( 'sha256', WPVibe_Op_Proof::key() );
+		$fingerprint = 'v2:' . explode( '.', (string) $request->get_header( WPVibe_Op_Proof_V2::HEADER ) )[1];
 		$old = isset( $records[ $id ] ) ? $records[ $id ] : null;
-		if ( is_array( $old ) && $old['key'] === $fingerprint && $old['observed_at'] >= $request->get_param( 'observed_at' ) ) {
+		if ( is_array( $old ) && ( $old['key'] === $fingerprint || static::trusted_record( $old ) ) && $old['observed_at'] >= $request->get_param( 'observed_at' ) ) {
 			return self::error( 'stale', 'A newer connection observation is already stored.', 409 );
 		}
 		$records[ $id ] = array( 'key' => $fingerprint, 'generation' => $request->get_param( 'generation' ), 'observed_at' => $request->get_param( 'observed_at' ), 'state' => $request->get_param( 'state' ), 'via' => $request->get_param( 'via' ) );
@@ -77,33 +85,34 @@ class WPVibe_Connection_Status {
 		return rest_ensure_response( array( 'recorded' => true ) );
 	}
 
+	protected static function trusted_record( $record ) {
+		$key = $record['key'] ?? '';
+		return 0 === strpos( $key, 'v2:' ) && isset( static::public_keys()[ substr( $key, 3 ) ] );
+	}
+
 	public static function current_observation() {
-		$key = WPVibe_Op_Proof::key();
-		if ( '' === $key ) { return null; }
 		$records = get_option( self::OPTION, array() );
 		foreach ( is_array( $records ) ? $records : array() as $record ) {
-			if ( is_array( $record ) && ( $record['key'] ?? '' ) === hash( 'sha256', $key ) && in_array( $record['state'] ?? '', self::STATES, true ) ) { return $record; }
+			if ( is_array( $record ) && static::trusted_record( $record ) && in_array( $record['state'] ?? '', self::STATES, true ) ) { return $record; }
 		}
 		return null;
 	}
 
 	public static function current_ai_read() {
-		$record = self::current_observation();
+		$record = static::current_observation();
 		return $record && in_array( $record['state'], array( 'verified', 'limited' ), true ) && isset( $record['ai_read'] ) && is_array( $record['ai_read'] ) ? $record['ai_read'] : null;
 	}
 
 	public static function current_state() {
-		$record = self::current_observation();
+		$record = static::current_observation();
 		return $record ? $record['state'] : 'not_checked';
 	}
 
 	public static function badge() {
 		$records = get_option( self::OPTION, array() );
-		$key = WPVibe_Op_Proof::key();
-		if ( is_array( $records ) && '' !== $key ) {
-			$fingerprint = hash( 'sha256', $key );
+		if ( is_array( $records ) ) {
 			foreach ( $records as $record ) {
-				if ( ! is_array( $record ) || ( $record['key'] ?? '' ) !== $fingerprint ) {
+				if ( ! is_array( $record ) || ! static::trusted_record( $record ) ) {
 					continue;
 				}
 				$stamp = gmdate( 'Y-m-d H:i', (int) floor( $record['observed_at'] / 1000 ) ) . ' UTC';
@@ -116,7 +125,7 @@ class WPVibe_Connection_Status {
 				return sprintf( __( 'Connection needs attention (checked %s).', 'vibe-ai' ), $stamp );
 			}
 		}
-		if ( WPVibe_Op_Proof::awaiting_confirmation() ) {
+		if ( self::awaiting_confirmation() ) {
 			return __( 'Approved, waiting for confirmation', 'vibe-ai' );
 		}
 		$last_active = (int) get_option( 'wpvibe_last_active', 0 );

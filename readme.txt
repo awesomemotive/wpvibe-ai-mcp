@@ -4,7 +4,7 @@ Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.17.1
+Stable tag: 1.17.2
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -219,6 +219,14 @@ Yes. Connected sites are unlimited on every plan, including the free plan. Conne
 No. WPVibe lets you manage your WordPress site entirely through conversation with your AI assistant. No coding required for content management. Theme editing is also conversational, your AI writes the code for your WordPress theme.
 
 == Changelog ==
+
+= 1.17.2 =
+* Fix: Signed operation approvals recover from stale per-site proof keys after updating, without reconnecting the site.
+* Fix: creating a classic theme preserves existing unpublished drafts and refuses conflicting files instead of replacing them.
+* Fix: interrupted draft creation cannot overwrite leftover draft files on retry. Failed deletion retains the draft record for recovery.
+* Fix: publishing a new classic theme keeps its name and accurately reports whether a previous theme was backed up. Apostrophes in new theme names no longer break generated PHP.
+* Hardening: draft creation, editing, publishing and deletion coordinate their file changes. Unsafe paths and drafts manually activated as the live theme are refused.
+* Hardening: authenticated safety checks let WPVibe verify draft-preservation support before enabling new classic-theme creation.
 
 = 1.17.1 =
 * Fix: saving Elementor data into an existing draft page or template no longer publishes it. The post keeps its status unless you ask for a change.

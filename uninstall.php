@@ -26,6 +26,7 @@ delete_option( 'wpvibe_op_receipts_schema' );
 delete_option( 'wpvibe_recent_activity' );
 delete_option( 'wpvibe_hide_from_admins' );
 delete_option( 'wpvibe_connection_status' );
+delete_option( 'wpvibe_authorization_pending_at' );
 delete_option( 'wpvibe_op_proof_key' );
 delete_option( 'wpvibe_op_proof_required' );
 delete_option( 'wpvibe_op_proof_minter' );

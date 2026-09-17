@@ -22,7 +22,7 @@ $wpvibe_hero_subhead  = $wpvibe_hero_page_id ? get_post_meta( $wpvibe_hero_page_
 	<section class="bg-gradient-to-br from-primary-50 to-background py-20">
 		<div class="max-w-4xl mx-auto px-6 text-center">
 			<h1 class="text-5xl font-bold tracking-tight text-neutral" <?php $wpvibe_hero_page_id && function_exists( 'wpvibe_edit_attr' ) && wpvibe_edit_attr( $wpvibe_hero_page_id, 'hero_heading' ); ?>>
-				<?php echo esc_html( $wpvibe_hero_heading ?: 'Welcome to {{THEME_NAME}}.' ); ?>
+				<?php echo esc_html( $wpvibe_hero_heading ?: 'Welcome to {{THEME_NAME_PHP}}.' ); ?>
 			</h1>
 			<p class="mt-4 text-xl text-secondary-600 max-w-2xl mx-auto" <?php $wpvibe_hero_page_id && function_exists( 'wpvibe_edit_attr' ) && wpvibe_edit_attr( $wpvibe_hero_page_id, 'hero_subheading' ); ?>>
 				<?php echo esc_html( $wpvibe_hero_subhead ?: 'A fresh WordPress theme ready for your content.' ); ?>

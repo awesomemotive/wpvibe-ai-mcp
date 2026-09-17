@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.17.2] - 2026-09-17
+
+- Fix: Signed operation approvals recover from stale per-site proof keys after updating, without reconnecting the site.
+- Fix: creating a classic theme preserves existing unpublished drafts and refuses conflicting files instead of replacing them.
+- Fix: interrupted draft creation cannot overwrite leftover draft files on retry. Failed deletion retains the draft record for recovery.
+- Fix: publishing a new classic theme keeps its name and accurately reports whether a previous theme was backed up. Apostrophes in new theme names no longer break generated PHP.
+- Hardening: draft creation, editing, publishing and deletion coordinate their file changes. Unsafe paths and drafts manually activated as the live theme are refused.
+- Hardening: authenticated safety checks let WPVibe verify draft-preservation support before enabling new classic-theme creation.
+
 ## [1.17.1] - 2026-09-16
 
 - Fix: saving Elementor data into an existing draft page or template no longer publishes it. The post keeps its status unless you ask for a change.

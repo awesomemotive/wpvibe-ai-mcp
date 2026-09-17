@@ -90,7 +90,6 @@
 			if ( options && typeof options.path === 'string' && options.path.indexOf( '/wp/v2/users/me/application-passwords' ) === 0 && ( options.method || 'GET' ).toUpperCase() === 'POST' ) {
 				var q = options.path.indexOf( '?' );
 				options = $.extend( {}, options, { path: cfg.mintPath + ( q >= 0 ? options.path.slice( q ) : '' ) } );
-				if ( cfg.preserveProof ) options.data = $.extend( {}, options.data, { preserve_proof: true } );
 			}
 			return origApiRequest.call( this, options );
 		};

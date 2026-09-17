@@ -471,6 +471,13 @@ class WPVibe_REST {
 
 		// --- Draft theme lifecycle ---
 
+		register_rest_route( $namespace, '/classic-theme-safety', array(
+			'methods' => 'GET',
+			'callback' => array( $this, 'classic_theme_safety' ),
+			'permission_callback' => array( $this, 'can_edit_themes' ),
+			'args' => array( 'challenge' => array( 'type' => 'string', 'required' => true, 'pattern' => '^[a-f0-9]{32}$' ) ),
+		) );
+
 		register_rest_route( $namespace, '/draft-theme/compile-sources', array(
 			'methods'             => 'GET',
 			'callback'            => array( $this, 'get_compile_sources' ),
@@ -619,7 +626,6 @@ class WPVibe_REST {
 			'args'                => array(
 				'name'   => array( 'type' => 'string', 'required' => true, 'sanitize_callback' => 'sanitize_text_field' ),
 				'app_id' => array( 'type' => 'string', 'required' => false, 'sanitize_callback' => 'sanitize_text_field' ),
-				'preserve_proof' => array( 'type' => 'boolean', 'default' => false ),
 			),
 		) );
 		register_rest_route( $namespace, '/authorize/preflight', array(
@@ -632,21 +638,11 @@ class WPVibe_REST {
 			'callback' => array( 'WPVibe_Connection_Status', 'record' ),
 			'permission_callback' => array( 'WPVibe_Connection_Status', 'authorize' ),
 		) );
-		register_rest_route( $namespace, '/op-proof/activate', array(
+		register_rest_route( $namespace, '/op-proof/check', array(
 			'methods' => 'POST',
-			'callback' => array( $this, 'op_proof_activate' ),
-			'permission_callback' => array( $this, 'can_manage_options' ),
-			'args' => array( 'key' => array( 'type' => 'string', 'required' => true ), 'uuid' => array( 'type' => 'string', 'required' => true ) ),
-		) );
-
-		// Worker-provisioned key for the per-op proof the approval routes verify.
-		register_rest_route( $namespace, '/op-proof/key', array(
-			'methods'             => 'POST',
-			'callback'            => array( $this, 'op_proof_key_set' ),
-			'permission_callback' => array( $this, 'can_manage_options' ),
-			'args'                => array(
-				'key' => array( 'type' => 'string', 'required' => true ),
-			),
+			'permission_callback' => array( $this, 'can_check_op_proof' ),
+			'callback' => function ( $request ) { return rest_ensure_response( array( 'verified' => true, 'protocol' => 2, 'challenge' => $request->get_param( 'challenge' ) ) ); },
+			'args' => array( 'challenge' => array( 'type' => 'string', 'required' => true, 'maxLength' => 80 ) ),
 		) );
 
 		register_rest_route( $namespace, '/code-snippet', array(
@@ -731,6 +727,25 @@ class WPVibe_REST {
 		// --- Classic Theme Creation ---
 
 		register_rest_route( $namespace, '/create-classic-theme', array(
+			'methods'             => 'POST',
+			'callback'            => array( $this, 'create_classic_theme' ),
+			'permission_callback' => array( $this, 'can_edit_themes' ),
+			'args'                => array(
+				'theme_name' => array(
+					'type'              => 'string',
+					'required'          => true,
+					'sanitize_callback' => 'sanitize_text_field',
+				),
+				'description' => array(
+					'type'              => 'string',
+					'required'          => false,
+					'sanitize_callback' => 'sanitize_text_field',
+				),
+			),
+		) );
+
+		// Only fixed plugins register this route; the Worker never sends creation to the legacy route.
+		register_rest_route( $namespace, '/create-classic-theme-safe', array(
 			'methods'             => 'POST',
 			'callback'            => array( $this, 'create_classic_theme' ),
 			'permission_callback' => array( $this, 'can_edit_themes' ),
@@ -1091,21 +1106,9 @@ class WPVibe_REST {
 		if ( is_wp_error( $created ) ) {
 			return $created;
 		}
-		// An admin approving a new connection in the browser is the only event
-		// that may drop the proof key; the Worker owning the new credential
-		// provisions its own on first contact.
+		// Approval signatures no longer have per-site keys to reset on authorization.
 		list( $password, $item ) = $created;
-		if ( current_user_can( 'manage_options' ) ) {
-			$uuid = isset( $item['uuid'] ) ? (string) $item['uuid'] : '';
-			if ( $request->get_param( 'preserve_proof' ) ) {
-				if ( ! WPVibe_Op_Proof::provisioned() ) {
-					WPVibe_Op_Proof::reset( $uuid );
-				}
-				WPVibe_Op_Proof::stage_minter( $uuid );
-			} else {
-				WPVibe_Op_Proof::reset( $uuid );
-			}
-		}
+		update_option( 'wpvibe_authorization_pending_at', time(), false );
 		return rest_ensure_response( array(
 			'password' => $password,
 			'uuid'     => isset( $item['uuid'] ) ? $item['uuid'] : '',
@@ -1130,24 +1133,11 @@ class WPVibe_REST {
 		return WPVibe_Op_Proof::verify( $request, '/wpvibe/v1/code-snippet', (string) $request->get_param( 'code' ) );
 	}
 
-	public function op_proof_key_set( $request ) {
-		$set = WPVibe_Op_Proof::set_key( $request );
-		if ( is_wp_error( $set ) ) {
-			return $set;
-		}
-		return rest_ensure_response( array( 'status' => 'set' ) );
+	public function can_check_op_proof( $request ) {
+		$allowed = $this->can_manage_options();
+		return true === $allowed ? WPVibe_Op_Proof::verify( $request, '/wpvibe/v1/op-proof/check', (string) $request->get_param( 'challenge' ) ) : $allowed;
 	}
 
-	public function op_proof_activate( $request ) {
-		$result = WPVibe_Op_Proof::activate_staged_key( $request );
-		return is_wp_error( $result ) ? $result : rest_ensure_response( array( 'status' => 'set' ) );
-	}
-
-	/**
-	 * Content edit/search — capability depends on the target. Options carry
-	 * site-wide config (and can hold secrets), so they need manage_options;
-	 * post + meta edits require edit-access to the specific post.
-	 */
 	public function can_edit_content( $request ) {
 		$type = $request->get_param( 'target_type' );
 		if ( 'option' === $type ) {
@@ -1240,7 +1230,7 @@ class WPVibe_REST {
 	 * MCP to compare WPVIBE_VERSION strings — flags are forward-compatible.
 	 */
 	public static function feature_flags() {
-		return array( 'content_edit', 'content_search', 'code_snippet', 'beaver_save', 'breakdance_save', 'bricks_save', 'armor', 'authorize_mint', 'op_proof', 'detached_ops', 'connection_readiness', 'connection_status' );
+		return array( 'content_edit', 'content_search', 'code_snippet', 'beaver_save', 'breakdance_save', 'bricks_save', 'armor', 'authorize_mint', 'op_proof', 'op_proof_v2', 'detached_ops', 'connection_readiness', 'connection_status' );
 	}
 
 	public function get_site_info() {
@@ -1391,6 +1381,16 @@ class WPVibe_REST {
 		if ( is_wp_error( $check ) ) {
 			return $check;
 		}
+		return WPVibe_Draft_Lock::run( function () use ( $request ) {
+			return $this->write_file_locked( $request );
+		} );
+	}
+
+	private function write_file_locked( $request ) {
+		$check = $this->require_theme_scope( $request );
+		if ( is_wp_error( $check ) ) {
+			return $check;
+		}
 		$path    = sanitize_text_field( $request->get_param( 'path' ) );
 		$content = $request->get_param( 'content' );
 
@@ -1467,6 +1467,12 @@ class WPVibe_REST {
 	}
 
 	public function publish_draft_theme( $request = null ) {
+		return WPVibe_Draft_Lock::run( function () use ( $request ) {
+			return $this->publish_draft_theme_locked( $request );
+		} );
+	}
+
+	private function publish_draft_theme_locked( $request = null ) {
 		$file_ops = new WPVibe_File_Ops();
 		$check = $file_ops->check_compile_sources( $request ? $request->get_param( 'expected_source_hash' ) : null );
 		if ( is_wp_error( $check ) ) {
@@ -1830,6 +1836,18 @@ class WPVibe_REST {
 	// ------------------------------------------------------------------
 	// Classic Theme Creation
 	// ------------------------------------------------------------------
+
+	/** Fresh authenticated proof; a cached response cannot echo a new challenge. */
+	public function classic_theme_safety( $request ) {
+		$response = new WP_REST_Response( array(
+			'challenge' => $request->get_param( 'challenge' ),
+			'wpvibe_plugin_version' => defined( 'WPVIBE_VERSION' ) ? WPVIBE_VERSION : '',
+			'protocol' => 'preserve-existing-drafts-v1',
+			'authenticated_user_id' => get_current_user_id(),
+		) );
+		$response->header( 'Cache-Control', 'no-store, private, max-age=0' );
+		return $response;
+	}
 
 	public function create_classic_theme( $request ) {
 		$theme_name  = sanitize_text_field( $request->get_param( 'theme_name' ) );
