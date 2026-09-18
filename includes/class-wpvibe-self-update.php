@@ -264,6 +264,8 @@ class WPVibe_Self_Update {
 				$item->plugin = WPVIBE_PLUGIN_BASENAME;
 			}
 
+			// Core's wp_maybe_auto_update() loads admin.php too; the updater needs helpers REST and cron requests lack.
+			require_once ABSPATH . 'wp-admin/includes/admin.php';
 			require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
 
 			$result    = null;

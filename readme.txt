@@ -4,7 +4,7 @@ Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.17.2
+Stable tag: 1.17.3
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -219,6 +219,14 @@ Yes. Connected sites are unlimited on every plan, including the free plan. Conne
 No. WPVibe lets you manage your WordPress site entirely through conversation with your AI assistant. No coding required for content management. Theme editing is also conversational, your AI writes the code for your WordPress theme.
 
 == Changelog ==
+
+= 1.17.3 =
+* Fix: Administrator accounts can read and edit protected (underscore-prefixed) meta through content edit and content search, matching what the CLI already allowed. Keys a plugin guards with its own auth callback stay refused, with a message that names the owning plugin's path.
+* Fix: updating WPVibe from within WPVibe no longer fails with an undefined function on sites where the automatic updater runs outside wp-admin.
+* Fix: a staging or cloned site no longer displays the production site's verified connection status; saved connection observations are tied to the site address.
+* Fix: saving through Bricks, Breakdance, Elementor and Beaver Builder keeps a page template the active theme no longer offers instead of resetting it to default.
+* Fix: a draft theme copy that fails partway is cleaned up, and a leftover draft directory that is an unmodified partial copy is removed automatically; anything else is named so it can be removed by hand.
+* Hardening: search-replace refuses to rename an option into or out of a protected name, or to a non-ASCII name. Background operation records are signed and any record not written by WPVibe on this site never runs.
 
 = 1.17.2 =
 * Fix: Signed operation approvals recover from stale per-site proof keys after updating, without reconnecting the site.

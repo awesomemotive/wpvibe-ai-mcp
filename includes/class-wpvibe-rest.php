@@ -1909,10 +1909,7 @@ class WPVibe_REST {
 			&& $response->get_status() < 400
 			&& ( current_user_can( 'edit_theme_options' ) || current_user_can( 'edit_posts' ) )
 		) {
-			$last = (int) get_option( 'wpvibe_last_active', 0 );
-			if ( time() - $last > 3600 ) {
-				update_option( 'wpvibe_last_active', time(), false );
-			}
+			WPVibe_Connection_Status::note_activity();
 		}
 
 		$method = $request->get_method();

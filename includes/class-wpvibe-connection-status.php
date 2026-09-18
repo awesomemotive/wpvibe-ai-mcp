@@ -4,6 +4,7 @@ defined( 'ABSPATH' ) || exit;
 
 class WPVibe_Connection_Status {
 	const OPTION = 'wpvibe_connection_status';
+	const ACTIVE_SITE = 'wpvibe_last_active_site';
 	const ROUTE = '/wpvibe/v1/connection-status';
 	const MAX_AGE = 300;
 	const STATES = array( 'verified', 'limited', 'failing:auth_blocked', 'failing:credential_rejected', 'failing:app_passwords_unavailable', 'stored_unverified' );
@@ -14,6 +15,57 @@ class WPVibe_Connection_Status {
 		$at = (int) get_option( 'wpvibe_authorization_pending_at', 0 );
 		$record = static::current_observation();
 		return $at > time() - DAY_IN_SECONDS && ( ! $record || $record['observed_at'] < $at * 1000 );
+	}
+
+	// The same identity the Worker signs into every v2 proof: host, explicit port, path; scheme ignored.
+	public static function site_key() { return WPVibe_Op_Proof_V2::audience(); }
+
+	// Pre-1.17.3 data carries no site: adopt it for the install that first reads it after update, so a clone taken later shows unverified.
+	private static function adopt_legacy() {
+		$site = static::site_key();
+		$records = get_option( self::OPTION, false );
+		if ( is_array( $records ) ) {
+			$changed = false;
+			foreach ( $records as $id => $record ) {
+				if ( is_array( $record ) && ! isset( $record['site'] ) ) {
+					$records[ $id ]['site'] = $site;
+					$changed = true;
+				}
+			}
+			if ( $changed ) {
+				update_option( self::OPTION, $records, false );
+			}
+		}
+		if ( (int) get_option( 'wpvibe_last_active', 0 ) > 0 && false === get_option( self::ACTIVE_SITE, false ) ) {
+			update_option( self::ACTIVE_SITE, $site, false );
+		}
+	}
+
+	private static function records() {
+		static::adopt_legacy();
+		$records = get_option( self::OPTION, array() );
+		$site = static::site_key();
+		return array_filter( is_array( $records ) ? $records : array(), function ( $record ) use ( $site ) {
+			return is_array( $record ) && isset( $record['site'] ) && $record['site'] === $site && static::trusted_record( $record );
+		} );
+	}
+
+	public static function last_active() {
+		static::adopt_legacy();
+		return get_option( self::ACTIVE_SITE, false ) === static::site_key() ? (int) get_option( 'wpvibe_last_active', 0 ) : 0;
+	}
+
+	public static function recently_active() {
+		$last_active = static::last_active();
+		return $last_active > 0 && ( time() - $last_active ) < 30 * DAY_IN_SECONDS;
+	}
+
+	public static function note_activity() {
+		$site = static::site_key();
+		if ( time() - (int) get_option( 'wpvibe_last_active', 0 ) > 3600 || get_option( self::ACTIVE_SITE, false ) !== $site ) {
+			update_option( 'wpvibe_last_active', time(), false );
+			update_option( self::ACTIVE_SITE, $site, false );
+		}
 	}
 
 	public static function subject( $request ) {
@@ -55,15 +107,19 @@ class WPVibe_Connection_Status {
 		if ( true !== $allowed ) {
 			return $allowed;
 		}
+		static::adopt_legacy();
 		$previous = get_option( self::OPTION, false );
-		$records = is_array( $previous ) ? $previous : array();
+		$site = static::site_key();
+		$records = array_filter( is_array( $previous ) ? $previous : array(), function ( $record ) use ( $site ) {
+			return is_array( $record ) && ( $record['site'] ?? null ) === $site;
+		} );
 		$id = $request->get_param( 'connection_id' );
 		$fingerprint = 'v2:' . explode( '.', (string) $request->get_header( WPVibe_Op_Proof_V2::HEADER ) )[1];
 		$old = isset( $records[ $id ] ) ? $records[ $id ] : null;
 		if ( is_array( $old ) && ( $old['key'] === $fingerprint || static::trusted_record( $old ) ) && $old['observed_at'] >= $request->get_param( 'observed_at' ) ) {
 			return self::error( 'stale', 'A newer connection observation is already stored.', 409 );
 		}
-		$records[ $id ] = array( 'key' => $fingerprint, 'generation' => $request->get_param( 'generation' ), 'observed_at' => $request->get_param( 'observed_at' ), 'state' => $request->get_param( 'state' ), 'via' => $request->get_param( 'via' ) );
+		$records[ $id ] = array( 'key' => $fingerprint, 'generation' => $request->get_param( 'generation' ), 'observed_at' => $request->get_param( 'observed_at' ), 'state' => $request->get_param( 'state' ), 'via' => $request->get_param( 'via' ), 'site' => $site );
 		if ( 'mcp_site_info' === $request->get_param( 'source' ) ) {
 			$records[ $id ]['ai_read'] = array( 'observed_at' => $request->get_param( 'observed_at' ), 'client' => $request->get_param( 'client' ) );
 		} elseif ( is_array( $old ) && $old['key'] === $fingerprint && $old['generation'] === $request->get_param( 'generation' ) && in_array( $request->get_param( 'state' ), array( 'verified', 'limited' ), true ) && isset( $old['ai_read'] ) ) {
@@ -91,9 +147,8 @@ class WPVibe_Connection_Status {
 	}
 
 	public static function current_observation() {
-		$records = get_option( self::OPTION, array() );
-		foreach ( is_array( $records ) ? $records : array() as $record ) {
-			if ( is_array( $record ) && static::trusted_record( $record ) && in_array( $record['state'] ?? '', self::STATES, true ) ) { return $record; }
+		foreach ( static::records() as $record ) {
+			if ( in_array( $record['state'] ?? '', self::STATES, true ) ) { return $record; }
 		}
 		return null;
 	}
@@ -109,27 +164,21 @@ class WPVibe_Connection_Status {
 	}
 
 	public static function badge() {
-		$records = get_option( self::OPTION, array() );
-		if ( is_array( $records ) ) {
-			foreach ( $records as $record ) {
-				if ( ! is_array( $record ) || ! static::trusted_record( $record ) ) {
-					continue;
-				}
-				$stamp = gmdate( 'Y-m-d H:i', (int) floor( $record['observed_at'] / 1000 ) ) . ' UTC';
-				if ( 'verified' === $record['state'] ) {
-					return sprintf( __( 'Connected. Verified %s.', 'vibe-ai' ), $stamp );
-				}
-				if ( 'limited' === $record['state'] ) {
-					return sprintf( __( 'Connected with limited access. Verified %s.', 'vibe-ai' ), $stamp );
-				}
-				return sprintf( __( 'Connection needs attention (checked %s).', 'vibe-ai' ), $stamp );
+		foreach ( static::records() as $record ) {
+			$stamp = gmdate( 'Y-m-d H:i', (int) floor( $record['observed_at'] / 1000 ) ) . ' UTC';
+			if ( 'verified' === $record['state'] ) {
+				return sprintf( __( 'Connected. Verified %s.', 'vibe-ai' ), $stamp );
 			}
+			if ( 'limited' === $record['state'] ) {
+				return sprintf( __( 'Connected with limited access. Verified %s.', 'vibe-ai' ), $stamp );
+			}
+			return sprintf( __( 'Connection needs attention (checked %s).', 'vibe-ai' ), $stamp );
 		}
 		if ( self::awaiting_confirmation() ) {
 			return __( 'Approved, waiting for confirmation', 'vibe-ai' );
 		}
-		$last_active = (int) get_option( 'wpvibe_last_active', 0 );
-		if ( $last_active > 0 && WPVibe_White_Label::site_is_connected() ) {
+		$last_active = static::last_active();
+		if ( static::recently_active() ) {
 			return sprintf( __( 'Connected. Your AI used this site %s ago.', 'vibe-ai' ), human_time_diff( $last_active ) );
 		}
 		return __( 'Not connected yet', 'vibe-ai' );
@@ -140,6 +189,6 @@ class WPVibe_Connection_Status {
 	}
 
 	public static function has_connection_history() {
-		return 'not_checked' !== self::current_state() || (int) get_option( 'wpvibe_last_active', 0 ) > 0;
+		return 'not_checked' !== self::current_state() || static::last_active() > 0;
 	}
 }

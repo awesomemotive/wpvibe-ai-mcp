@@ -219,7 +219,7 @@ class WPVibe_Breakdance {
 			if ( $created_id === 0 && $title ) {
 				$update['post_title'] = $title;
 			}
-			wp_update_post( $update );
+			wp_update_post( WPVibe_Content_Ops::keep_page_template( $update ) );
 
 			$cache = \Breakdance\Render\generateCacheForPost( $id );
 			if ( array() === $cache ) {

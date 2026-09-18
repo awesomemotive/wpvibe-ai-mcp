@@ -175,7 +175,7 @@ class WPVibe_Beaver {
 			}
 			$created_id = $id;
 		} elseif ( $request->get_param( 'title' ) ) {
-			wp_update_post( array( 'ID' => $id, 'post_title' => $request->get_param( 'title' ) ) );
+			wp_update_post( WPVibe_Content_Ops::keep_page_template( array( 'ID' => $id, 'post_title' => $request->get_param( 'title' ) ) ) );
 		}
 
 		$result = $this->write_layout( $id, $draft, $status, $created_id, $warnings );

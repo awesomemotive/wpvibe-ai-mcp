@@ -61,6 +61,17 @@ class WPVibe_Detached_Ops {
 		return false;
 	}
 
+	private static function sign( $op_id, array $state ) {
+		return hash_hmac( 'sha256', (string) wp_json_encode( array(
+			(string) $op_id,
+			(string) ( $state['command'] ?? '' ),
+			! empty( $state['confirm_write'] ),
+			(string) ( $state['approved_state'] ?? '' ),
+			(int) ( $state['user_id'] ?? 0 ),
+			(int) ( $state['scheduled_at'] ?? 0 ),
+		) ), wp_salt( 'auth' ) );
+	}
+
 	public static function option_name( $op_id ) {
 		return self::OPTION_PREFIX . str_replace( array( '.', ':' ), '_', (string) $op_id );
 	}
@@ -92,6 +103,7 @@ class WPVibe_Detached_Ops {
 			'scheduled_at'   => time(),
 			'method'         => 'request',
 		);
+		$state['sig'] = self::sign( $op_id, $state );
 
 		if ( null !== $this->finish_request_function() ) {
 			update_option( $name, $state, false );
@@ -216,6 +228,15 @@ class WPVibe_Detached_Ops {
 			return;
 		}
 		if ( 'scheduled' !== ( $state['status'] ?? '' ) ) {
+			return;
+		}
+		// Only schedule() can sign; a record renamed or written in by SQL or search-replace never runs.
+		if ( empty( $state['sig'] ) || ! is_string( $state['sig'] ) || ! hash_equals( self::sign( $op_id, $state ), $state['sig'] ) ) {
+			WPVibe_Op_Receipts::complete_detached( $op_id, 403, wp_json_encode( array(
+				'code'    => 'detached_unsigned',
+				'message' => __( 'This background operation was not recorded by WPVibe on this site; nothing ran.', 'vibe-ai' ),
+			) ) );
+			delete_option( $name );
 			return;
 		}
 		// scheduled -> running burns the token (single use).

@@ -513,6 +513,11 @@ trait WPVibe_CLI_Db {
 
 		list( $skip_columns, $include_columns, $guid_skipped ) = $this->search_replace_column_filters( $flags );
 
+		$protected = $this->search_replace_protected_option_refusal( $tables, $skip_columns, $include_columns, $old, $new );
+		if ( $protected ) {
+			return $protected;
+		}
+
 		if ( function_exists( 'set_time_limit' ) ) {
 			@set_time_limit( $this->detached ? 0 : 300 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
 		}
@@ -864,6 +869,50 @@ trait WPVibe_CLI_Db {
 			return false;
 		}
 		return true;
+	}
+
+	/** Refuse (before any write) an option_name rewrite that moves a row into or out of a BLOCKED_OPTIONS name. */
+	private function search_replace_protected_option_refusal( $tables, $skip_columns, $include_columns, $old, $new ) {
+		global $wpdb;
+		$old_json = $this->json_encode_strip_quotes( $old );
+		$new_json = $this->json_encode_strip_quotes( $new );
+		foreach ( $tables as $table ) {
+			if ( ! preg_match( '/options$/i', (string) $table ) || ! $this->search_replace_column_in_scope( $table, 'option_name', $skip_columns, $include_columns ) ) {
+				continue;
+			}
+			list( , $text_columns ) = $this->table_columns( $table );
+			if ( ! in_array( 'option_name', $text_columns, true ) ) {
+				continue;
+			}
+			$match = '`option_name`' . $wpdb->prepare( ' LIKE BINARY %s', '%' . $wpdb->esc_like( $old ) . '%' );
+			if ( $old_json !== $old ) {
+				$match .= ' OR `option_name`' . $wpdb->prepare( ' LIKE BINARY %s', '%' . $wpdb->esc_like( $old_json ) . '%' );
+			}
+			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$names = $wpdb->get_col( 'SELECT `option_name` FROM ' . $this->esc_sql_ident( $table ) . ' WHERE ' . $match ); // nosemgrep: direct-db-query
+			foreach ( (array) $names as $name ) {
+				$name                = (string) $name;
+				$this->sr_incomplete = false;
+				$renamed             = $this->replace_in_value( $name, $old, $new, $old_json, $new_json );
+				$this->sr_incomplete = false;
+				if ( ! is_string( $renamed ) || $renamed === $name ) {
+					continue;
+				}
+				$protected = null !== WPVibe_CLI::match_option_name( $name, WPVibe_CLI::BLOCKED_OPTIONS )
+					|| null !== WPVibe_CLI::match_option_name( $renamed, WPVibe_CLI::BLOCKED_OPTIONS )
+					|| WPVibe_CLI::option_name_not_printable_ascii( $renamed );
+				if ( $protected ) {
+					return $this->error_result( sprintf(
+						/* translators: 1: table name, 2: current option name, 3: option name after the replacement */
+						__( 'Refused: this search-replace would rename the option "%2$s" to "%3$s" in %1$s. Renaming an option into or out of a name WPVibe protects (site identity, active plugins, auth keys, WPVibe connection and hand-off state) is blocked even with approval, and so is renaming one to a non-ASCII name. Nothing was changed. To replace only the values, re-run with --skip-columns=option_name, or use a more specific search string.', 'vibe-ai' ),
+						$table,
+						$name,
+						$renamed
+					) );
+				}
+			}
+		}
+		return null;
 	}
 
 	/**

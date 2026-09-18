@@ -72,18 +72,18 @@ class WPVibe_Draft_Theme {
 			return new WP_Error( 'no_theme', __( 'Active theme directory not found.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
 		}
 
-		// Reserve a new directory exclusively. An orphan belongs to the user.
-		if ( file_exists( $dest ) || is_link( $dest ) ) {
-			return WPVibe_Draft_Lock::conflict();
+		// Reserve exclusively; an orphan with content of its own belongs to the user.
+		if ( ( file_exists( $dest ) || is_link( $dest ) ) && ! $this->clear_partial_copy( $source, $dest, $draft_slug ) ) {
+			return $this->orphan_error( $draft_slug );
 		}
 		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir
 		if ( ! @mkdir( $dest, 0755 ) ) {
 			return WPVibe_Draft_Lock::conflict();
 		}
 
-		// Clone the theme directory. Failures leave recoverable, unregistered files.
 		$result = $this->copy_directory( $source, $dest );
 		if ( is_wp_error( $result ) ) {
+			$this->delete_directory( $dest );
 			return $result;
 		}
 
@@ -118,6 +118,84 @@ class WPVibe_Draft_Theme {
 			'source_slug' => $active_slug,
 			'message'     => __( 'Draft theme created. File operations are now scoped to the draft.', 'vibe-ai' ),
 		) );
+	}
+
+	/** Remove a leftover draft directory only when every file in it is a copy, or truncated copy, of the live theme. */
+	private function clear_partial_copy( $source, $dest, $draft_slug ) {
+		if ( is_link( $dest ) || ! is_dir( $dest ) || file_exists( $dest . '/style.css' ) || is_link( $dest . '/style.css' ) ) {
+			return false;
+		}
+		$theme = wp_get_theme( $draft_slug );
+		if ( $theme && $theme->exists() ) {
+			return false;
+		}
+		try {
+			$iterator = new RecursiveIteratorIterator(
+				new RecursiveDirectoryIterator( $dest, RecursiveDirectoryIterator::SKIP_DOTS ),
+				RecursiveIteratorIterator::SELF_FIRST
+			);
+			foreach ( $iterator as $item ) {
+				$src_path = $source . '/' . $iterator->getSubPathName();
+				if ( $item->isLink() || is_link( $src_path ) ) {
+					return false;
+				}
+				if ( $item->isDir() ) {
+					if ( ! is_dir( $src_path ) ) {
+						return false;
+					}
+					continue;
+				}
+				if ( ! $item->isFile() || ! is_file( $src_path ) ) {
+					return false;
+				}
+				if ( $item->getSize() > filesize( $src_path ) || ! $this->is_prefix_copy( $item->getPathname(), $src_path ) ) {
+					return false;
+				}
+			}
+		} catch ( \Exception $e ) {
+			return false;
+		}
+		$this->delete_directory( $dest );
+		clearstatcache( true, $dest );
+		return ! file_exists( $dest ) && ! is_link( $dest );
+	}
+
+	private function is_prefix_copy( $copied_path, $source_path ) {
+		// phpcs:disable WordPress.WP.AlternativeFunctions.file_system_operations_fopen, WordPress.WP.AlternativeFunctions.file_system_operations_fread, WordPress.WP.AlternativeFunctions.file_system_operations_fclose
+		$copied = @fopen( $copied_path, 'rb' );
+		$source = @fopen( $source_path, 'rb' );
+		$same   = false !== $copied && false !== $source;
+		while ( $same && ! feof( $copied ) ) {
+			$chunk = fread( $copied, 65536 );
+			if ( false === $chunk ) {
+				$same = false;
+				break;
+			}
+			if ( '' === $chunk ) {
+				continue;
+			}
+			$same = fread( $source, strlen( $chunk ) ) === $chunk;
+		}
+		if ( false !== $copied ) {
+			fclose( $copied );
+		}
+		if ( false !== $source ) {
+			fclose( $source );
+		}
+		// phpcs:enable
+		return $same;
+	}
+
+	private function orphan_error( $draft_slug ) {
+		return new WP_Error(
+			'draft_orphan',
+			sprintf(
+				/* translators: %s: theme directory name */
+				__( 'A leftover directory \'wp-content/themes/%s\' blocks creating the draft. It is not the draft on record, and WPVibe only removes a leftover that is an unmodified partial copy of the live theme, so it was left in place. Remove or rename it with the host file manager or SFTP (copy anything you want to keep first), then create the draft again.', 'vibe-ai' ),
+				$draft_slug
+			),
+			WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 409, 'orphan_dir' => $draft_slug ) )
+		);
 	}
 
 	/**

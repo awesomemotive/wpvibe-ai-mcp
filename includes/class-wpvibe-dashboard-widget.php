@@ -81,7 +81,7 @@ class WPVibe_Dashboard_Widget {
 	 * the 30-day window must stay in lockstep with the admin page.
 	 */
 	private function is_connected() {
-		return WPVibe_White_Label::site_is_connected();
+		return WPVibe_Connection_Status::recently_active();
 	}
 
 	private function render_disconnected() {
@@ -113,7 +113,7 @@ class WPVibe_Dashboard_Widget {
 	}
 
 	private function render_connected() {
-		$last_active = (int) get_option( 'wpvibe_last_active', 0 );
+		$last_active = WPVibe_Connection_Status::last_active();
 		$activity    = $this->recent_activity();
 		// Recently-active + empty buffer is NOT idleness: the buffer is new in 1.9.0
 		// and only writes on changes, so read-heavy sites live here permanently.

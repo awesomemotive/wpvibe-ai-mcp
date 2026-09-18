@@ -16,6 +16,7 @@ delete_option( 'wpvibe_draft_source' );
 delete_option( 'wpvibe_preview_token' );
 delete_option( 'wpvibe_preview_token_issued' );
 delete_option( 'wpvibe_last_active' );
+delete_option( 'wpvibe_last_active_site' );
 delete_option( 'wpvibe_connection_check_snapshot' );
 delete_option( 'wpvibe_allow_app_passwords' );
 delete_option( 'wpvibe_installed_at' );

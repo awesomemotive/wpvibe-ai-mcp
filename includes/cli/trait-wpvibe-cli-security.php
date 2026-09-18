@@ -77,7 +77,20 @@ trait WPVibe_CLI_Security {
 			if ( '' === $old || ! isset( $positional[1] ) ) {
 				return null; // Handler will return a usage error.
 			}
-			$new = $positional[1];
+			$new    = $positional[1];
+			$tables = $this->resolve_search_replace_tables( array_slice( $positional, 2 ), $flags );
+			if ( ! is_wp_error( $tables ) ) {
+				list( $skip_columns, $include_columns, ) = $this->search_replace_column_filters( $flags );
+				$protected = $this->search_replace_protected_option_refusal( $tables, $skip_columns, $include_columns, $old, $new );
+				if ( $protected ) {
+					return array(
+						'operation' => 'search_replace:' . $old . '=>' . $new,
+						'reason'    => (string) $protected['stderr'],
+						'dry_run'   => null,
+						'refuse'    => $protected,
+					);
+				}
+			}
 			return array(
 				'operation' => 'search_replace:' . $old . '=>' . $new,
 				'reason'    => __( 'search-replace rewrites database content in place, table by table. It handles serialized data safely, but the change is irreversible without a backup. Review the per-table match counts before approving.', 'vibe-ai' ),

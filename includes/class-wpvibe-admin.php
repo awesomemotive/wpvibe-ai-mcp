@@ -173,7 +173,7 @@ class WPVibe_Admin {
 	 * Connected = received an authenticated WPVibe request within the last 30 days.
 	 */
 	private function is_connected() {
-		return WPVibe_White_Label::site_is_connected();
+		return WPVibe_Connection_Status::recently_active();
 	}
 
 	/**
@@ -187,7 +187,7 @@ class WPVibe_Admin {
 		$connected     = $this->is_connected();
 		$check_result  = WPVibe_Connection_Check::last_result();
 		$legacy_live   = ! $authorized && 0 !== strpos( $auth_state, 'failing:' ) && ! WPVibe_Connection_Status::awaiting_confirmation() && $connected;
-		$last_active   = (int) get_option( 'wpvibe_last_active', 0 );
+		$last_active   = WPVibe_Connection_Status::last_active();
 		// Approval itself makes an authenticated read; only activity after that moment shows the AI is using the site.
 		$active        = $connected && 0 !== strpos( $auth_state, 'failing:' ) && ( ! $auth_record || $last_active > (int) floor( $auth_record['observed_at'] / 1000 ) + 60 );
 		$check_state   = $check_result ? $check_result['state'] : ( $authorized || $legacy_live || WPVibe_Connection_Status::awaiting_confirmation() ? '' : 'current' );

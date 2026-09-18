@@ -629,16 +629,14 @@ class WPVibe_Content_Ops {
 
 	/**
 	 * edit_post_meta maps through edit_post, so CPT capability mappings fail it
-	 * even for admins. The override never applies to protected keys, keys
-	 * registered with an auth_callback (register_post_meta registers those
-	 * under the subtype filter, which core checks too), or post types whose
-	 * edit_posts cap is an explicit do_not_allow.
+	 * even for admins, and core denies every underscore-prefixed key to every
+	 * role. Administrators get both back here, matching what `post meta update
+	 * --force` already grants them. The override never applies to keys
+	 * registered with an auth_callback (the owning plugin's own answer stands)
+	 * or post types whose edit_posts cap is an explicit do_not_allow.
 	 */
 	private function admin_meta_override( $post_id, $key ) {
 		if ( ! current_user_can( 'manage_options' ) ) {
-			return false;
-		}
-		if ( is_protected_meta( $key, 'post' ) ) {
 			return false;
 		}
 		if ( $this->meta_has_auth_callback( $post_id, $key ) ) {
@@ -782,10 +780,17 @@ class WPVibe_Content_Ops {
 	}
 
 	private function meta_forbidden_error( $post_id, $key ) {
-		if ( is_protected_meta( $key, 'post' ) || $this->meta_has_auth_callback( $post_id, $key ) ) {
+		if ( $this->meta_has_auth_callback( $post_id, $key ) ) {
 			return new WP_Error(
 				'meta_forbidden',
-				__( 'This meta key is protected (underscore-prefixed or registered with an auth callback), a boundary that applies even to Administrators. Read it with WP-CLI "post meta list". To write it, use the write path of the plugin that owns the key (an ability or its REST namespace); if this is page-builder data, the builder plugin is likely inactive on this site. Do not fall back to raw SQL.', 'vibe-ai' ),
+				__( 'The plugin that registered this meta key refused the edit for the connected account (its auth callback said no), and that answer stands even for Administrators. Write the value through that plugin\'s own path (an ability via discover_abilities, or its REST namespace); if this is page-builder data, check that the builder lets this account edit this post. Do not fall back to raw SQL.', 'vibe-ai' ),
+				WPVibe_Error_Contract::data( 'meta_protected', false, array( 'status' => 403, 'protected' => true ) )
+			);
+		}
+		if ( is_protected_meta( $key, 'post' ) && ! current_user_can( 'manage_options' ) ) {
+			return new WP_Error(
+				'meta_forbidden',
+				__( 'This meta key is protected (underscore-prefixed). WPVibe lets Administrator accounts read and edit protected keys here, but the connected account is not an Administrator. Read it with WP-CLI "post meta list"; to write it, use the write path of the plugin that owns the key (an ability or its REST namespace) or reconnect with an Administrator account. Do not fall back to raw SQL.', 'vibe-ai' ),
 				WPVibe_Error_Contract::data( 'meta_protected', false, array( 'status' => 403, 'protected' => true ) )
 			);
 		}

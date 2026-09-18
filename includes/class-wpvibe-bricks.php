@@ -255,7 +255,7 @@ class WPVibe_Bricks {
 		if ( $created_id === 0 && $title ) {
 			$update['post_title'] = $title;
 		}
-		wp_update_post( $update );
+		wp_update_post( WPVibe_Content_Ops::keep_page_template( $update ) );
 
 		// File mode: wp_update_post above fired Bricks' own save_post CSS
 		// generation (correct now that elements are loaded — see the top of

@@ -642,7 +642,7 @@ class WPVibe_Elementor {
 				$update['post_status'] = $status;
 			}
 			if ( count( $update ) > 1 ) {
-				wp_update_post( $update );
+				wp_update_post( WPVibe_Content_Ops::keep_page_template( $update ) );
 			}
 			// Ensure mode is set in case caller is upgrading a non-Elementor post.
 			update_post_meta( $id, '_elementor_edit_mode', 'builder' );
@@ -780,7 +780,7 @@ class WPVibe_Elementor {
 				$update['post_status'] = $status;
 			}
 			if ( count( $update ) > 1 ) {
-				wp_update_post( $update );
+				wp_update_post( WPVibe_Content_Ops::keep_page_template( $update ) );
 			}
 			update_post_meta( $id, '_elementor_edit_mode', 'builder' );
 			update_post_meta( $id, '_elementor_template_type', $type );
