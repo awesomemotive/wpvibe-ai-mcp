@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.17.4] - 2026-09-21
+
+- Fix: the site information request no longer fails with a server error on sites where WordPress has not loaded its plugin helpers for REST requests (seen on WordPress 6.4). Approvals on those sites could not complete because WPVibe could not read the plugin version.
+- Fix: when a draft theme has been activated as the live theme, the draft conflict message now says so, names both themes, and explains how to recover, instead of telling you to continue editing a draft that WPVibe will not touch.
+- Improvement: the connection check message for a password gate in front of WordPress (staging protection or HTTP Basic Auth) now tells you to let the WPVibe relay IP address through the gate and links to where that address is listed.
+
 ## [1.17.3] - 2026-09-18
 
 - Fix: Administrator accounts can read and edit protected (underscore-prefixed) meta through content edit and content search, matching what the CLI already allowed. Keys a plugin guards with its own auth callback stay refused, with a message that names the owning plugin's path.

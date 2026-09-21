@@ -165,7 +165,7 @@ class WPVibe_Connection_Check {
 		$www  = is_array( $www ) ? implode( ', ', $www ) : (string) $www;
 		$body = json_decode( wp_remote_retrieve_body( $response ), true );
 		if ( 401 === $code && false !== stripos( $www, 'basic' ) ) {
-			return array( 'status' => 'failed', 'summary' => __( 'A password gate in front of WordPress (staging protection or HTTP Basic Auth) blocks the REST API before WordPress runs.', 'vibe-ai' ), 'next' => __( 'Ask your host to exempt /wp-json/ from the password gate, or turn the gate off while WPVibe is connected. WPVibe cannot reach a gated site.', 'vibe-ai' ) );
+			return array( 'status' => 'failed', 'summary' => __( 'A password gate in front of WordPress (staging protection or HTTP Basic Auth) blocks the REST API before WordPress runs.', 'vibe-ai' ), 'next' => __( 'Ask your host to let the WPVibe relay IP address through the password gate (it is listed at https://wpvibe.ai/docs/firewalls-and-wpvibe-ip/), or turn the gate off while WPVibe is connected. WPVibe cannot send the gate password itself.', 'vibe-ai' ) );
 		}
 		if ( is_array( $body ) && isset( $body['code'] ) && in_array( $body['code'], array( 'rest_disabled', 'rest_forbidden', 'rest_cannot_access', 'rest_login_required', 'rest_not_logged_in' ), true ) ) {
 			$blocker = self::rest_blocker();

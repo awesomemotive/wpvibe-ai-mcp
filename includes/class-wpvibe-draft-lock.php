@@ -64,7 +64,16 @@ class WPVibe_Draft_Lock {
 	}
 
 	public static function conflict() {
-		return new WP_Error( 'draft_conflict', __( 'Existing draft state was preserved. Continue editing the current draft. To start a different theme, first save a separate backup and explicitly choose whether to publish or discard the current draft. Missing draft files or an untracked draft directory require recovery before creating another draft.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 409, 'draft_slug' => get_option( 'wpvibe_draft_theme' ), 'source_slug' => get_option( 'wpvibe_draft_source' ) ) ) );
+		$draft  = get_option( 'wpvibe_draft_theme' );
+		$source = get_option( 'wpvibe_draft_source' );
+		$data   = array( 'status' => 409, 'draft_slug' => $draft, 'source_slug' => $source );
+		// "Continue editing the current draft" is a dead end when the draft itself is what every draft operation refuses.
+		if ( self::valid_slug( $draft ) && $draft === get_option( 'stylesheet' ) ) {
+			$data['reason'] = 'draft_is_active_theme';
+			/* translators: 1: draft theme folder, 2: original theme folder. */
+			return new WP_Error( 'draft_conflict', sprintf( __( 'The draft theme (%1$s) is the active theme on this site, so WPVibe will not edit, preview, publish or delete it as a draft. Nothing was changed. Under Appearance > Themes, activate the theme the draft was copied from (%2$s), then continue editing the draft and publish it through WPVibe.', 'vibe-ai' ), $draft, self::valid_slug( $source ) ? $source : __( 'the original theme', 'vibe-ai' ) ), WPVibe_Error_Contract::data( 'invalid_input', false, $data ) );
+		}
+		return new WP_Error( 'draft_conflict', __( 'Existing draft state was preserved. Continue editing the current draft. To start a different theme, first save a separate backup and explicitly choose whether to publish or discard the current draft. Missing draft files or an untracked draft directory require recovery before creating another draft.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, $data ) );
 	}
 
 	/** Register source first; a failed write leaves a conflict, never an editable partial draft. */

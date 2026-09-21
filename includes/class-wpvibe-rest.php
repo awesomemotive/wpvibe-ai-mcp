@@ -1259,6 +1259,11 @@ class WPVibe_REST {
 		$cli = new WPVibe_CLI();
 		$cli_status = $cli->check_availability();
 
+		// REST requests do not load the admin plugin helpers; without this get_plugins() is undefined and the route fatals.
+		if ( ! function_exists( 'get_plugins' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		}
+
 		// Connect-time capability preflight: the MCP reads this right after
 		// OAuth to warn about limited accounts, and error recovery hints tell
 		// the AI to check it before suggesting a reconnect.
