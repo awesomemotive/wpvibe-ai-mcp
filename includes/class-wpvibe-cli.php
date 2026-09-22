@@ -56,6 +56,8 @@ class WPVibe_CLI {
 	/** Set when the Worker calls run_approved(); allows handlers to proceed past destructive gates. */
 	private $skip_destructive = false;
 	private $approved_state   = null;
+	/** Raw `db query` statement captured by execute() before tokenizing (#397); null for every other command. */
+	private $db_query_raw = null;
 	/** Running out of band (WPVibe_Detached_Ops): no request deadline applies. */
 	private $detached = false;
 
@@ -817,6 +819,9 @@ class WPVibe_CLI {
 
 		// db query needs < and > for SQL comparisons — skip those chars for that command.
 		$is_db_query = ( strpos( $command, 'db query' ) === 0 );
+		// The SQL is taken from the raw text, not the quote-stripped tokens:
+		// the tokenizer would turn `SELECT 1 "UNION SELECT SLEEP(1)"` into live SQL.
+		$this->db_query_raw = $is_db_query ? $this->db_query_raw_statement( substr( $command, 8 ) ) : null;
 		$blocked_char = $this->find_unquoted_shell_char( $command, $is_db_query );
 		if ( null !== $blocked_char ) {
 			$hint = ( '<' === $blocked_char || '>' === $blocked_char )

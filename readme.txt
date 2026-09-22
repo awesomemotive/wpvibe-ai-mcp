@@ -4,7 +4,7 @@ Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.17.4
+Stable tag: 1.17.5
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -220,6 +220,11 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 
 == Changelog ==
 
+= 1.17.5 =
+* Fix: a db query SELECT whose quoted text contains a write word (for example 'delete' in a value, or REPLACE(name, 'a', 'update')) no longer asks for approval and then refuses to run. A statement that starts with SELECT, SHOW, DESCRIBE or EXPLAIN SELECT is a read and runs as one.
+* Hardening: a db query that calls SLEEP, BENCHMARK, GET_LOCK or RELEASE_LOCK now needs approval, and read queries stop after 30 seconds instead of holding a database connection open.
+* Fix: the db query statement is sent to MySQL exactly as typed. Quote marks inside the statement are quote marks to MySQL and can no longer be turned into extra SQL.
+
 = 1.17.4 =
 * Fix: the site information request no longer fails with a server error on sites where WordPress has not loaded its plugin helpers for REST requests (seen on WordPress 6.4). Approvals on those sites could not complete because WPVibe could not read the plugin version.
 * Fix: when a draft theme has been activated as the live theme, the draft conflict message now says so, names both themes, and explains how to recover, instead of telling you to continue editing a draft that WPVibe will not touch.
@@ -377,14 +382,6 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 * Fix: updating a single plugin no longer leaves it deactivated. WordPress silently deactivates a plugin before replacing its files, and the update command did not turn it back on, so a plugin that was active before an update could end up switched off without any error. Updates now use the same method as the WordPress dashboard and the WP-CLI tool, which keeps the plugin active the whole time.
 * Improvement: the update result now states whether the plugin is active or inactive after the update, verified against the site rather than assumed, so your AI assistant reports the real state instead of guessing.
 * Fix: an update that failed to replace the plugin files used to report success. It now reports the failure and says the installed version is unchanged.
-
-= 1.13.2 =
-* Fix: cache purge --url=… was stripped before dispatch, so a surgical purge silently became a full cache flush. The flag now reaches the purge dispatcher for cache purge and its engine aliases; bare or empty --url errors instead of over-purging. When every detected page cache refuses a URL, the command now fails and names each engine's reason instead of claiming there was nothing to purge.
-* Fix: content search now finds text regardless of quote style. WordPress displays straight quotes as curly ones, and a search for the plain version used to come back empty even though the editing route would have matched it. That mismatch sent AI assistants hunting in the wrong place or rewriting whole posts when a one-line edit was intended. Search and edit now follow the same matching rules, so anything search returns is guaranteed to work as an edit.
-* Fix: search results now say when a long line was shortened. Results were silently trimmed at 400 characters, so on long paragraphs and page builder layouts an AI could be handed a shortened snippet with no way to know text was missing. Results are now centered on the matched text and clearly flagged whenever they or their surrounding context were trimmed.
-* Improvement: a failed edit now shows what is actually stored nearby. When an edit misses because the text is not quite what is stored, the error includes the closest matching passages from the real content, so the retry is informed instead of a guess. When an edit matches more than one place, the error now lists those places instead of only counting them.
-* Improvement: edits now report what was actually saved. WordPress filters and security plugins can quietly alter content as it is saved. After every edit the plugin re-reads the stored value and says so when the site changed what was written, so an AI never builds its next edit on a version of the content that no longer exists.
-* Improvement: theme editing denials now name their real cause. On multisite networks only network super admins can edit theme files, and some security plugins remove that ability even from administrators. In both cases the old error advised reconnecting with a more privileged account, which cannot work; the error now says which situation applies and what actually helps.
 
 = Older versions =
 WP.org caps the changelog at 5,000 words. For the full release history back to 1.0.0, see https://wpvibe.ai/changelog/

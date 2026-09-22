@@ -251,64 +251,53 @@ trait WPVibe_CLI_Security {
 			return $this->classify_user_write( $command_key, $positional, $flags );
 		}
 
-		// db query: mutating SQL needs approval. Bare-word verbs, plus REPLACE
-		// matched only as a statement so the REPLACE() string function inside a
-		// read-only SELECT is not misread as a write.
+		// db query: one rule, shared with handle_db_query (sql_verdict). A
+		// SELECT/SHOW/DESCRIBE/EXPLAIN-led statement is a read and runs; a read
+		// that calls SLEEP/BENCHMARK/GET_LOCK is held; anything else is a write
+		// and is held. The statement is the raw text, never the quote-stripped
+		// token join (#385, #397).
 		if ( 'db query' === $command_key ) {
-			$sql = trim( implode( ' ', $positional ) );
+			$sql = $this->db_query_statement( $positional );
 			if ( '' === $sql ) {
 				return null; // Handler will return a usage error.
 			}
-			// Comments are stripped from the validation copy (shared helper, so
-			// this cannot desync from handle_db_query), matching MySQL's grammar
-			// so a keyword hidden in a real comment is not seen while a keyword
-			// after a bare `--`/inside a value still is.
-			$normalized = $this->normalize_sql_for_gate( $sql );
-			$mutating   = array( 'DELETE', 'UPDATE', 'DROP', 'TRUNCATE', 'ALTER', 'INSERT', 'CREATE', 'RENAME', 'GRANT', 'REVOKE' );
-			$matched    = null;
-			foreach ( $mutating as $kw ) {
-				if ( preg_match( '/\b' . $kw . '\b/', $normalized ) ) {
-					$matched = $kw;
-					break;
-				}
+			list( $kind, $keyword ) = $this->sql_verdict( $sql );
+			if ( 'read' === $kind ) {
+				return null;
 			}
-			// REPLACE as a statement (INTO optional in MySQL), followed by a
-			// table token — the trailing [`\w{] excludes the REPLACE() string
-			// function (REPLACE( has no space + a paren), which is not a write.
-			// Kept in sync with handle_db_query's INTO-optional target guard.
-			if ( null === $matched && preg_match( '/\bREPLACE\s+(?:LOW_PRIORITY\s+|DELAYED\s+)?(?:INTO\s+)?[`\w{]/', $normalized ) ) {
-				$matched = 'REPLACE';
-			}
-			if ( null !== $matched ) {
-				// An identity/privilege target is unapprovable: refuse at
-				// classification so no human is handed an approve button the
-				// executor would refuse anyway (and the preview never runs).
-				// Scoped exactly like handle_db_query's own call: a SELECT is
-				// read-only however many write keywords its string literals
-				// contain ("... LIKE '%update users%'"), and refusing one here
-				// would be both a lie and a dead end.
-				$is_select      = ( strpos( $normalized, 'SELECT' ) === 0 );
-				$is_schema_read = (bool) preg_match( '/^(DESCRIBE|DESC|SHOW|EXPLAIN SELECT)\b/', $normalized );
-				$privileged     = ( $is_select || $is_schema_read ) ? null : $this->privileged_sql_target_error( $normalized );
-				if ( $privileged ) {
-					return array(
-						'operation' => 'db_query_' . strtolower( $matched ),
-						'reason'    => (string) $privileged['stderr'],
-						'dry_run'   => null,
-						'refuse'    => $privileged,
-					);
-				}
+			if ( 'slow' === $kind ) {
 				return array(
-					'operation' => 'db_query_' . strtolower( $matched ),
+					'operation' => 'db_query_side_effect',
 					'reason'    => sprintf(
-						/* translators: %s: SQL keyword */
-						__( 'Mutating SQL (%s) bypasses all plugin safety. Direct DB writes need explicit approval.', 'vibe-ai' ),
-						$matched
+						/* translators: %s: SQL function name */
+						__( 'Slow or locking SQL function (%s) can tie up the site\'s database. Needs explicit approval.', 'vibe-ai' ),
+						$keyword
 					),
-					'dry_run'   => $this->build_db_query_dry_run( $matched, $sql, $normalized ),
+					'dry_run'   => array( 'sql' => $sql ),
 				);
 			}
-			return null;
+			// An identity/privilege target is unapprovable: refuse at
+			// classification so no human is handed an approve button the
+			// executor would refuse anyway (and the preview never runs).
+			$normalized = $this->normalize_sql_for_gate( $sql );
+			$privileged = $this->privileged_sql_target_error( $normalized );
+			if ( $privileged ) {
+				return array(
+					'operation' => 'db_query_' . strtolower( $keyword ),
+					'reason'    => (string) $privileged['stderr'],
+					'dry_run'   => null,
+					'refuse'    => $privileged,
+				);
+			}
+			return array(
+				'operation' => 'db_query_' . strtolower( $keyword ),
+				'reason'    => sprintf(
+					/* translators: %s: SQL keyword */
+					__( 'Mutating SQL (%s) bypasses all plugin safety. Direct DB writes need explicit approval.', 'vibe-ai' ),
+					$keyword
+				),
+				'dry_run'   => $this->build_db_query_dry_run( $keyword, $sql, $normalized ),
+			);
 		}
 
 		// Enabling white label hides every WPVibe surface in wp-admin, including

@@ -19,140 +19,206 @@ trait WPVibe_CLI_Db {
 	// DB Query Handler (SELECT only)
 	// ------------------------------------------------------------------
 
+	/**
+	 * The statement text for `db query`. The tokenizer strips quote marks and
+	 * rejoins tokens with spaces, which turns `SELECT 1 "UNION SELECT SLEEP(1)"`
+	 * into live SQL (#397). When the command came through execute(), the raw
+	 * statement captured there wins; direct handler calls (tests, internal
+	 * callers) still fall back to the positional join.
+	 */
+	private function db_query_statement( $positional ) {
+		if ( null !== $this->db_query_raw ) {
+			return $this->db_query_raw;
+		}
+		return trim( implode( ' ', $positional ) );
+	}
+
+
+	/**
+	 * Raw statement from the command text after `db query`, byte for byte.
+	 * Trailing/leading `--flag[=value]` tokens are dropped (db query takes only
+	 * --limit). A statement wrapped whole in one pair of quotes, the documented
+	 * form, is unwrapped with shell semantics (`\"` and `\\` inside double
+	 * quotes; the `'\''` apostrophe idiom inside single quotes). Anything else
+	 * is handed to MySQL exactly as typed, so a quote mark that is not a
+	 * wrapper is a quote mark to MySQL too, never command structure.
+	 */
+	private function db_query_raw_statement( $rest ) {
+		$rest = trim( (string) $rest );
+		$flag = '--[a-z][\w-]*(?:=(?:"[^"]*"|\'[^\']*\'|\S+))?';
+		$rest = trim( preg_replace( '/^(?:' . $flag . '\s+)+/i', '', $rest ) );
+		$rest = trim( preg_replace( '/(?:\s+' . $flag . ')+$/i', '', $rest ) );
+		if ( strlen( $rest ) < 2 ) {
+			return $rest;
+		}
+		$q = $rest[0];
+		if ( '"' === $q && preg_match( '/^"((?:[^"\\\\]|\\\\.)*)"$/s', $rest, $m ) ) {
+			return preg_replace( '/\\\\(["\\\\])/', '$1', $m[1] );
+		}
+		if ( "'" === $q ) {
+			$joined = str_replace( "'\\''", "\x00", $rest );
+			if ( preg_match( "/^'([^']*)'$/s", $joined, $m ) ) {
+				return str_replace( "\x00", "'", $m[1] );
+			}
+		}
+		return $rest;
+	}
+
+
+	/**
+	 * The whole db query gate. A statement that starts with SELECT, SHOW,
+	 * DESCRIBE, DESC or EXPLAIN SELECT is a read: MySQL will not let it write,
+	 * so its text is not scanned for write words (#385: a write word inside a
+	 * quoted literal is not a write). EXPLAIN alone is not enough: EXPLAIN
+	 * ANALYZE executes the statement it explains, UPDATE and DELETE included.
+	 * A read that calls SLEEP, BENCHMARK, GET_LOCK or RELEASE_LOCK can tie up
+	 * the database, so it is held for approval (#397). Everything else is a
+	 * write and is held for approval as before. WITH is not a read marker:
+	 * MySQL 8 allows `WITH ... UPDATE`.
+	 *
+	 * @return array{0: 'read'|'slow'|'write', 1: string} kind and the first keyword.
+	 */
+	private function sql_verdict( $sql ) {
+		$upper = strtoupper( trim( $this->strip_sql_comments_for_validation( $sql ) ) );
+		if ( ! preg_match( '/^(SELECT|SHOW|DESCRIBE|DESC|EXPLAIN\s+SELECT)\b/', $upper, $m ) ) {
+			preg_match( '/^([A-Z_]+)/', $upper, $w );
+			return array( 'write', isset( $w[1] ) ? $w[1] : 'SQL' );
+		}
+		if ( preg_match( '/\b(SLEEP|BENCHMARK|GET_LOCK|RELEASE_LOCK)\s*\(/', $this->sql_scan_text( $sql ), $s ) ) {
+			return array( 'slow', $s[1] );
+		}
+		return array( 'read', preg_replace( '/\s+.*/s', '', $m[1] ) );
+	}
+
+
+	/**
+	 * Uppercased text for keyword scans: the raw statement and the
+	 * comment-stripped, whitespace-collapsed copy, one after the other. MySQL
+	 * treats a comment as whitespace, so `SLEEP/**\/(1)` and `FOR/**\/UPDATE`
+	 * run as written; scanning both copies means neither a comment nor a quote
+	 * trick hides a keyword, at the cost of over-refusing a content query that
+	 * literally contains one.
+	 */
+	private function sql_scan_text( $sql ) {
+		return strtoupper( $sql ) . "\n" . $this->normalize_sql_for_gate( $sql );
+	}
+
+
+	/**
+	 * Best-effort per-session statement timeout for the read path, so a slow
+	 * read cannot hold a connection past 30 s. MySQL 5.7.8+ reads
+	 * MAX_EXECUTION_TIME (ms); MariaDB reads max_statement_time (s). A server
+	 * that knows neither returns an error we swallow. 0 resets.
+	 */
+	private function db_query_read_timeout( $seconds ) {
+		global $wpdb;
+		$mariadb = method_exists( $wpdb, 'db_server_info' ) && false !== stripos( (string) $wpdb->db_server_info(), 'mariadb' );
+		$set     = $mariadb
+			? 'SET SESSION max_statement_time=' . (int) $seconds
+			: 'SET SESSION MAX_EXECUTION_TIME=' . ( (int) $seconds * 1000 );
+		$suppress = $wpdb->suppress_errors( true );
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->query( $set ); // nosemgrep: direct-db-query
+		$wpdb->suppress_errors( $suppress );
+		$wpdb->last_error = '';
+	}
+
+
 	private function handle_db_query( $positional, $flags ) {
 		global $wpdb;
 
-		$sql = trim( implode( ' ', $positional ) );
-		if ( empty( $sql ) ) {
+		$sql = $this->db_query_statement( $positional );
+		if ( '' === $sql ) {
 			return $this->error_result( __( 'SQL query required. Example: db query "SELECT * FROM {prefix}posts LIMIT 10"', 'vibe-ai' ) );
 		}
 
 		// Replace {prefix} placeholder with actual table prefix.
 		$sql = str_replace( '{prefix}', $wpdb->prefix, $sql );
 
-		// MySQL executable comments (/*!...*/) run at the server despite being
-		// stripped by the validator below, so they could smuggle a blocked
-		// keyword past it. No legitimate query here needs them; reject outright.
+		// One statement at a time (a trailing semicolon is fine).
+		if ( preg_match( '/;\s*\S/', $sql ) ) {
+			return $this->error_result( __( 'Multiple SQL statements are not allowed. Run one statement at a time.', 'vibe-ai' ) );
+		}
+
+		// MySQL executable comments (/*!...*/) run at the server; no legitimate
+		// query here needs them.
 		if ( false !== strpos( $sql, '/*!' ) ) {
 			return $this->error_result( __( 'Executable MySQL comments (/*! ... */) are not allowed.', 'vibe-ai' ) );
 		}
 
-		// File-access primitives (INTO OUTFILE/DUMPFILE, LOAD_FILE) are never
-		// legitimate here and are the highest-severity target of a comment/quote
-		// trick that could hide them from the stripped validation copy below
-		// (e.g. a backslash-escaped quote before a `-- ` comment). Scan the RAW
-		// statement for them so no comment/quote games can bypass it; a rare
+		// File access (INTO OUTFILE/DUMPFILE, LOAD_FILE) is never legitimate on
+		// either path. Scanned on the RAW text and on the comment-stripped copy
+		// (INTO/**/OUTFILE), so neither a comment nor a quote game hides it; a
 		// content query literally containing this text over-refuses, acceptably.
-		$raw_upper = strtoupper( (string) $sql );
-		if ( preg_match( '/\bINTO\s+(?:OUTFILE|DUMPFILE)\b/', $raw_upper ) || preg_match( '/\bLOAD_FILE\s*\(/', $raw_upper ) ) {
+		$scan = $this->sql_scan_text( $sql );
+		if ( preg_match( '/\bINTO\s+(?:OUTFILE|DUMPFILE)\b/', $scan ) || preg_match( '/\bLOAD_FILE\s*\(/', $scan ) ) {
 			return $this->error_result( __( 'File-access SQL (INTO OUTFILE / DUMPFILE, LOAD_FILE) is not allowed.', 'vibe-ai' ) );
 		}
 
-		// Validate: SELECT only. Comments are stripped from this validation copy
-		// (execution below uses the original $sql) so the gate sees the same
-		// tokens MySQL will run without altering legitimate comment-bearing
-		// content.
-		$normalized = $this->normalize_sql_for_gate( $sql );
+		list( $kind, $keyword ) = $this->sql_verdict( $sql );
+		$is_select = ( 'SELECT' === $keyword );
 
-		$is_select = ( strpos( $normalized, 'SELECT' ) === 0 );
-		// EXPLAIN is read-only only for SELECT plans (EXPLAIN ANALYZE executes the statement).
-		$is_schema_read = (bool) preg_match( '/^(DESCRIBE|DESC|SHOW|EXPLAIN SELECT)\b/', $normalized );
-
-		// SELECT-only path (the common case for auto-execute).
-		if ( ! $is_select && ! $is_schema_read && ! $this->skip_destructive ) {
-			// classify_destructive should have caught this; defense-in-depth.
-			return $this->error_result( __( 'Mutating SQL requires explicit approval. Only SELECT and schema reads (DESCRIBE, SHOW) auto-execute.', 'vibe-ai' ) );
+		// classify_destructive holds writes and slow reads for approval; this is
+		// defense in depth for a direct call.
+		if ( 'write' === $kind && ! $this->skip_destructive ) {
+			return $this->error_result( __( 'Mutating SQL requires explicit approval. Only SELECT and schema reads (DESCRIBE, SHOW, EXPLAIN) auto-execute.', 'vibe-ai' ) );
+		}
+		if ( 'slow' === $kind && ! $this->skip_destructive ) {
+			/* translators: %s: SQL function name */
+			return $this->error_result( sprintf( __( 'SQL that calls %s() can tie up the database and needs explicit approval.', 'vibe-ai' ), $keyword ) );
 		}
 
-		if ( $is_select ) {
-			$blocked = array(
-				'INSERT', 'UPDATE', 'DELETE', 'DROP', 'ALTER', 'TRUNCATE',
-				'CREATE', 'GRANT', 'REVOKE', 'EXEC', 'EXECUTE',
-				'RENAME', 'REPLACE', 'LOAD', 'OUTFILE', 'DUMPFILE',
-			);
-			foreach ( $blocked as $keyword ) {
-				// REPLACE(col,a,b) is a read-only string function; only the
-				// REPLACE ... INTO statement writes. Match the write form only
-				// so a legitimate SELECT using REPLACE() is not a dead-end (the
-				// classifier already treats it the same way).
-				if ( 'REPLACE' === $keyword ) {
-					if ( preg_match( '/\bREPLACE\s+(?:LOW_PRIORITY\s+|DELAYED\s+)?INTO\b/', $normalized ) ) {
-						/* translators: %s: SQL keyword */
-						return $this->error_result( sprintf( __( 'Blocked SQL keyword in SELECT: %s.', 'vibe-ai' ), 'REPLACE' ) );
-					}
-					continue;
-				}
-				if ( preg_match( '/\b' . $keyword . '\b/', $normalized ) ) {
-					/* translators: %s: SQL keyword */
-					return $this->error_result( sprintf( __( 'Blocked SQL keyword in SELECT: %s.', 'vibe-ai' ), $keyword ) );
-				}
-			}
-		}
-
-		// Multi-statement guard applies to both SELECT and mutating paths.
-		if ( preg_match( '/;\s*\S/', $sql ) ) {
-			return $this->error_result( __( 'Multiple SQL statements are not allowed.', 'vibe-ai' ) );
-		}
-
-		// LOAD_FILE() reads arbitrary server files (same FILE-privilege class as
-		// OUTFILE). The blocked-keyword \bLOAD\b never matches it (underscore is
-		// a word char), and it is just as reachable on the approved mutating
-		// path (SET col = LOAD_FILE(...) into a non-privileged table), so this
-		// guard must cover both paths, not only SELECT.
-		if ( preg_match( '/\bLOAD_FILE\s*\(/', $normalized ) ) {
-			return $this->error_result( __( 'LOAD_FILE() is not allowed.', 'vibe-ai' ) );
-		}
-
-		// Identity/privilege state is unapprovable by design: approval-gated SQL
-		// runs with no WP-level guardrails, so one approved statement against
-		// these targets is a site-takeover primitive (siteurl, active_plugins,
-		// wp_capabilities, the users table). Option/user writes enforce this via
-		// their own handlers; raw SQL walked around it until this guard.
-		if ( ! $is_select && ! $is_schema_read ) {
-			$privileged = $this->privileged_sql_target_error( $normalized );
+		if ( 'write' === $kind ) {
+			// Identity/privilege state is unapprovable by design: approval-gated
+			// SQL runs with no WP-level guardrails, so one approved statement
+			// against these targets is a site-takeover primitive (siteurl,
+			// active_plugins, wp_capabilities, the users table).
+			$privileged = $this->privileged_sql_target_error( $this->normalize_sql_for_gate( $sql ) );
 			if ( $privileged ) {
 				return $privileged;
 			}
-		}
-
-		if ( $is_select || $is_schema_read ) {
-			if ( preg_match( '/\bINTO\s+(OUTFILE|DUMPFILE|@)/i', $normalized ) ) {
+		} else {
+			// A read that locks rows or writes a variable/file is not a read.
+			if ( preg_match( '/\bINTO\s+@/', $scan ) ) {
 				return $this->error_result( __( 'SELECT INTO is not allowed.', 'vibe-ai' ) );
 			}
-
-			if ( preg_match( '/\bFOR\s+(UPDATE|SHARE)\b/', $normalized ) ) {
+			if ( preg_match( '/\bFOR\s+(UPDATE|SHARE)\b/', $scan ) || preg_match( '/\bLOCK\s+IN\s+SHARE\s+MODE\b/', $scan ) ) {
 				return $this->error_result( __( 'FOR UPDATE/SHARE is not allowed.', 'vibe-ai' ) );
 			}
 
 			$sql = rtrim( $sql, '; ' );
-			// Enforce LIMIT on SELECT; DESCRIBE/SHOW don't accept LIMIT and return bounded schema rows.
+			// Enforce LIMIT on SELECT; DESCRIBE/SHOW/EXPLAIN don't accept LIMIT and
+			// return bounded rows. Appended on a new line so a trailing `-- note`
+			// comment cannot swallow it.
 			if ( $is_select ) {
 				$default_limit = 100;
 				if ( ! empty( $flags['limit'] ) && is_numeric( $flags['limit'] ) ) {
 					$default_limit = min( (int) $flags['limit'], 1000 );
 				}
-				if ( preg_match( '/\bLIMIT\s+(\d+)/i', $sql, $m ) ) {
+				if ( preg_match( '/\bLIMIT\s+(\d+)/i', $sql ) ) {
 					$sql = preg_replace_callback( '/\bLIMIT\s+(\d+)/i', function ( $m ) {
 						return 'LIMIT ' . min( (int) $m[1], 1000 );
 					}, $sql );
 				} else {
-					$sql .= ' LIMIT ' . $default_limit;
+					$sql .= "\nLIMIT " . $default_limit;
 				}
 			}
 
-			// Execute SELECT.
 			/*
-			 * Raw SQL justification: This handler accepts user-provided SELECT queries
-			 * for database inspection. $wpdb->prepare() cannot be used because the full
-			 * SQL structure is dynamic. Security is enforced via SELECT-only validation,
-			 * blocked keyword list, comment stripping, INTO/FOR UPDATE prevention,
-			 * multi-statement prevention, and automatic LIMIT enforcement.
+			 * Raw SQL justification: this handler accepts user-provided read
+			 * statements for database inspection; $wpdb->prepare() cannot be used
+			 * because the whole statement is dynamic. Only SELECT/SHOW/DESCRIBE/
+			 * EXPLAIN-led statements reach here, single statement, no file access,
+			 * no row locks, LIMIT enforced, 30 s statement timeout.
 			 */
+			$this->db_query_read_timeout( 30 );
 			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, PluginCheck.Security.DirectDB.UnescapedDBParameter
 			$results = $wpdb->get_results( $sql, ARRAY_A ); // nosemgrep: direct-db-query
-			if ( $wpdb->last_error ) {
+			$error   = $wpdb->last_error;
+			$this->db_query_read_timeout( 0 );
+			if ( $error ) {
 				/* translators: %s: SQL error message */
-				return $this->error_result( sprintf( __( 'SQL error: %s', 'vibe-ai' ), $wpdb->last_error ) );
+				return $this->error_result( sprintf( __( 'SQL error: %s', 'vibe-ai' ), $error ) );
 			}
 
 			$output = array(

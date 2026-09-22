@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.17.5] - 2026-09-22
+
+- Fix: a db query SELECT whose quoted text contains a write word (for example 'delete' in a value, or REPLACE(name, 'a', 'update')) no longer asks for approval and then refuses to run. A statement that starts with SELECT, SHOW, DESCRIBE or EXPLAIN SELECT is a read and runs as one.
+- Hardening: a db query that calls SLEEP, BENCHMARK, GET_LOCK or RELEASE_LOCK now needs approval, and read queries stop after 30 seconds instead of holding a database connection open.
+- Fix: the db query statement is sent to MySQL exactly as typed. Quote marks inside the statement are quote marks to MySQL and can no longer be turned into extra SQL.
+
 ## [1.17.4] - 2026-09-21
 
 - Fix: the site information request no longer fails with a server error on sites where WordPress has not loaded its plugin helpers for REST requests (seen on WordPress 6.4). Approvals on those sites could not complete because WPVibe could not read the plugin version.
