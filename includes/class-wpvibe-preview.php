@@ -241,6 +241,57 @@ class WPVibe_Preview {
 	}
 
 	/**
+	 * Enqueue the Tailwind browser CDN + plugin-served presets.css only while a
+	 * Tailwind draft is the active stylesheet. The CDN runtime lets the AI
+	 * iterate on a WPVibe theme without a build step; presets.css fills in the
+	 * typography + form resets the CDN doesn't ship. The live theme enqueues
+	 * its compiled dist/styles.css itself, so neither asset loads outside
+	 * draft mode.
+	 *
+	 * A draft cloned from any other theme (Astra, Divi, a block theme) gets
+	 * neither. The runtime turns every class name that happens to match a
+	 * Tailwind utility into CSS and adds its preflight reset, so WooCommerce's
+	 * `columns-4` wrapper became `columns: 4` and squeezed Astra's product grid
+	 * into a quarter of the page (#508).
+	 */
+	public static function enqueue_draft_assets() {
+		$draft = get_option( 'wpvibe_draft_theme' );
+		if ( ! $draft || get_stylesheet() !== $draft ) {
+			return;
+		}
+		// A child draft of a WPVibe theme inherits the parent's Tailwind
+		// templates; in draft mode get_template() is that resolved parent.
+		if ( ! self::is_tailwind_theme( $draft ) && ! self::is_tailwind_theme( get_template() ) ) {
+			return;
+		}
+		wp_enqueue_style(
+			'wpvibe-presets',
+			WPVIBE_PLUGIN_URL . 'assets/presets.css',
+			array(),
+			WPVIBE_VERSION
+		);
+		wp_enqueue_script(
+			'wpvibe-tailwind-cdn',
+			'https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4',
+			array(),
+			'4',
+			array( 'strategy' => 'defer' )
+		);
+	}
+
+	/**
+	 * A Tailwind theme keeps its design tokens in theme.css at the theme root.
+	 * This is the same test the publish step uses to decide whether to compile
+	 * dist/styles.css, so the preview and the published theme agree.
+	 *
+	 * @param string $slug Theme directory name.
+	 * @return bool
+	 */
+	public static function is_tailwind_theme( $slug ) {
+		return is_file( get_theme_root( $slug ) . '/' . $slug . '/theme.css' );
+	}
+
+	/**
 	 * Enqueue preview banner CSS and link-rewriter JS.
 	 */
 	public function enqueue_preview_assets() {

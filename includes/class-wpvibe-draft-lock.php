@@ -5,27 +5,43 @@ defined( 'ABSPATH' ) || exit;
 class WPVibe_Draft_Lock {
 	private static $held = array();
 
+	const LOCK_FILE = '.wpvibe-draft.lock';
+
+	/** Seconds a theme operation waits for another one to finish before returning draft_busy. */
+	const WAIT_SECONDS = 5;
+
 	public static function run( $callback ) {
 		$root = realpath( get_theme_root() );
 		if ( false === $root ) {
-			return self::error();
+			return self::error( 'theme_root_missing', get_theme_root() );
 		}
 		if ( isset( self::$held[ $root ] ) ) {
 			return call_user_func( $callback );
 		}
-		$path = $root . '/.wpvibe-draft.lock';
+		$path = $root . '/' . self::LOCK_FILE;
 		// Never unlink this file: replacing its inode would allow two owners.
 		if ( is_link( $path ) ) {
-			return self::error();
+			return self::error( 'lock_file_symlink', $root );
 		}
 		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen
 		$handle = @fopen( $path, 'c' );
 		if ( ! $handle ) {
-			return self::error();
+			return self::error( 'lock_file_unwritable', $root );
 		}
-		if ( ! flock( $handle, LOCK_EX | LOCK_NB ) ) {
-			fclose( $handle );
-			return self::error();
+		// Parallel edits on one draft queue briefly instead of the loser failing outright.
+		$wait     = max( 0.0, min( 10.0, (float) apply_filters( 'wpvibe_draft_lock_wait', self::WAIT_SECONDS ) ) );
+		$deadline = microtime( true ) + $wait;
+		while ( ! flock( $handle, LOCK_EX | LOCK_NB, $would_block ) ) {
+			// A refusal that is not contention (NFS without lockd, ENOLCK) will not clear by waiting.
+			if ( ! $would_block ) {
+				fclose( $handle );
+				return self::error( 'lock_unsupported', $root );
+			}
+			if ( microtime( true ) >= $deadline ) {
+				fclose( $handle );
+				return self::error( 'lock_held', $root, $wait );
+			}
+			usleep( 50000 );
 		}
 		self::$held[ $root ] = true;
 		try {
@@ -43,8 +59,54 @@ class WPVibe_Draft_Lock {
 		}
 	}
 
-	private static function error() {
-		return new WP_Error( 'draft_busy', __( 'Could not exclusively lock the theme directory. Another theme operation may be running, or the host may not support filesystem locks. No changes were made. Retry after the operation finishes.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'filesystem', true, array( 'status' => 409 ) ) );
+	/** The themes folder as the site owner knows it: relative to the WordPress root when it sits inside it. */
+	private static function display_dir( $root ) {
+		$root = str_replace( '\\', '/', (string) $root );
+		// $root is a realpath, so compare against ABSPATH's realpath too (symlinked installs).
+		foreach ( array_unique( array( ABSPATH, (string) realpath( ABSPATH ) ) ) as $abs ) {
+			$base = rtrim( str_replace( '\\', '/', $abs ), '/' ) . '/';
+			if ( '/' !== $base && 0 === strpos( $root, $base ) ) {
+				return substr( $root, strlen( $base ) );
+			}
+		}
+		return $root;
+	}
+
+	private static function error( $reason, $root, $waited = 0 ) {
+		$dir  = self::display_dir( $root );
+		$file = $dir . '/' . self::LOCK_FILE;
+		switch ( $reason ) {
+			case 'lock_held':
+				/* translators: %s: seconds waited. */
+				$message = sprintf( __( 'Another theme operation on this site (or on a site that shares its themes folder) was still running after %s seconds, so this one did not start. No changes were made. Retry once the other operation finishes.', 'vibe-ai' ), round( $waited, 1 ) );
+				$cause   = 'filesystem';
+				$retry   = true;
+				break;
+			case 'lock_unsupported':
+				/* translators: %s: lock file path. */
+				$message = sprintf( __( 'The server refused a file lock on %s. Theme file edits, draft themes and classic themes need file locking, which some network storage does not provide. No changes were made. Ask the host to enable file locking for the themes folder; retrying will not help until then.', 'vibe-ai' ), $file );
+				$cause   = 'host_environment';
+				$retry   = false;
+				break;
+			case 'lock_file_symlink':
+				/* translators: %s: lock file path. */
+				$message = sprintf( __( 'WPVibe\'s theme lock file, %s, is a symbolic link, so WPVibe will not use it. No changes were made. Remove the link (the link only, not what it points to) so WPVibe can create a normal file there, then retry.', 'vibe-ai' ), $file );
+				$cause   = 'host_environment';
+				$retry   = false;
+				break;
+			case 'theme_root_missing':
+				/* translators: %s: themes folder. */
+				$message = sprintf( __( 'The themes folder (%s) could not be found, so WPVibe could not lock it for a theme operation. No changes were made.', 'vibe-ai' ), $dir );
+				$cause   = 'host_environment';
+				$retry   = false;
+				break;
+			default:
+				/* translators: 1: lock file path, 2: themes folder. */
+				$message = sprintf( __( 'WPVibe could not create or open its theme lock file, %1$s. The web server needs write access to %2$s (and to the lock file, if it already exists). No changes were made. Fix the permissions, then retry.', 'vibe-ai' ), $file, $dir );
+				$cause   = 'host_environment';
+				$retry   = false;
+		}
+		return new WP_Error( 'draft_busy', $message, WPVibe_Error_Contract::data( $cause, $retry, array( 'status' => 409, 'reason' => $reason, 'lock_file' => $file ) ) );
 	}
 
 	public static function valid_slug( $slug ) {

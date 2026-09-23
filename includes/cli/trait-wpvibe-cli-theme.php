@@ -540,13 +540,48 @@ trait WPVibe_CLI_Theme {
 	private function handle_theme_mod_list( $positional, $flags ) {
 		$mods    = get_theme_mods();
 		$results = array();
-		foreach ( (array) $mods as $key => $value ) {
+		// A theme with no mods returns false, which (array) would turn into one bogus row.
+		foreach ( is_array( $mods ) ? $mods : array() as $key => $value ) {
 			$results[] = array(
 				'key'   => (string) $key,
 				'value' => is_scalar( $value ) ? (string) $value : wp_json_encode( $value ),
 			);
 		}
 		return $this->success_result( $results );
+	}
+
+
+	private function handle_theme_mod_get( $positional, $flags ) {
+		$reject = $this->reject_unknown_flags( 'theme mod get', $flags, array( 'all', 'field', 'format' ) );
+		if ( ! $reject ) {
+			$reject = $this->reject_unsupported_format( 'theme mod get', $flags );
+		}
+		if ( $reject ) {
+			return $reject;
+		}
+		if ( empty( $flags['all'] ) && empty( $positional ) ) {
+			return $this->error_result( __( 'You must specify at least one mod or use --all.', 'vibe-ai' ) );
+		}
+		$rows = array();
+		if ( ! empty( $flags['all'] ) ) {
+			$mods = get_theme_mods();
+			foreach ( is_array( $mods ) ? $mods : array() as $key => $value ) {
+				$rows[] = array( 'key' => (string) $key, 'value' => $value );
+			}
+		} else {
+			foreach ( $positional as $mod ) {
+				$rows[] = array( 'key' => (string) $mod, 'value' => get_theme_mod( (string) $mod, null ) );
+			}
+		}
+		if ( isset( $flags['field'] ) ) {
+			$field = (string) $flags['field'];
+			if ( ! in_array( $field, array( 'key', 'value' ), true ) ) {
+				/* translators: %s: field name */
+				return $this->error_result( sprintf( __( 'Invalid field: %s. Supported fields: key, value.', 'vibe-ai' ), $field ) );
+			}
+			return $this->success_result( array_column( $rows, $field ) );
+		}
+		return $this->success_result( $this->format_rows( $rows, $flags, 'key' ) );
 	}
 
 

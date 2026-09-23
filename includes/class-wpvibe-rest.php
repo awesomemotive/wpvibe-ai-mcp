@@ -866,7 +866,7 @@ class WPVibe_REST {
 				/* translators: %s: WordPress capability name */
 				? sprintf( __( 'This action requires the WordPress capability "%s". On a multisite network only NETWORK super admins have it; site Administrators never do. Reconnecting with another site admin cannot help.', 'vibe-ai' ), $capability )
 				/* translators: %s: WordPress capability name */
-				: sprintf( __( 'This action requires the WordPress capability "%s". The connected account is an Administrator and still lacks it, which means a security plugin removed it; reconnecting cannot help. Re-enable file editing in that plugin\'s settings to restore it.', 'vibe-ai' ), $capability );
+				: sprintf( __( 'This action requires the WordPress capability "%s". The connected account is an Administrator and still lacks it, which means a security plugin removed it; reconnecting cannot help. That is the site owner\'s security setting: tell the user a security plugin has turned off file editing and ask whether they want it turned back on. Do not change the setting yourself, because re-enabling file editing lowers the site\'s hardening.', 'vibe-ai' ), $capability );
 			return new WP_Error( 'wpvibe_missing_capability', $message, WPVibe_Error_Contract::data( 'capability_role', false, $data ) );
 		}
 
@@ -1283,6 +1283,7 @@ class WPVibe_REST {
 				),
 			),
 			'site_name'    => get_bloginfo( 'name' ),
+			'site_url'     => site_url(),
 			'wp_version'   => get_bloginfo( 'version' ),
 			'php_version'  => phpversion(),
 			'wpvibe_plugin_version' => defined( 'WPVIBE_VERSION' ) ? WPVIBE_VERSION : '',
@@ -1652,9 +1653,10 @@ class WPVibe_REST {
 	 * @param string $tmp                   Downloaded temp file.
 	 * @param string $filename              Filename the sideload will use.
 	 * @param bool   $can_unfiltered_upload Whether the user holds unfiltered_upload.
+	 * @param string|null $detected_mime    Real mime of the downloaded bytes; null when unknown.
 	 * @return WP_Error|null
 	 */
-	public static function check_sideload_file( $tmp, $filename, $can_unfiltered_upload ) {
+	public static function check_sideload_file( $tmp, $filename, $can_unfiltered_upload, $detected_mime = null ) {
 		$size = is_file( $tmp ) ? (int) filesize( $tmp ) : 0;
 		if ( $size <= 0 ) {
 			return new WP_Error(
@@ -1668,18 +1670,49 @@ class WPVibe_REST {
 		}
 		$check = wp_check_filetype_and_ext( $tmp, $filename );
 		if ( empty( $check['type'] ) || empty( $check['ext'] ) ) {
-			$ext = strtolower( (string) pathinfo( $filename, PATHINFO_EXTENSION ) );
+			$ext           = strtolower( (string) pathinfo( $filename, PATHINFO_EXTENSION ) );
+			$detected_mime = strtolower( trim( (string) $detected_mime ) );
+			// The filename's extension comes from the URL, not the bytes; an HTML error or login page saved as .jpg is not a site policy problem.
+			if ( '' !== $detected_mime && 0 !== strpos( $detected_mime, 'image/' ) ) {
+				return new WP_Error(
+					'not_an_image',
+					sprintf(
+						/* translators: %s: content type the URL returned, e.g. text/html */
+						__( 'The URL did not return an image. It returned %s content, usually an error, login or hotlink protection page served in place of the image, so there is nothing to add to the Media Library. This is not a file type setting or a permissions problem. Use a URL that points directly at the image file, or upload the image another way.', 'vibe-ai' ),
+						$detected_mime
+					),
+					WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400, 'detected_type' => $detected_mime ) )
+				);
+			}
 			return new WP_Error(
 				'invalid_file_type',
 				sprintf(
-					/* translators: %s: file extension */
-					__( 'WordPress does not allow uploading this file type (.%s) on this site. The allowed list is site policy, set by the upload_mimes filter (a file-type plugin or theme code, or Network Settings > Upload Settings on multisite); it is not a permissions or storage problem. Use a standard image format (jpg, png, gif, webp) or ask a site administrator to permit the type.', 'vibe-ai' ),
-					'' !== $ext ? $ext : '?'
+					/* translators: %s: file type, e.g. .jpg or image/avif */
+					__( 'WordPress does not allow uploading this file type (%s) on this site. The allowed list is site policy, set by the upload_mimes filter (a file-type plugin or theme code, or Network Settings > Upload Settings on multisite); it is not a permissions or storage problem. Use a standard image format (jpg, png, gif, webp) or ask a site administrator to permit the type.', 'vibe-ai' ),
+					self::sideload_type_label( $ext, $detected_mime )
 				),
 				WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 415 ) )
 			);
 		}
 		return null;
+	}
+
+	/**
+	 * Name the file type by its real content when the URL's extension disagrees with it.
+	 *
+	 * @param string $ext           Extension of the sideload filename.
+	 * @param string $detected_mime Real image mime of the downloaded bytes.
+	 * @return string
+	 */
+	private static function sideload_type_label( $ext, $detected_mime ) {
+		$dotted = '.' . ( '' !== $ext ? $ext : '?' );
+		$real   = wp_get_default_extension_for_mime_type( $detected_mime );
+		$same   = $real === $ext || ( 'jpg' === $real && 'jpeg' === $ext );
+		if ( '' === $detected_mime || $same ) {
+			return $dotted;
+		}
+		/* translators: 1: real content type, e.g. image/avif; 2: extension from the URL, e.g. .jpg */
+		return sprintf( __( '%1$s, although the name ends in %2$s', 'vibe-ai' ), $detected_mime, $dotted );
 	}
 
 	/**
@@ -1791,7 +1824,7 @@ class WPVibe_REST {
 		}
 		$filename = self::ensure_image_extension( $filename, $detected_mime, current_user_can( 'manage_options' ) );
 
-		$rejection = self::check_sideload_file( $tmp, $filename, current_user_can( 'unfiltered_upload' ) );
+		$rejection = self::check_sideload_file( $tmp, $filename, current_user_can( 'unfiltered_upload' ), $detected_mime ? (string) $detected_mime : null );
 		if ( is_wp_error( $rejection ) ) {
 			wp_delete_file( $tmp );
 			return $rejection;

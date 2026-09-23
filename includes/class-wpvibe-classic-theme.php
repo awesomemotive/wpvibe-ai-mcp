@@ -81,11 +81,14 @@ class WPVibe_Classic_Theme {
 			'{{FUNCTION_PREFIX}}'   => $prefix,
 		);
 
-		$copied = $this->copy_starter( $starter_dir, $draft_dir, $tokens );
+		try {
+			$copied = $this->copy_starter( $starter_dir, $draft_dir, $tokens );
+		} catch ( \Throwable $e ) {
+			// A site error handler that turns warnings into exceptions must not skip the cleanup.
+			$copied = new WP_Error( 'write_failed', WPVibe_Draft_Theme::site_relative( $e->getMessage() ), WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) ) );
+		}
 		if ( is_wp_error( $copied ) ) {
-			$cleanup = new WPVibe_Draft_Theme();
-			$cleanup->delete_directory_public( $draft_dir );
-			return $copied;
+			return ( new WPVibe_Draft_Theme() )->abandon_partial_dir( $draft_dir, $copied );
 		}
 
 		$valid = $this->validate_draft( $draft_dir );
@@ -173,13 +176,30 @@ class WPVibe_Classic_Theme {
 				}
 			}
 
-			if ( ! $fs->put_contents( $dest, $content, FS_CHMOD_FILE ) ) {
-				/* translators: %s: file path */
-				return new WP_Error( 'write_failed', sprintf( __( 'Could not write theme file: %s', 'vibe-ai' ), $dest_rel ), WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) ) );
+			error_clear_last();
+			if ( ! $this->put_file( $fs, $dest, $content ) ) {
+				$php_error = error_get_last();
+				return WPVibe_Draft_Theme::write_error(
+					'write_failed',
+					$dest,
+					is_array( $php_error ) ? (string) $php_error['message'] : '',
+					function ( $path, $contents ) use ( $fs ) {
+						return $this->put_file( $fs, $path, $contents );
+					}
+				);
 			}
 		}
 
 		return true;
+	}
+
+	/**
+	 * Write one scaffold file. A seam so tests can stand in for a host that refuses some writes.
+	 *
+	 * @return bool
+	 */
+	protected function put_file( $fs, $path, $contents ) {
+		return (bool) $fs->put_contents( $path, $contents, FS_CHMOD_FILE );
 	}
 
 	/**

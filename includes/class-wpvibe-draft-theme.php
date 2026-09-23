@@ -44,8 +44,16 @@ class WPVibe_Draft_Theme {
 			) );
 		}
 
+		$stale = '';
 		if ( $existing || get_option( 'wpvibe_draft_source' ) ) {
-			return WPVibe_Draft_Lock::conflict();
+			$stale = self::stale_record();
+			if ( '' === $stale ) {
+				$untracked = self::untracked_dir();
+				if ( '' === $untracked ) {
+					return WPVibe_Draft_Lock::conflict();
+				}
+				return self::adoptable( $untracked ) ? $this->adopt( $untracked ) : self::untracked_error( $untracked );
+			}
 		}
 
 		$active_slug = (string) get_option( 'stylesheet' );
@@ -72,6 +80,13 @@ class WPVibe_Draft_Theme {
 			return new WP_Error( 'no_theme', __( 'Active theme directory not found.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
 		}
 
+		if ( '' !== $stale ) {
+			if ( ! self::clear_draft_records() ) {
+				return WPVibe_Draft_Lock::conflict();
+			}
+			self::record_draft_event( 'stale_cleared' );
+		}
+
 		// Reserve exclusively; an orphan with content of its own belongs to the user.
 		if ( ( file_exists( $dest ) || is_link( $dest ) ) && ! $this->clear_partial_copy( $source, $dest, $draft_slug ) ) {
 			return $this->orphan_error( $draft_slug );
@@ -81,10 +96,22 @@ class WPVibe_Draft_Theme {
 			return WPVibe_Draft_Lock::conflict();
 		}
 
-		$result = $this->copy_directory( $source, $dest );
+		try {
+			$result = $this->copy_directory( $source, $dest );
+		} catch ( \Throwable $e ) {
+			// A site error handler that turns warnings into exceptions must not skip the cleanup.
+			$result = new WP_Error(
+				'copy_failed',
+				sprintf(
+					/* translators: %s: PHP error message */
+					__( 'Copying the theme into the draft failed: %s', 'vibe-ai' ),
+					self::site_relative( $e->getMessage() )
+				),
+				WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) )
+			);
+		}
 		if ( is_wp_error( $result ) ) {
-			$this->delete_directory( $dest );
-			return $result;
+			return $this->abandon_partial_dir( $dest, $result );
 		}
 
 		// Update the theme name in style.css so WP recognizes it.
@@ -112,12 +139,145 @@ class WPVibe_Draft_Theme {
 			'action_label' => 'Preview Theme',
 		) );
 
-		return rest_ensure_response( array(
+		$message = __( 'Draft theme created. File operations are now scoped to the draft.', 'vibe-ai' );
+		if ( '' !== $stale ) {
+			$message = sprintf(
+				/* translators: %s: theme directory name */
+				__( 'A stale draft record for \'%s\' was cleared first: its folder was already gone, so no files were deleted and earlier unpublished draft edits are not recoverable. The new draft is a fresh copy of the live theme.', 'vibe-ai' ),
+				$stale
+			) . ' ' . $message;
+		}
+		$response = array(
 			'status'      => 'created',
 			'draft_slug'  => $draft_slug,
 			'source_slug' => $active_slug,
-			'message'     => __( 'Draft theme created. File operations are now scoped to the draft.', 'vibe-ai' ),
+			'message'     => $message,
+		);
+		if ( '' !== $stale ) {
+			$response['stale_record_cleared'] = $stale;
+		}
+		return rest_ensure_response( $response );
+	}
+
+	/** The recorded draft slug when nothing exists at its path, so clearing the record cannot lose files; '' otherwise. */
+	private static function stale_record() {
+		$draft  = get_option( 'wpvibe_draft_theme' );
+		$source = get_option( 'wpvibe_draft_source' );
+		if ( $draft ) {
+			if ( ! WPVibe_Draft_Lock::valid_draft() ) {
+				return '';
+			}
+			$slug = $draft;
+		} elseif ( WPVibe_Draft_Lock::valid_slug( $source ) ) {
+			$slug = $source . '-wpvibe-draft';
+		} else {
+			return '';
+		}
+		$path = get_theme_root() . '/' . $slug;
+		clearstatcache( true, $path );
+		if ( $slug === get_option( 'stylesheet' ) || $slug === get_option( 'template' ) || file_exists( $path ) || is_link( $path ) ) {
+			return '';
+		}
+		return $slug;
+	}
+
+	/** '<source>-wpvibe-draft' when only the source record survives and a real directory sits at that path; '' otherwise. */
+	private static function untracked_dir() {
+		$source = get_option( 'wpvibe_draft_source' );
+		if ( get_option( 'wpvibe_draft_theme' ) || ! WPVibe_Draft_Lock::valid_slug( $source ) ) {
+			return '';
+		}
+		$slug = $source . '-wpvibe-draft';
+		$path = get_theme_root() . '/' . $slug;
+		clearstatcache( true, $path );
+		if ( is_link( $path ) || ! is_dir( $path ) || $slug === get_option( 'stylesheet' ) || $slug === get_option( 'template' ) ) {
+			return '';
+		}
+		return $slug;
+	}
+
+	/** The source record proves the folder is ours; it is taken back only when it is exactly what create would have made. */
+	private static function adoptable( $slug ) {
+		$root   = get_theme_root();
+		$source = (string) get_option( 'wpvibe_draft_source' );
+		return $source === get_option( 'stylesheet' )
+			&& is_dir( $root . '/' . $source ) && ! is_link( $root . '/' . $source )
+			&& is_file( $root . '/' . $slug . '/style.css' ) && ! is_link( $root . '/' . $slug . '/style.css' );
+	}
+
+	private function adopt( $slug ) {
+		update_option( 'wpvibe_draft_theme', $slug );
+		if ( get_option( 'wpvibe_draft_theme' ) !== $slug || ! WPVibe_Draft_Lock::valid_draft() ) {
+			delete_option( 'wpvibe_draft_theme' );
+			return WPVibe_Draft_Lock::conflict();
+		}
+		return rest_ensure_response( array(
+			'status'      => 'adopted',
+			'draft_slug'  => $slug,
+			'source_slug' => (string) get_option( 'wpvibe_draft_source' ),
+			'message'     => sprintf(
+				/* translators: %s: theme directory name */
+				__( 'Found the folder of an earlier WPVibe draft (\'%s\') whose record had been lost, and re-registered it as the draft. No files were changed. It keeps any unpublished edits from before, and it may predate recent changes to the live theme, so check it with the user before publishing. To start over from the live theme instead, delete_draft_theme deletes this folder and its edits.', 'vibe-ai' ),
+				$slug
+			),
 		) );
+	}
+
+	private static function untracked_error( $slug ) {
+		$source = (string) get_option( 'wpvibe_draft_source' );
+		$message = sprintf(
+			/* translators: 1: theme directory name, 2: theme directory name */
+			__( 'The folder \'wp-content/themes/%1$s\' is left from an earlier WPVibe draft of \'%2$s\', but no draft is on record for it, so WPVibe left it untouched. It may hold unpublished edits. Ask the user whether to keep it. To discard it, remove or rename the folder with the host file manager or SFTP (copy anything worth keeping first); create_draft_theme then clears the leftover record and starts a fresh draft.', 'vibe-ai' ),
+			$slug,
+			$source
+		);
+		if ( $source !== get_option( 'stylesheet' ) && is_file( get_theme_root() . '/' . $slug . '/style.css' ) ) {
+			$message .= ' ' . sprintf(
+				/* translators: %s: theme directory name */
+				__( 'To keep editing it instead, \'%s\' must be the active theme when create_draft_theme runs; it then re-registers the folder as the draft.', 'vibe-ai' ),
+				$source
+			);
+		}
+		return new WP_Error(
+			'draft_conflict',
+			$message,
+			WPVibe_Error_Contract::data( 'invalid_input', false, array(
+				'status'      => 409,
+				'reason'      => 'untracked_draft_dir',
+				'draft_slug'  => false,
+				'source_slug' => $source,
+				'draft_dir'   => $slug,
+			) )
+		);
+	}
+
+	private static function clear_draft_records() {
+		foreach ( array( 'wpvibe_draft_theme', 'wpvibe_draft_source', 'wpvibe_preview_token', 'wpvibe_preview_token_issued' ) as $key ) {
+			delete_option( $key );
+		}
+		if ( class_exists( 'WPVibe_Preview' ) ) {
+			WPVibe_Preview::clear_cookie();
+		}
+		return ! get_option( 'wpvibe_draft_theme' ) && ! get_option( 'wpvibe_draft_source' );
+	}
+
+	/** A draft record whose folder is gone; the data lets the Worker name the exact recovery. */
+	public static function missing_error() {
+		$draft = (string) get_option( 'wpvibe_draft_theme' );
+		return new WP_Error(
+			'draft_missing',
+			sprintf(
+				/* translators: %s: theme directory name */
+				__( 'Draft theme directory not found. The draft record points at \'%s\', but that folder is gone, so its unpublished edits cannot be recovered through WPVibe. Run create_draft_theme: it clears the stale record (no files are deleted) and starts a fresh draft from the live theme.', 'vibe-ai' ),
+				$draft
+			),
+			WPVibe_Error_Contract::data( 'not_found', false, array(
+				'status'      => 404,
+				'reason'      => 'draft_folder_missing',
+				'draft_slug'  => $draft,
+				'source_slug' => (string) get_option( 'wpvibe_draft_source' ),
+			) )
+		);
 	}
 
 	/** Remove a leftover draft directory only when every file in it is a copy, or truncated copy, of the live theme. */
@@ -310,7 +470,7 @@ class WPVibe_Draft_Theme {
 		}
 
 		if ( ! is_dir( $draft_dir ) ) {
-			return new WP_Error( 'draft_missing', __( 'Draft theme directory not found.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
+			return self::missing_error();
 		}
 		// Unfiltered: WPVibe_Preview filters 'stylesheet' to the draft slug when a
 		// preview token is present, and rolling back onto the draft would
@@ -527,7 +687,11 @@ class WPVibe_Draft_Theme {
 				/* translators: %s: human-readable time difference */
 				? ' ' . sprintf( __( 'The last draft was published %s ago; those changes are already on the live site, so no draft is needed to view them.', 'vibe-ai' ), $when )
 				/* translators: %s: human-readable time difference */
-				: ' ' . sprintf( __( 'The last draft was deleted %s ago; its unpublished edits are gone. Only create a new draft if new edits are wanted.', 'vibe-ai' ), $when );
+				: ( 'stale_cleared' === $event['action']
+					/* translators: %s: human-readable time difference */
+					? ' ' . sprintf( __( 'A stale draft record was cleared %s ago because its folder was already gone; no files were deleted. Only create a new draft if new edits are wanted.', 'vibe-ai' ), $when )
+					/* translators: %s: human-readable time difference */
+					: ' ' . sprintf( __( 'The last draft was deleted %s ago; its unpublished edits are gone. Only create a new draft if new edits are wanted.', 'vibe-ai' ), $when ) );
 			$extra['last_draft_action'] = $event['action'];
 			$extra['last_draft_at']     = (int) $event['at'];
 		}
@@ -552,6 +716,9 @@ class WPVibe_Draft_Theme {
 		$draft_slug = get_option( 'wpvibe_draft_theme' );
 		if ( ! $draft_slug ) {
 			return self::no_draft_error( __( 'No draft theme to preview.', 'vibe-ai' ) );
+		}
+		if ( ! is_dir( get_theme_root() . '/' . $draft_slug ) ) {
+			return self::missing_error();
 		}
 
 		// Reuse the existing token if it's still within its 24h TTL, otherwise
@@ -590,26 +757,39 @@ class WPVibe_Draft_Theme {
 		}
 		$draft_slug = get_option( 'wpvibe_draft_theme' );
 		if ( ! $draft_slug ) {
-			return self::no_draft_error( __( 'No draft theme to delete.', 'vibe-ai' ) );
+			$stale = get_option( 'wpvibe_draft_source' ) ? self::stale_record() : '';
+			if ( '' === $stale ) {
+				$untracked = get_option( 'wpvibe_draft_source' ) ? self::untracked_dir() : '';
+				return '' === $untracked
+					? self::no_draft_error( __( 'No draft theme to delete.', 'vibe-ai' ) )
+					: self::untracked_error( $untracked );
+			}
+			if ( ! self::clear_draft_records() ) {
+				return WPVibe_Draft_Lock::conflict();
+			}
+			self::record_draft_event( 'stale_cleared' );
+			return rest_ensure_response( array(
+				'status'               => 'deleted',
+				'stale_record_cleared' => $stale,
+				'message'              => sprintf(
+					/* translators: %s: theme directory name */
+					__( 'Cleared a leftover draft record for \'%s\'. Its folder was already gone, so no files were deleted. create_draft_theme can start a new draft now.', 'vibe-ai' ),
+					$stale
+				),
+			) );
 		}
 
 		$draft_dir = get_theme_root() . '/' . $draft_slug;
-		if ( is_dir( $draft_dir ) ) {
+		$had_dir   = is_dir( $draft_dir );
+		if ( $had_dir ) {
 			$deleted = $this->delete_directory( $draft_dir );
 			if ( is_wp_error( $deleted ) ) {
 				return $deleted;
 			}
 		}
 
-		delete_option( 'wpvibe_draft_theme' );
-		delete_option( 'wpvibe_draft_source' );
-		delete_option( 'wpvibe_preview_token' );
-		delete_option( 'wpvibe_preview_token_issued' );
+		self::clear_draft_records();
 		self::record_draft_event( 'deleted' );
-
-		if ( class_exists( 'WPVibe_Preview' ) ) {
-			WPVibe_Preview::clear_cookie();
-		}
 
 		WPVibe_Change_Tracker::mark( array(
 			'summary'      => 'Draft theme deleted',
@@ -618,7 +798,13 @@ class WPVibe_Draft_Theme {
 
 		return rest_ensure_response( array(
 			'status'  => 'deleted',
-			'message' => __( 'Draft theme removed.', 'vibe-ai' ),
+			'message' => $had_dir
+				? __( 'Draft theme removed.', 'vibe-ai' )
+				: sprintf(
+					/* translators: %s: theme directory name */
+					__( 'Draft record cleared. Its folder \'%s\' was already gone, so no files were deleted.', 'vibe-ai' ),
+					$draft_slug
+				),
 		) );
 	}
 
@@ -661,21 +847,164 @@ class WPVibe_Draft_Theme {
 			if ( $item->isDir() ) {
 				wp_mkdir_p( $dest_path );
 			} else {
-				if ( ! copy( $item->getPathname(), $dest_path ) ) {
-					return new WP_Error(
+				error_clear_last();
+				if ( ! $this->copy_file( $item->getPathname(), $dest_path ) ) {
+					$php_error = error_get_last();
+					return self::write_error(
 						'copy_failed',
-						sprintf(
-							/* translators: %s: file path */
-							__( 'Failed to copy file: %s', 'vibe-ai' ),
-							$iterator->getSubPathName()
-						),
-						WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) )
+						$dest_path,
+						is_array( $php_error ) ? (string) $php_error['message'] : '',
+						function ( $path, $contents ) {
+							return $this->put_file( $path, $contents );
+						}
 					);
 				}
 			}
 		}
 
 		return true;
+	}
+
+	/**
+	 * Copy one file. A seam so tests can stand in for a host that refuses some writes.
+	 *
+	 * @return bool
+	 */
+	protected function copy_file( $from, $to ) {
+		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- the caller reads the reason from error_get_last().
+		return @copy( $from, $to );
+	}
+
+	/**
+	 * Write one file; the host-policy probe in write_error() uses it.
+	 *
+	 * @return bool
+	 */
+	protected function put_file( $path, $contents ) {
+		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+		return false !== @file_put_contents( $path, $contents );
+	}
+
+	/**
+	 * Build the error for a file copy or write that failed, keeping PHP's own reason.
+	 *
+	 * Some managed hosts (WP Engine among them) refuse to let PHP create .php
+	 * files at all, while every other file type in the same folder writes fine.
+	 * That is a host security rule, and permission advice sends the user the
+	 * wrong way, so it gets its own code: a .php write refused with "Permission
+	 * denied" in a folder that is writable and accepts a non-PHP probe file.
+	 *
+	 * @param string   $code      Error code for the ordinary failure (copy_failed, write_failed).
+	 * @param string   $dest_path Absolute path that could not be written.
+	 * @param string   $php_error PHP's message from error_get_last(), or ''.
+	 * @param callable $probe     function( $path, $contents ): bool, writes a file.
+	 * @return WP_Error
+	 */
+	public static function write_error( $code, $dest_path, $php_error, $probe ) {
+		$rel    = self::site_relative( $dest_path );
+		$reason = self::site_relative( (string) $php_error );
+		if ( self::php_write_blocked( $dest_path, $rel, $reason, $probe ) ) {
+			return new WP_Error(
+				'php_write_blocked',
+				sprintf(
+					/* translators: 1: file path, 2: PHP error message */
+					__( 'This host does not allow WordPress to create PHP files, so draft themes cannot be created on this site. Writing \'%1$s\' was refused (PHP reported: %2$s), while the same folder is writable and accepts other file types. That is a host security rule, used by WP Engine and some other managed hosts, not a file permissions problem: changing file or folder permissions will not help, and retrying fails the same way. Edit the theme with the host\'s own tools (its file manager, SFTP or Git) instead.', 'vibe-ai' ),
+					$rel,
+					$reason
+				),
+				WPVibe_Error_Contract::data( 'host_environment', false, array(
+					'status' => 500,
+					'reason' => 'php_file_creation_blocked',
+					'path'   => $rel,
+				) )
+			);
+		}
+		$message = sprintf(
+			/* translators: %s: file path */
+			'write_failed' === $code ? __( 'Could not write theme file: %s', 'vibe-ai' ) : __( 'Failed to copy file: %s', 'vibe-ai' ),
+			$rel
+		);
+		if ( '' !== $reason ) {
+			/* translators: %s: PHP error message */
+			$message .= ' ' . sprintf( __( '(PHP reported: %s)', 'vibe-ai' ), $reason );
+		}
+		return new WP_Error( $code, $message, WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) ) );
+	}
+
+	/**
+	 * A .php write refused as "Permission denied" where a non-PHP write in the same folder succeeds.
+	 * PHP names the file it could not open, so a denial naming anything but the
+	 * destination (an unreadable source file in copy()) is an ordinary failure.
+	 */
+	private static function php_write_blocked( $dest_path, $rel, $reason, $probe ) {
+		if ( 'php' !== strtolower( pathinfo( $dest_path, PATHINFO_EXTENSION ) ) || false === stripos( $reason, 'permission denied' ) ) {
+			return false;
+		}
+		if ( false === strpos( $reason, '(' . $rel . ')' ) ) {
+			return false;
+		}
+		$dir = dirname( $dest_path );
+		if ( ! is_dir( $dir ) || ! is_writable( $dir ) ) {
+			return false;
+		}
+		$probe_path = $dir . '/.wpvibe-write-probe-' . substr( md5( uniqid( '', true ) ), 0, 12 ) . '.txt';
+		$written    = (bool) call_user_func( $probe, $probe_path, 'wpvibe write probe' );
+		if ( file_exists( $probe_path ) ) {
+			wp_delete_file( $probe_path );
+		}
+		return $written;
+	}
+
+	/** Absolute site paths in a message, shortened to start at wp-content/ (or the WordPress root). */
+	public static function site_relative( $text ) {
+		$text = (string) $text;
+		$map  = array();
+		$root = get_theme_root();
+		if ( is_string( $root ) && strlen( $root ) > 1 ) {
+			$map[ rtrim( $root, '/' ) . '/' ] = 'wp-content/themes/';
+		}
+		if ( defined( 'WP_CONTENT_DIR' ) && strlen( WP_CONTENT_DIR ) > 1 ) {
+			$map[ rtrim( WP_CONTENT_DIR, '/' ) . '/' ] = 'wp-content/';
+		}
+		if ( defined( 'ABSPATH' ) && strlen( ABSPATH ) > 1 ) {
+			$map[ rtrim( ABSPATH, '/' ) . '/' ] = '';
+		}
+		foreach ( $map as $abs => $short ) {
+			$real = realpath( $abs );
+			if ( false !== $real && strlen( $real ) > 1 ) {
+				$text = str_replace( rtrim( $real, '/' ) . '/', $short, $text );
+			}
+			$text = str_replace( $abs, $short, $text );
+		}
+		return $text;
+	}
+
+	/**
+	 * Remove a failed copy's folder, and say in the error whether that worked.
+	 *
+	 * @param string   $dir   Absolute path of the partial draft folder.
+	 * @param WP_Error $error The failure that stopped the copy.
+	 * @return WP_Error
+	 */
+	public function abandon_partial_dir( $dir, $error ) {
+		$deleted = $this->delete_directory( $dir );
+		clearstatcache( true, $dir );
+		$removed = ! file_exists( $dir ) && ! is_link( $dir );
+		$data    = $error->get_error_data();
+		$data    = is_array( $data ) ? $data : array();
+		$message = $error->get_error_message();
+		$data['partial_dir_removed'] = $removed;
+		if ( $removed ) {
+			$message .= ' ' . __( 'The partial draft folder was removed, and the live theme is unchanged.', 'vibe-ai' );
+		} else {
+			$message .= ' ' . sprintf(
+				/* translators: 1: folder path, 2: reason */
+				__( 'The partial draft folder \'%1$s\' could not be removed (%2$s). Remove it with the host file manager or SFTP. The live theme is unchanged.', 'vibe-ai' ),
+				self::site_relative( $dir ),
+				is_wp_error( $deleted ) ? self::site_relative( $deleted->get_error_message() ) : __( 'it is still there', 'vibe-ai' )
+			);
+		}
+		return new WP_Error( $error->get_error_code(), $message, $data );
 	}
 
 	/**

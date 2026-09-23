@@ -162,6 +162,9 @@ class WPVibe_File_Ops {
 		}
 		$dir = get_theme_root() . '/' . $draft_slug;
 		if ( ! is_dir( $dir ) ) {
+			if ( class_exists( 'WPVibe_Draft_Theme' ) ) {
+				return WPVibe_Draft_Theme::missing_error();
+			}
 			return new WP_Error( 'draft_missing', __( 'Draft theme directory not found.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
 		}
 

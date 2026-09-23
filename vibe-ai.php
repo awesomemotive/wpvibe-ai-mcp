@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WPVibe – Connect Your Site to Claude, ChatGPT & AI Assistants
  * Description: Connect any AI assistant to your WordPress site. Manage content, edit themes, and automate site tasks with Claude, ChatGPT, Cursor & more via MCP.
- * Version: 1.17.5
+ * Version: 1.18.0
  * Author: SeedProd
  * Author URI: https://wpvibe.ai
  * License: GPL-2.0-or-later
@@ -14,7 +14,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WPVIBE_VERSION', '1.17.5' );
+define( 'WPVIBE_VERSION', '1.18.0' );
 define( 'WPVIBE_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'WPVIBE_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 define( 'WPVIBE_PLUGIN_BASENAME', plugin_basename( __FILE__ ) );
@@ -178,33 +178,14 @@ function wpvibe_init() {
 	}
 }
 add_action( 'plugins_loaded', 'wpvibe_init' );
+add_action( 'rest_api_init', array( 'WPVibe_Content_Ops', 'register_divi_rest_hooks' ) );
 
 /**
- * Enqueue the Tailwind browser CDN + plugin-served presets.css only when
- * the active stylesheet is the recorded draft. The CDN runtime is what
- * lets the AI iterate on a draft without a build step; presets.css fills
- * in typography + form resets the CDN doesn't ship. The live (compiled)
- * theme enqueues dist/styles.css from its own functions.php, so neither
- * asset is loaded outside draft mode.
+ * Enqueue the Tailwind browser CDN + plugin-served presets.css when the draft
+ * being previewed is a Tailwind theme. See WPVibe_Preview::enqueue_draft_assets().
  */
 function wpvibe_enqueue_draft_assets() {
-	$draft = get_option( 'wpvibe_draft_theme' );
-	if ( ! $draft || get_stylesheet() !== $draft ) {
-		return;
-	}
-	wp_enqueue_style(
-		'wpvibe-presets',
-		WPVIBE_PLUGIN_URL . 'assets/presets.css',
-		array(),
-		WPVIBE_VERSION
-	);
-	wp_enqueue_script(
-		'wpvibe-tailwind-cdn',
-		'https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4',
-		array(),
-		'4',
-		array( 'strategy' => 'defer' )
-	);
+	WPVibe_Preview::enqueue_draft_assets();
 }
 add_action( 'wp_enqueue_scripts', 'wpvibe_enqueue_draft_assets' );
 

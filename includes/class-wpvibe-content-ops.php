@@ -355,6 +355,8 @@ class WPVibe_Content_Ops {
 
 		if ( 'meta' === $type ) {
 			$this->invalidate_builder_caches( (int) ( $args['post_id'] ?? 0 ), (string) ( $args['key'] ?? '' ) );
+		} elseif ( 'post' === $type ) {
+			self::invalidate_divi_caches( (int) ( $args['post_id'] ?? 0 ) );
 		}
 
 		// Filters (kses, content_save_pre, security plugins) can silently mutate
@@ -765,6 +767,50 @@ class WPVibe_Content_Ops {
 		if ( class_exists( '\\Elementor\\Core\\Files\\CSS\\Post' ) ) {
 			try {
 				\Elementor\Core\Files\CSS\Post::create( $post_id )->delete();
+			} catch ( \Throwable $e ) {
+				// Cache purge is best-effort; the content write already succeeded.
+			}
+		}
+	}
+
+	/**
+	 * Core REST writes to Divi-built post types skip et_save_post the same way content/edit does.
+	 * Theme Builder layouts are not in REST (show_in_rest false), so only content/edit reaches them.
+	 */
+	public static function register_divi_rest_hooks() {
+		if ( ! function_exists( 'et_builder_get_builder_post_types' ) ) {
+			return;
+		}
+		try {
+			$types = (array) et_builder_get_builder_post_types();
+		} catch ( \Throwable $e ) {
+			return;
+		}
+		foreach ( array_unique( array_filter( $types, 'is_string' ) ) as $type ) {
+			add_action( "rest_after_insert_{$type}", array( __CLASS__, 'on_divi_rest_insert' ) );
+		}
+	}
+
+	public static function on_divi_rest_insert( $post ) {
+		if ( is_object( $post ) && isset( $post->ID ) ) {
+			self::invalidate_divi_caches( (int) $post->ID );
+		}
+	}
+
+	/**
+	 * Divi stales its static CSS on core save_post, but its excerpt cache and the
+	 * pages using an edited Theme Builder layout clear only on its own et_save_post.
+	 */
+	public static function invalidate_divi_caches( $post_id ) {
+		if ( ! $post_id ) {
+			return;
+		}
+		foreach ( array( 'et_divi_save_post', 'et_theme_builder_clear_wp_post_cache' ) as $purge ) {
+			if ( ! function_exists( $purge ) ) {
+				continue;
+			}
+			try {
+				$purge( $post_id );
 			} catch ( \Throwable $e ) {
 				// Cache purge is best-effort; the content write already succeeded.
 			}

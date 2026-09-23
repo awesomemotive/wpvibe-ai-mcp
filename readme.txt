@@ -4,7 +4,7 @@ Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.17.5
+Stable tag: 1.18.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -220,6 +220,28 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 
 == Changelog ==
 
+= 1.18.0 =
+* Feature: new WP-CLI command theme mod get reads one or more theme settings by name, or all of them with --all. Settings that are not set come back empty, and values keep their stored types.
+* Feature: cache purge now clears Super Page Cache (its own cache and the Cloudflare cache it manages) and Rank Math's sitemap cache, so an updated sitemap shows right away.
+* Improvement: when no supported cache plugin is found, cache purge now says a cache plugin WPVibe does not support may still hold the page, and to purge it from that plugin's settings.
+* Improvement: the connection check now spots a second login (HTTP Basic Authentication) in front of WordPress. That login makes WordPress refuse to approve the connection, so the check now tells you to turn it off before you connect, instead of showing all green and failing at the Approve step.
+* Improvement: the site information WPVibe reads now includes the WordPress address, so WPVibe can warn you when a site was connected under a different address than WordPress uses. Such a connection makes signed approvals fail.
+* Fix: the draft theme preview no longer changes the layout of themes WPVibe did not build, such as Astra. The preview was loading WPVibe's own styling tools on every draft, and on WooCommerce stores they turned a 4 column product grid into a row of narrow cards. They now load only for WPVibe themes. Your live site was never affected.
+* Hardening: the one-time sign-in link WPVibe uses to open the SeedProd builder can now be used exactly once, even if two requests arrive at the same moment. This holds on sites with a persistent object cache such as Redis or Memcached too. Links still expire after two minutes.
+* Hardening: when a security plugin has turned off file editing, WPVibe now tells your AI to ask you before changing that setting, instead of suggesting it turn file editing back on itself.
+* Fix: on Divi sites, editing a post's text through WPVibe now also clears Divi's saved excerpt, so category archives and the blog index show the new wording right away. Editing a Theme Builder header, footer or body layout the same way now refreshes the styles of the pages that use it, so a module newly added to the layout shows with its full styling.
+* Fix: on Divi sites, pages, posts and projects that the AI updates through the WordPress REST API now get the same excerpt refresh, so category archives and the blog index show the new wording instead of an old saved copy.
+* Fix: on hosts that do not allow WordPress to create PHP files (WP Engine and some other managed hosts), creating a draft theme or a classic theme now says so and that changing file permissions will not help, instead of a bare "Failed to copy file". Other copy and write failures now include the reason PHP gave, with paths shortened to start at wp-content.
+* Fix: when creating a draft theme or a classic theme fails partway, the message now says whether the partial folder was removed, and names it if it could not be.
+* Fix: when WPVibe's record of a draft theme outlives the draft folder itself (the folder was removed by hand, by the host, or by an interrupted operation), creating a draft no longer fails with a conflict that no tool could resolve. Create draft theme and delete draft theme now clear the leftover record and continue. They only do this when nothing exists at the draft folder's path, so no files are ever deleted, and the live theme is never touched.
+* Fix: when a draft folder from an earlier WPVibe draft is still on disk but its record was lost, creating a draft of the same active theme takes that folder back as the draft (no files are changed) instead of refusing. In any other case both create and delete name the folder and leave it untouched, instead of saying there is no draft.
+* Improvement: previewing, publishing or editing a draft whose folder is gone now names the missing folder and the one step that recovers, instead of returning a preview link to a theme that no longer exists.
+* Fix: two theme file edits sent at the same moment (for example an edit and a preview on the same draft) no longer fail with a "could not exclusively lock" conflict. The second one now waits up to 5 seconds for the first to finish, then runs.
+* Fix: when WPVibe cannot lock the themes folder, the message now says why and whether retrying helps: another operation still running, no write access to the .wpvibe-draft.lock file in the themes folder, a server that does not support file locking, or a lock file replaced by a symbolic link. Each one names the lock file.
+* Fix: adding an image from a URL that returns a web page (an error, login or hotlink protection page) instead of the image now says the URL did not return an image and names what it returned, such as text/html. It no longer says your site does not allow .jpg files. When the image really is a type your site does not accept, the message names that type instead of the one in the URL.
+* Fix: theme mod list on a theme with no saved settings no longer returns one empty row.
+* Fix: the approval error messages can now be translated.
+
 = 1.17.5 =
 * Fix: a db query SELECT whose quoted text contains a write word (for example 'delete' in a value, or REPLACE(name, 'a', 'update')) no longer asks for approval and then refuses to run. A statement that starts with SELECT, SHOW, DESCRIBE or EXPLAIN SELECT is a read and runs as one.
 * Hardening: a db query that calls SLEEP, BENCHMARK, GET_LOCK or RELEASE_LOCK now needs approval, and read queries stop after 30 seconds instead of holding a database connection open.
@@ -350,38 +372,6 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 * Hardening: approved plugin replacements re-verify the installed version and active state at execution, and refuse to run if the site changed after the approval was granted (for example an auto-update during the approval window).
 * Fix: clearer guidance when eval and eval-file commands are blocked. The denial now points to the code snippet workflow instead of a dead-end help lookup.
 * Hardening: the approval gate and the install handler now derive "is this replacing an existing plugin" from one shared check, so they can never disagree.
-
-= 1.14.2 =
-* Feature: plugin rollback. `plugin install <slug> --version=<version> --force` now replaces an installed plugin with the exact version you name, so your AI can walk a broken update back to the last working release. Replacing an existing install pauses for browser approval and shows the version change before anything runs; if the plugin was active it stays active afterward.
-* Fix: `plugin install` on an already-installed plugin now explains the two ways forward (update, or force-replace with a specific version) instead of failing with a raw folder error, and unsupported install flags are refused with the supported list instead of being silently ignored.
-* Fix: a version that does not exist on WordPress.org is refused with a clear error instead of silently installing the latest release, and replacing a single-file plugin now switches the active copy cleanly instead of leaving the old file active.
-* Hardening: the force-replace approval also covers directories WordPress can no longer read as plugins (broken installs), and WPVibe refuses to replace its own files over its own connection.
-
-= 1.14.1 =
-* Improvement: approved operations now leave an execution receipt on your site. If the connection drops right after you click Approve, WPVibe can check the receipt and tell your AI exactly what happened (it ran, it was rejected, or it never arrived) instead of reporting the outcome as unknown.
-* Improvement: an approved operation can never run twice. If the same approved request is ever re-sent, the site returns the recorded result of the first run instead of executing again.
-
-= 1.14.0 =
-* Feature: Bricks support. Your AI can now build and edit Bricks pages through Bricks' own save pipeline, with the theme's element security checks applied and page CSS regenerated on every save (external file mode included). Layouts open in the Bricks editor exactly like hand-built pages.
-* Feature: Breakdance support. Your AI can now build and edit Breakdance pages, including the blank canvas template for landing pages. Saves go through Breakdance's own data format and refresh its CSS cache, so pages render correctly on the first load and open cleanly in the Breakdance editor. Writing a layout requires Breakdance builder access, the same permission Breakdance uses for its own editor, so connect as an administrator or a role you have granted Breakdance access.
-* Fix: text values written to post fields by the AI now store exactly what was sent. Words like true or false used to be converted before saving, which could silently break theme and plugin settings that expect the literal text (found with GeneratePress page layout options). Structured JSON values are unaffected.
-* Fix: sites that lock the theme and plugin file editors (a common managed-hosting setting) are now reported as locked instead of "a security plugin removed your permissions", so your AI explains the real reason and what to do about it.
-* Security: saving an Elementor or Beaver Builder page as private or scheduled now requires the same publish permission WordPress requires for publishing. Previously a user who could edit but not publish could reach those states through the builder endpoints. Publishing itself was always checked.
-
-= 1.13.5 =
-* Improvement: editing page-builder content now works through the safe content-edit path. Elementor stores a page's text inside a protected field, so surgical text edits used to fall back to direct database writes. Those edits now go through the normal content-edit tool, which also refreshes Elementor's cached styles so the change shows on the front end right away.
-* Fix: a content edit that would have broken a builder layout's stored data is now refused before saving, with the original left untouched, instead of writing a corrupted value.
-* Fix: content search and edit now match text the way it appears on the page when the database stores HTML entities. A search for "R&D" finds stored "R&amp;D", and ordinary spaces match non-breaking spaces, so an AI reading rendered HTML can edit the real stored value without a no-match miss.
-* Security: direct database writes to protected site settings (site address, active plugins, user roles and capabilities, the users table) are now refused even after approval. These already could not be changed through the normal commands, and raw SQL can no longer be used to get around that. Everyday content edits are unaffected.
-
-= 1.13.4 =
-* Fix: draft theme preview no longer breaks on sites running a child theme. The preview pointed WordPress at the draft for both the child theme and its parent, so the parent theme's code never loaded and the page stopped rendering partway through. The preview now keeps the parent theme in place and layers your draft on top of it, the way WordPress expects a child theme to work. The live site was never affected. Thanks to Ryan De La Uz for the detailed report.
-* Improvement: the WP-CLI command layer is reorganized under the hood so new commands can ship in smaller, safer pieces. Which commands you can run and how they behave are unchanged.
-
-= 1.13.3 =
-* Fix: updating a single plugin no longer leaves it deactivated. WordPress silently deactivates a plugin before replacing its files, and the update command did not turn it back on, so a plugin that was active before an update could end up switched off without any error. Updates now use the same method as the WordPress dashboard and the WP-CLI tool, which keeps the plugin active the whole time.
-* Improvement: the update result now states whether the plugin is active or inactive after the update, verified against the site rather than assumed, so your AI assistant reports the real state instead of guessing.
-* Fix: an update that failed to replace the plugin files used to report success. It now reports the failure and says the installed version is unchanged.
 
 = Older versions =
 WP.org caps the changelog at 5,000 words. For the full release history back to 1.0.0, see https://wpvibe.ai/changelog/

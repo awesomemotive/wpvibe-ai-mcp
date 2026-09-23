@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.18.0] - 2026-09-23
+
+- Feature: new WP-CLI command theme mod get reads one or more theme settings by name, or all of them with --all. Settings that are not set come back empty, and values keep their stored types.
+- Feature: cache purge now clears Super Page Cache (its own cache and the Cloudflare cache it manages) and Rank Math's sitemap cache, so an updated sitemap shows right away.
+- Improvement: when no supported cache plugin is found, cache purge now says a cache plugin WPVibe does not support may still hold the page, and to purge it from that plugin's settings.
+- Improvement: the connection check now spots a second login (HTTP Basic Authentication) in front of WordPress. That login makes WordPress refuse to approve the connection, so the check now tells you to turn it off before you connect, instead of showing all green and failing at the Approve step.
+- Improvement: the site information WPVibe reads now includes the WordPress address, so WPVibe can warn you when a site was connected under a different address than WordPress uses. Such a connection makes signed approvals fail.
+- Fix: the draft theme preview no longer changes the layout of themes WPVibe did not build, such as Astra. The preview was loading WPVibe's own styling tools on every draft, and on WooCommerce stores they turned a 4 column product grid into a row of narrow cards. They now load only for WPVibe themes. Your live site was never affected.
+- Hardening: the one-time sign-in link WPVibe uses to open the SeedProd builder can now be used exactly once, even if two requests arrive at the same moment. This holds on sites with a persistent object cache such as Redis or Memcached too. Links still expire after two minutes.
+- Hardening: when a security plugin has turned off file editing, WPVibe now tells your AI to ask you before changing that setting, instead of suggesting it turn file editing back on itself.
+- Fix: on Divi sites, editing a post's text through WPVibe now also clears Divi's saved excerpt, so category archives and the blog index show the new wording right away. Editing a Theme Builder header, footer or body layout the same way now refreshes the styles of the pages that use it, so a module newly added to the layout shows with its full styling.
+- Fix: on Divi sites, pages, posts and projects that the AI updates through the WordPress REST API now get the same excerpt refresh, so category archives and the blog index show the new wording instead of an old saved copy.
+- Fix: on hosts that do not allow WordPress to create PHP files (WP Engine and some other managed hosts), creating a draft theme or a classic theme now says so and that changing file permissions will not help, instead of a bare "Failed to copy file". Other copy and write failures now include the reason PHP gave, with paths shortened to start at wp-content.
+- Fix: when creating a draft theme or a classic theme fails partway, the message now says whether the partial folder was removed, and names it if it could not be.
+- Fix: when WPVibe's record of a draft theme outlives the draft folder itself (the folder was removed by hand, by the host, or by an interrupted operation), creating a draft no longer fails with a conflict that no tool could resolve. Create draft theme and delete draft theme now clear the leftover record and continue. They only do this when nothing exists at the draft folder's path, so no files are ever deleted, and the live theme is never touched.
+- Fix: when a draft folder from an earlier WPVibe draft is still on disk but its record was lost, creating a draft of the same active theme takes that folder back as the draft (no files are changed) instead of refusing. In any other case both create and delete name the folder and leave it untouched, instead of saying there is no draft.
+- Improvement: previewing, publishing or editing a draft whose folder is gone now names the missing folder and the one step that recovers, instead of returning a preview link to a theme that no longer exists.
+- Fix: two theme file edits sent at the same moment (for example an edit and a preview on the same draft) no longer fail with a "could not exclusively lock" conflict. The second one now waits up to 5 seconds for the first to finish, then runs.
+- Fix: when WPVibe cannot lock the themes folder, the message now says why and whether retrying helps: another operation still running, no write access to the .wpvibe-draft.lock file in the themes folder, a server that does not support file locking, or a lock file replaced by a symbolic link. Each one names the lock file.
+- Fix: adding an image from a URL that returns a web page (an error, login or hotlink protection page) instead of the image now says the URL did not return an image and names what it returned, such as text/html. It no longer says your site does not allow .jpg files. When the image really is a type your site does not accept, the message names that type instead of the one in the URL.
+- Fix: theme mod list on a theme with no saved settings no longer returns one empty row.
+- Fix: the approval error messages can now be translated.
+
 ## [1.17.5] - 2026-09-22
 
 - Fix: a db query SELECT whose quoted text contains a write word (for example 'delete' in a value, or REPLACE(name, 'a', 'update')) no longer asks for approval and then refuses to run. A statement that starts with SELECT, SHOW, DESCRIBE or EXPLAIN SELECT is a read and runs as one.

@@ -127,6 +127,7 @@ class WPVibe_CLI {
 		'post type list'   => array( 'tier' => 'read', 'cap' => 'edit_posts' ),
 		'menu location list' => array( 'tier' => 'read', 'cap' => 'edit_theme_options' ),
 		'theme mod list'   => array( 'tier' => 'read', 'cap' => 'edit_theme_options' ),
+		'theme mod get'    => array( 'tier' => 'read', 'cap' => 'edit_theme_options' ),
 		// Discoverability: pure metadata, lowest-privilege cap. `help` turns
 		// failed command guessing into discovery; `cli version`/`cli info`
 		// answer the "what environment is this?" probe with emulator identity.
@@ -464,6 +465,7 @@ class WPVibe_CLI {
 		'post type list'    => 'handle_post_type_list',
 		'menu location list' => 'handle_menu_location_list',
 		'theme mod list'    => 'handle_theme_mod_list',
+		'theme mod get'     => 'handle_theme_mod_get',
 		'help'              => 'handle_help',
 		'cli version'       => 'handle_cli_version',
 		'cli info'          => 'handle_cli_version',
@@ -555,6 +557,7 @@ class WPVibe_CLI {
 		'theme list'              => 'theme list [--status=<active|inactive>] [--update=available] [--fields=<fields>]',
 		'theme status'            => 'theme status <slug>',
 		'theme mod list'          => 'theme mod list',
+		'theme mod get'           => 'theme mod get <mod>... | --all [--field=key|value] (missing mods return null; values keep their stored JSON types)',
 		'option get'              => 'option get <key>',
 		'option pluck'            => 'option pluck <option> <key-path>... (read one nested key without fetching the whole option)',
 		'option list'             => 'option list [--search=<pattern>] [--autoload=<on|off>] [--transients] [--format=json|ids|count] (transients are excluded unless --transients; capped at 100 rows)',

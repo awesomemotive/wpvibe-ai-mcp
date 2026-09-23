@@ -7,8 +7,8 @@
  * writes it. The WPVibe Worker automates that Save with a headless browser,
  * which needs a wp-admin session. This class mints single-use, short-lived
  * login URLs whose destination is pinned server-side to the builder screen
- * for one specific page, so a leaked URL is worth at most one builder visit
- * for a couple of minutes.
+ * for one specific page. Each URL signs in once, within two minutes; the
+ * session it opens is an ordinary session for the minting user.
  *
  * @package WPVibe
  */
@@ -23,8 +23,17 @@ class WPVibe_Builder_Login {
 	const RATE_WINDOW      = 300;
 	const TRANSIENT_PREFIX = 'wpvibe_bl_';
 	const RATE_KEY         = 'wpvibe_bl_rate';
+	const CACHE_GROUP      = 'wpvibe_builder_login';
 
 	private static $instance = null;
+
+	/**
+	 * Which claim path the last consume() took: 'options_row' or
+	 * 'object_cache'. For tests and diagnostics only.
+	 *
+	 * @var string|null
+	 */
+	public $last_claim_path = null;
 
 	public static function instance() {
 		if ( null === self::$instance ) {
@@ -150,11 +159,14 @@ class WPVibe_Builder_Login {
 		$now    = null === $now ? time() : (int) $now;
 		$key    = self::TRANSIENT_PREFIX . hash( 'sha256', (string) $token );
 		$record = get_transient( $key );
-		// Single-use: burn before validating so a raced second request loses.
-		delete_transient( $key );
 
 		if ( ! is_array( $record ) || empty( $record['user_id'] ) || empty( $record['post_id'] ) ) {
 			return new WP_Error( 'builder_login_invalid', 'invalid' );
+		}
+		// Single-use: claim before validating. Two requests can both read the
+		// record; only the one whose claim succeeds may redeem it.
+		if ( ! $this->claim( $key ) ) {
+			return new WP_Error( 'builder_login_invalid', 'already used' );
 		}
 		if ( empty( $record['expires'] ) || $now > (int) $record['expires'] ) {
 			return new WP_Error( 'builder_login_expired', 'expired' );
@@ -172,6 +184,41 @@ class WPVibe_Builder_Login {
 			'post_id'  => (int) $record['post_id'],
 			'redirect' => self::builder_url( $record['post_id'] ),
 		);
+	}
+
+	/**
+	 * Burn a token exactly once, even under concurrent requests. Returns true
+	 * only for the one caller that wins.
+	 *
+	 * Without a persistent object cache the transient is a row in wp_options,
+	 * and a DELETE reports how many rows it removed: 1 wins, 0 means another
+	 * request already took it. With a persistent object cache the transient
+	 * never reaches wp_options, so wp_cache_add of a one-shot key is the lock:
+	 * add succeeds only for the first caller. The lock's winner must still find
+	 * the token in the cache backend (forced read, past the in-request copy)
+	 * and must be the one whose delete removes it: if a flush or eviction drops
+	 * the lock while another request holds it, a second add can succeed, but
+	 * the backend deletes the key for only one of them.
+	 */
+	protected function claim( $key ) {
+		if ( wp_using_ext_object_cache() ) {
+			$this->last_claim_path = 'object_cache';
+			if ( ! wp_cache_add( 'consumed_' . $key, 1, self::CACHE_GROUP, self::TOKEN_TTL ) ) {
+				return false;
+			}
+			$still_there = wp_cache_get( $key, 'transient', true );
+			return false !== $still_there && (bool) delete_transient( $key );
+		}
+
+		global $wpdb;
+		$this->last_claim_path = 'options_row';
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- The affected-row count is the atomic single-use check; caches are cleared below.
+		$rows = $wpdb->delete( $wpdb->options, array( 'option_name' => '_transient_' . $key ) );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->delete( $wpdb->options, array( 'option_name' => '_transient_timeout_' . $key ) );
+		wp_cache_delete( '_transient_' . $key, 'options' );
+		wp_cache_delete( '_transient_timeout_' . $key, 'options' );
+		return 1 === $rows;
 	}
 
 	public function maybe_consume() {

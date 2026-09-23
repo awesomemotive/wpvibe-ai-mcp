@@ -33,6 +33,18 @@ trait WPVibe_CLI_Cache {
 	 */
 	private function cache_purge_targets() {
 		return array(
+			// A data cache, not a page cache: first, so page caches below re-cache the fresh XML.
+			'rank-math-sitemap' => array(
+				'name'       => 'Rank Math sitemap cache',
+				'active'     => class_exists( '\RankMath\Sitemap\Cache' ),
+				'url_filter' => function ( $url ) {
+					return (bool) preg_match( '#sitemap[^/]*\.xml$#i', (string) wp_parse_url( $url, PHP_URL_PATH ) );
+				},
+				'purge'      => function () {
+					\RankMath\Sitemap\Cache::invalidate_storage();
+					return true;
+				},
+			),
 			'litespeed'      => array(
 				'name'      => 'LiteSpeed Cache',
 				'active'    => defined( 'LSCWP_V' ) || is_plugin_active( 'litespeed-cache/litespeed-cache.php' ),
@@ -127,6 +139,23 @@ trait WPVibe_CLI_Cache {
 				'purge'  => function () {
 					do_action( 'breeze_clear_all_cache' );
 					return true;
+				},
+			),
+			// Purges its own disk cache and its Cloudflare zone; the same calls its public swcfpc_purge_cache hook makes, but these return success.
+			'super-page-cache' => array(
+				'name'      => 'Super Page Cache',
+				'active'    => defined( 'SWCFPC_VERSION' ) || is_plugin_active( 'wp-cloudflare-page-cache/wp-cloudflare-super-page-cache.php' ),
+				'purge'     => function () {
+					if ( ! is_callable( array( '\SPC\Modules\Cache_Controller', 'purge_all' ) ) ) {
+						return __( 'this Super Page Cache version has no supported purge API; purge from its settings page.', 'vibe-ai' );
+					}
+					return true === \SPC\Modules\Cache_Controller::purge_all( true, false ) ? true : __( 'Super Page Cache reported a failed purge; check its log.', 'vibe-ai' );
+				},
+				'purge_url' => function ( $url ) {
+					if ( ! is_callable( array( '\SPC\Modules\Cache_Controller', 'purge_urls' ) ) ) {
+						return __( 'this Super Page Cache version has no supported purge API; purge from its settings page.', 'vibe-ai' );
+					}
+					return true === \SPC\Modules\Cache_Controller::purge_urls( array( $url ), false ) ? true : __( 'Super Page Cache reported a failed purge; check its log.', 'vibe-ai' );
 				},
 			),
 			'cloudflare'     => array(
@@ -299,6 +328,9 @@ trait WPVibe_CLI_Cache {
 			if ( $urls && 'elementor' === $id ) {
 				continue;
 			}
+			if ( $urls && ! empty( $target['url_filter'] ) && ! array_filter( $urls, $target['url_filter'] ) ) {
+				continue;
+			}
 			try {
 				if ( $urls ) {
 					if ( ! empty( $target['purge_url'] ) ) {
@@ -352,7 +384,7 @@ trait WPVibe_CLI_Cache {
 				/* translators: %s: per-engine failure reasons */
 				return $this->error_result( sprintf( __( 'URL purge failed for every detected page cache. %s', 'vibe-ai' ), implode( '; ', $detail ) ) );
 			} else {
-				$message = __( 'No page-cache plugin detected; nothing to purge for those URLs.', 'vibe-ai' );
+				$message = __( 'No supported page-cache plugin detected, so nothing was purged for those URLs. A cache plugin WPVibe does not support may still hold them; purge it from its own settings page.', 'vibe-ai' );
 			}
 		} elseif ( $purged ) {
 			/* translators: %s: plugin names */

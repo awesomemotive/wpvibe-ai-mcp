@@ -16,14 +16,14 @@ class WPVibe_Op_Proof_V2 {
 		$proof = (string) $request->get_header( self::HEADER );
 		$op_id = WPVibe_Op_Receipts::sanitize_op_id( $request->get_header( 'x_wpvibe_op_id' ) );
 		if ( '' === $op_id || ! preg_match( '/^v2\.([a-zA-Z0-9_-]{1,64})\.([0-9]{1,12})\.([a-zA-Z0-9_-]{86})$/D', $proof, $m ) ) {
-			return self::error( 'missing', 'This operation requires a current WPVibe-signed approval. Keep the site connected and use the WPVibe approval flow.' );
+			return self::error( 'missing', __( 'This operation requires a current WPVibe-signed approval. Keep the site connected and use the WPVibe approval flow.', 'vibe-ai' ) );
 		}
 		$exp = (int) $m[2];
 		if ( $exp < time() || $exp > time() + self::MAX_TTL ) {
-			return self::error( 'expired', 'The operation approval expired. Request a fresh approval in WPVibe.' );
+			return self::error( 'expired', __( 'The operation approval expired. Request a fresh approval in WPVibe.', 'vibe-ai' ) );
 		}
 		if ( ! isset( static::PUBLIC_KEYS[ $m[1] ] ) ) {
-			return self::error( 'unknown_key', 'The signing key is not recognized. Update WPVibe and check the connection again.' );
+			return self::error( 'unknown_key', __( 'The signing key is not recognized. Update WPVibe and check the connection again.', 'vibe-ai' ) );
 		}
 		// Connection observations authenticate with the Worker signature itself. All executable
 		// routes also bind the signature to the application password WP authenticated.
@@ -31,7 +31,7 @@ class WPVibe_Op_Proof_V2 {
 			$credential = '-';
 		} else {
 			$password = preg_replace( '/[^a-z0-9]/i', '', (string) ( $_SERVER['PHP_AUTH_PW'] ?? '' ) );
-			if ( '' === $password ) { return self::error( 'invalid', 'The approved connection credential is missing.' ); }
+			if ( '' === $password ) { return self::error( 'invalid', __( 'The approved connection credential is missing.', 'vibe-ai' ) ); }
 			$credential = hash( 'sha256', $password );
 		}
 		$message = implode( "\n", array( 'wpvibe-op-proof-v2', $m[1], static::audience(), $credential, $op_id, (string) $route, hash( 'sha256', (string) $subject ), $exp ) );
@@ -51,10 +51,10 @@ class WPVibe_Op_Proof_V2 {
 				}
 			}
 		} catch ( Throwable $error ) { $valid = false; }
-		return $valid ? true : self::error( 'invalid', 'The signed approval does not match this site, connection, or operation. Keep the existing connection and send the failed check to WPVibe support.' );
+		return $valid ? true : self::error( 'invalid', __( 'The signed approval does not match this site, connection, or operation. Keep the existing connection and send the failed check to WPVibe support.', 'vibe-ai' ) );
 	}
 
 	private static function error( $code, $message ) {
-		return new WP_Error( 'wpvibe_op_proof_' . $code, __( $message, 'vibe-ai' ), array( 'status' => 403 ) );
+		return new WP_Error( 'wpvibe_op_proof_' . $code, $message, array( 'status' => 403 ) );
 	}
 }
