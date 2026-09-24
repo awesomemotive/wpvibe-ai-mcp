@@ -4,7 +4,7 @@ Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.18.0
+Stable tag: 1.19.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -125,9 +125,10 @@ On WPVibe's own authorization page (the Approve screen an authorize link opens),
 
 = Third-Party Libraries =
 
-WPVibe bundles one third-party JavaScript library for use inside scaffolded classic starter themes:
+WPVibe bundles two third-party libraries:
 
 * **Alpine.js** v3.15.12, MIT License, [https://alpinejs.dev/](https://alpinejs.dev/), included at `starter-themes/classic/assets/js/alpine.min.js`. Used as the interactivity layer (modals, dropdowns, tabs, accordions, sliders) for AI-generated classic themes. Not loaded outside scaffolded themes.
+* **svg-sanitize** (enshrined/svg-sanitize) v1.0.0 by Daryll Doyle, GPL-2.0-or-later, [https://github.com/darylldoyle/svg-sanitizer](https://github.com/darylldoyle/svg-sanitizer), included at `third-party/svg-sanitize/` with its PHP namespace prefixed so it cannot clash with other plugins that bundle it, such as Safe SVG. Used to clean SVG files before WPVibe writes them to a draft theme or adds them to the Media Library.
 
 = Built by SeedProd =
 
@@ -219,6 +220,11 @@ Yes. Connected sites are unlimited on every plan, including the free plan. Conne
 No. WPVibe lets you manage your WordPress site entirely through conversation with your AI assistant. No coding required for content management. Theme editing is also conversational, your AI writes the code for your WordPress theme.
 
 == Changelog ==
+
+= 1.19.0 =
+* Feature: WPVibe can now add SVG images to your Media Library and write SVG files in a draft theme. Every SVG is cleaned before it is saved, including for administrators: scripts, event handlers, links to other sites, embedded web pages and styles that could load or run anything are removed. A file that cannot be cleaned safely is refused, with a suggestion to use PNG or WebP instead.
+* Improvement: SVG uploads are allowed for that one file only. Your site's own upload settings do not change, so SVG uploads in wp-admin work exactly as before.
+* Improvement: SVG images added to the Media Library get their width and height from the file, so they show at the right size in the editor and as featured images.
 
 = 1.18.0 =
 * Feature: new WP-CLI command theme mod get reads one or more theme settings by name, or all of them with --all. Settings that are not set come back empty, and values keep their stored types.

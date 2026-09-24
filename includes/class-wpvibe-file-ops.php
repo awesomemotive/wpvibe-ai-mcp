@@ -20,8 +20,8 @@ defined( 'ABSPATH' ) || exit;
  */
 class WPVibe_File_Ops {
 
-	/** Allowed file extensions for write/create operations. */
-	const ALLOWED_EXTENSIONS = array( 'php', 'css', 'js', 'json', 'html', 'txt' );
+	/** Allowed file extensions for write/create operations. SVG is stored only after WPVibe_SVG_Sanitizer cleans it. */
+	const ALLOWED_EXTENSIONS = array( 'php', 'css', 'js', 'json', 'html', 'txt', 'svg' );
 
 	// Bound local traversal, memory, and the compile service's 10 MiB JSON input.
 	const COMPILE_MAX_ENTRIES = 5000;
@@ -252,6 +252,50 @@ class WPVibe_File_Ops {
 	}
 
 	/**
+	 * Whether a write target is an SVG, decided on the same extension is_allowed_extension() reads.
+	 *
+	 * @param string $path File path.
+	 * @return bool
+	 */
+	private function is_svg( $path ) {
+		return 'svg' === strtolower( pathinfo( $path, PATHINFO_EXTENSION ) );
+	}
+
+	/**
+	 * Sanitize SVG content bound for the draft theme.
+	 *
+	 * @param string $full_path Target path.
+	 * @param string $content   Final file content.
+	 * @return array{content:string,note:string,sanitized:array|null}|WP_Error
+	 */
+	private function prepare_content( $full_path, $content ) {
+		if ( ! $this->is_svg( $full_path ) ) {
+			return array( 'content' => $content, 'note' => '', 'sanitized' => null );
+		}
+		$result = WPVibe_SVG_Sanitizer::sanitize( $content );
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+		return array(
+			'content'   => $result['content'],
+			'note'      => WPVibe_SVG_Sanitizer::summary( $result ),
+			'sanitized' => array( 'removed' => $result['removed'], 'changed' => $result['changed'] ),
+		);
+	}
+
+	/** Add the sanitizer's report to a write/edit response. */
+	private static function with_sanitize_report( array $response, array $prepared ) {
+		if ( null === $prepared['sanitized'] ) {
+			return $response;
+		}
+		$response['sanitized'] = $prepared['sanitized'];
+		if ( '' !== $prepared['note'] ) {
+			$response['message'] .= ' ' . $prepared['note'];
+		}
+		return $response;
+	}
+
+	/**
 	 * Validate PHP syntax using the tokenizer.
 	 *
 	 * Accepts the edit/write temp path (`<real>.wpvibe-tmp`) and strips the
@@ -420,6 +464,13 @@ class WPVibe_File_Ops {
 
 		$updated = str_replace( $old_content, $new_content, $content );
 
+		// An SVG is checked as a whole after the edit: a safe fragment can complete an unsafe one.
+		$prepared = $this->prepare_content( $full_path, $updated );
+		if ( is_wp_error( $prepared ) ) {
+			return $prepared;
+		}
+		$updated = $prepared['content'];
+
 		// Write to a temp file first for PHP syntax check.
 		$tmp = $full_path . '.wpvibe-tmp';
 		if ( ! $fs->put_contents( $tmp, $updated, FS_CHMOD_FILE ) ) {
@@ -457,11 +508,11 @@ class WPVibe_File_Ops {
 			'action_label' => 'Preview Theme',
 		) );
 
-		return rest_ensure_response( array(
+		return rest_ensure_response( self::with_sanitize_report( array(
 			'path'    => $path,
 			'status'  => 'edited',
 			'message' => __( 'File updated successfully.', 'vibe-ai' ),
-		) );
+		), $prepared ) );
 	}
 
 	/**
@@ -486,6 +537,12 @@ class WPVibe_File_Ops {
 		if ( ! $this->is_allowed_extension( $full_path ) ) {
 			return new WP_Error( 'forbidden_ext', __( 'File extension not allowed.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 403 ) ) );
 		}
+
+		$prepared = $this->prepare_content( $full_path, $content );
+		if ( is_wp_error( $prepared ) ) {
+			return $prepared;
+		}
+		$content = $prepared['content'];
 
 		// Ensure parent directory exists. mkdir failures here cascade into
 		// misleading "write_failed" errors below; surface the real cause.
@@ -556,11 +613,11 @@ class WPVibe_File_Ops {
 			'action_label' => 'Preview Theme',
 		) );
 
-		return rest_ensure_response( array(
+		return rest_ensure_response( self::with_sanitize_report( array(
 			'path'    => $path,
 			'status'  => $is_new ? 'created' : 'overwritten',
 			'message' => $is_new ? __( 'File created successfully.', 'vibe-ai' ) : __( 'File overwritten successfully.', 'vibe-ai' ),
-		) );
+		), $prepared ) );
 	}
 
 	/**

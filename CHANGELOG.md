@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.19.0] - 2026-09-24
+
+- Feature: WPVibe can now add SVG images to your Media Library and write SVG files in a draft theme. Every SVG is cleaned before it is saved, including for administrators: scripts, event handlers, links to other sites, embedded web pages and styles that could load or run anything are removed. A file that cannot be cleaned safely is refused, with a suggestion to use PNG or WebP instead.
+- Improvement: SVG uploads are allowed for that one file only. Your site's own upload settings do not change, so SVG uploads in wp-admin work exactly as before.
+- Improvement: SVG images added to the Media Library get their width and height from the file, so they show at the right size in the editor and as featured images.
+
 ## [1.18.0] - 2026-09-23
 
 - Feature: new WP-CLI command theme mod get reads one or more theme settings by name, or all of them with --all. Settings that are not set come back empty, and values keep their stored types.

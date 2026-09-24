@@ -1230,7 +1230,7 @@ class WPVibe_REST {
 	 * MCP to compare WPVIBE_VERSION strings — flags are forward-compatible.
 	 */
 	public static function feature_flags() {
-		return array( 'content_edit', 'content_search', 'code_snippet', 'beaver_save', 'breakdance_save', 'bricks_save', 'armor', 'authorize_mint', 'op_proof', 'op_proof_v2', 'detached_ops', 'connection_readiness', 'connection_status' );
+		return array( 'content_edit', 'content_search', 'code_snippet', 'beaver_save', 'breakdance_save', 'bricks_save', 'armor', 'authorize_mint', 'op_proof', 'op_proof_v2', 'detached_ops', 'connection_readiness', 'connection_status', 'svg_sanitize' );
 	}
 
 	public function get_site_info() {
@@ -1815,33 +1815,47 @@ class WPVibe_REST {
 		// "…14.45.58@2x" makes pathinfo() read "58@2x" as the extension, so we
 		// validate against known image types and fall back to the file's actual
 		// mime — otherwise media_handle_sideload() rejects it as a bad file type.
-		// SVG stays admin-only (it can carry script: XSS risk in the media list).
 		$url_path      = wp_parse_url( $url, PHP_URL_PATH );
 		$filename      = $title ? sanitize_file_name( $title ) : basename( (string) $url_path );
 		$detected_mime = wp_get_image_mime( $tmp );
 		if ( ! $detected_mime && function_exists( 'mime_content_type' ) ) {
 			$detected_mime = mime_content_type( $tmp );
 		}
-		$filename = self::ensure_image_extension( $filename, $detected_mime, current_user_can( 'manage_options' ) );
 
-		$rejection = self::check_sideload_file( $tmp, $filename, current_user_can( 'unfiltered_upload' ), $detected_mime ? (string) $detected_mime : null );
-		if ( is_wp_error( $rejection ) ) {
-			wp_delete_file( $tmp );
-			return $rejection;
-		}
+		$sanitized = null;
+		if ( self::is_svg_download( $tmp, $detected_mime ) ) {
+			// SVG only ever lands sanitized, for every account (unfiltered_upload included).
+			$svg = self::sideload_svg( $tmp, $filename, $post_id, $title );
+			if ( is_wp_error( $svg ) ) {
+				wp_delete_file( $tmp );
+				return $svg;
+			}
+			$attachment_id = $svg['attachment_id'];
+			$sanitized     = $svg['sanitized'];
+		} else {
+			// Raw SVG never takes this path: a name ending in .svg gets a raster extension appended,
+			// and unfiltered_upload skips the type gate only for bytes that really are a raster image.
+			$filename = self::ensure_image_extension( $filename, $detected_mime, false );
 
-		$file_array = array(
-			'name'     => $filename,
-			'tmp_name' => $tmp,
-		);
+			$rejection = self::check_sideload_file( $tmp, $filename, self::may_skip_type_gate( $tmp ), $detected_mime ? (string) $detected_mime : null );
+			if ( is_wp_error( $rejection ) ) {
+				wp_delete_file( $tmp );
+				return $rejection;
+			}
 
-		// Sideload into the media library.
-		$attachment_id = media_handle_sideload( $file_array, $post_id, $title );
+			$file_array = array(
+				'name'     => $filename,
+				'tmp_name' => $tmp,
+			);
 
-		// Clean up temp file if sideload failed.
-		if ( is_wp_error( $attachment_id ) ) {
-			wp_delete_file( $tmp );
-			return self::sideload_failure_error( $attachment_id );
+			// Sideload into the media library.
+			$attachment_id = media_handle_sideload( $file_array, $post_id, $title );
+
+			// Clean up temp file if sideload failed.
+			if ( is_wp_error( $attachment_id ) ) {
+				wp_delete_file( $tmp );
+				return self::sideload_failure_error( $attachment_id );
+			}
 		}
 
 		// Set alt text if provided.
@@ -1868,7 +1882,152 @@ class WPVibe_REST {
 			'width'         => ! empty( $metadata['width'] ) ? $metadata['width'] : null,
 			'height'        => ! empty( $metadata['height'] ) ? $metadata['height'] : null,
 			'mime_type'     => get_post_mime_type( $attachment_id ),
-		) );
+		) + ( $sanitized ? array( 'sanitized' => $sanitized ) : array() ) );
+	}
+
+	/**
+	 * Whether a download is an SVG document: its root element is <svg>, and it is not a raster image.
+	 *
+	 * Decided on the bytes, not the URL or the name, so an HTML error page served
+	 * at logo.svg still reports as not_an_image through the normal path.
+	 *
+	 * @param string      $tmp           Downloaded temp file.
+	 * @param string|null $detected_mime Mime from wp_get_image_mime()/fileinfo.
+	 * @return bool
+	 */
+	public static function is_svg_download( $tmp, $detected_mime ) {
+		// The bytes decide, not a sniffed mime: getimagesize() reads an SVG with an
+		// XBM-style comment as image/xbm, and no raster format starts with <svg.
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- local temp file.
+		$head = is_file( $tmp ) ? file_get_contents( $tmp, false, null, 0, WPVibe_SVG_Sanitizer::MAX_BYTES + 1 ) : '';
+		return WPVibe_SVG_Sanitizer::looks_like_svg( (string) $head );
+	}
+
+	/**
+	 * unfiltered_upload skips WordPress's type gate only for real raster bytes, so an
+	 * SVG the detector missed can never ride it into the media library unsanitized.
+	 *
+	 * @param string $tmp Downloaded temp file.
+	 * @return bool
+	 */
+	public static function may_skip_type_gate( $tmp ) {
+		$raster = array( 'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif', 'image/heic' );
+		return in_array( wp_get_image_mime( $tmp ), $raster, true ) && ! self::is_svg_download( $tmp, null ) && current_user_can( 'unfiltered_upload' );
+	}
+
+	/**
+	 * A safe attachment name for an SVG: one .svg extension, no other dots.
+	 *
+	 * @param string $filename Name from the title or the URL.
+	 * @return string
+	 */
+	public static function svg_filename( $filename ) {
+		$base = preg_replace( '/\.svg$/i', '', trim( (string) $filename ) );
+		$base = trim( (string) preg_replace( '/[^A-Za-z0-9_-]+/', '-', $base ), '-' );
+		if ( '' === $base ) {
+			$base = 'image';
+		}
+		return substr( $base, 0, 100 ) . '.svg';
+	}
+
+	/**
+	 * Sanitize a downloaded SVG and add it to the media library.
+	 *
+	 * The SVG type is allowed only for this one file: a wp_check_filetype_and_ext
+	 * filter vouches for exactly this temp path and name, is added around the
+	 * sideload and removed in `finally`. upload_mimes is deliberately left alone,
+	 * so no other upload (wp-admin, another request, or a nested sideload from an
+	 * add_attachment hook) ever sees SVG allowed.
+	 *
+	 * @param string $tmp      Downloaded temp file (overwritten with the clean SVG).
+	 * @param string $filename Name from the title or the URL.
+	 * @param int    $post_id  Parent post, 0 for none.
+	 * @param string $title    Attachment title.
+	 * @return array{attachment_id:int,sanitized:array}|WP_Error
+	 */
+	public static function sideload_svg( $tmp, $filename, $post_id, $title ) {
+		if ( ! current_user_can( 'upload_files' ) ) {
+			return new WP_Error( 'wpvibe_missing_capability', __( 'The connected account cannot upload files (upload_files).', 'vibe-ai' ), WPVibe_Error_Contract::data( 'capability_role', false, array( 'status' => rest_authorization_required_code(), 'capability' => 'upload_files' ) ) );
+		}
+		$size = is_file( $tmp ) ? (int) filesize( $tmp ) : 0;
+		if ( $size > WPVibe_SVG_Sanitizer::MAX_BYTES ) {
+			/* translators: %d: size limit in KB */
+			return WPVibe_SVG_Sanitizer::refuse( sprintf( __( 'The SVG is larger than the %d KB limit for SVG files.', 'vibe-ai' ), (int) ( WPVibe_SVG_Sanitizer::MAX_BYTES / 1024 ) ) );
+		}
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- local temp file.
+		$result = WPVibe_SVG_Sanitizer::sanitize( (string) file_get_contents( $tmp ) );
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+		$fs = wpvibe_fs();
+		if ( ! $fs || ! $fs->put_contents( $tmp, $result['content'], FS_CHMOD_FILE ) ) {
+			return new WP_Error( 'upload_failed', __( 'Failed to upload image: the sanitized SVG could not be written to a temporary file.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) ) );
+		}
+
+		$name  = self::svg_filename( $filename );
+		$vouch = function ( $data, $file, $checked_name ) use ( $tmp, $name ) {
+			if ( $file === $tmp && $checked_name === $name ) {
+				return array( 'ext' => 'svg', 'type' => 'image/svg+xml', 'proper_filename' => false );
+			}
+			return $data;
+		};
+		add_filter( 'wp_check_filetype_and_ext', $vouch, 99, 3 );
+		try {
+			$rejection = self::check_sideload_file( $tmp, $name, false, 'image/svg+xml' );
+			$id        = is_wp_error( $rejection ) ? $rejection : media_handle_sideload( array( 'name' => $name, 'tmp_name' => $tmp ), $post_id, $title );
+		} finally {
+			remove_filter( 'wp_check_filetype_and_ext', $vouch, 99 );
+		}
+		if ( is_wp_error( $rejection ) ) {
+			return $rejection;
+		}
+		if ( is_wp_error( $id ) ) {
+			return self::sideload_failure_error( $id );
+		}
+		self::store_svg_metadata( (int) $id, $result['content'] );
+
+		$sanitized = array( 'removed' => $result['removed'], 'changed' => $result['changed'] );
+		$note      = WPVibe_SVG_Sanitizer::summary( $result, 'media' );
+		if ( '' !== $note ) {
+			$sanitized['note'] = $note;
+		}
+		return array( 'attachment_id' => (int) $id, 'sanitized' => $sanitized );
+	}
+
+	/**
+	 * Give an SVG attachment the width, height and full size WordPress reads for images.
+	 *
+	 * Core generates no dimensions for SVG, so wp_get_attachment_image() (and
+	 * set_post_thumbnail(), which checks it) would render nothing. A 'full' size
+	 * pointing at the file itself lets image_downsize() serve it with its real
+	 * dimensions, without a site-wide image_downsize filter.
+	 *
+	 * @param int    $attachment_id Attachment ID.
+	 * @param string $svg           Sanitized SVG markup.
+	 */
+	public static function store_svg_metadata( $attachment_id, $svg ) {
+		$dims = WPVibe_SVG_Sanitizer::dimensions( $svg );
+		$file = get_attached_file( $attachment_id );
+		if ( ! $dims || ! $file ) {
+			return;
+		}
+		$meta = wp_get_attachment_metadata( $attachment_id );
+		$meta = is_array( $meta ) ? $meta : array();
+
+		$meta['width']  = $dims[0];
+		$meta['height'] = $dims[1];
+		if ( empty( $meta['file'] ) ) {
+			$meta['file'] = _wp_relative_upload_path( $file );
+		}
+		$meta['sizes'] = array(
+			'full' => array(
+				'file'      => wp_basename( $file ),
+				'width'     => $dims[0],
+				'height'    => $dims[1],
+				'mime-type' => 'image/svg+xml',
+			),
+		);
+		wp_update_attachment_metadata( $attachment_id, $meta );
 	}
 
 	// ------------------------------------------------------------------
