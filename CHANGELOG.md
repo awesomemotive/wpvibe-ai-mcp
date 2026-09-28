@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.19.1] - 2026-09-28
+
+- Fix: Opening a draft theme preview can no longer crash wp-admin. On some hosts a preview could run out of memory on every admin page until the browser's site data was cleared, and a broken draft theme could take the whole admin area down with it.
+- Fix: Sites whose server garbles the standard login header now connect. WPVibe falls back to its own copy of the header when WordPress can't read the standard one.
+- Fix: Content search answers instead of refusing. Searching a field a post doesn't have returns 0 matches, list-type fields are searched as text, and short field names like "title" and "content" work.
+- Fix: Content edits inside page builder data (for example Elementor) and block settings now escape quotes and special characters safely instead of being refused.
+- Improvement: WPVibe can read basic site settings such as the site address, home address, active theme and active plugins. Changing them is still blocked.
+- Improvement: When a site has never saved an Application Password, WPVibe now says so, so the connection message can name the cause and offer a fresh connect link.
+- Improvement: The connection check no longer claims WordPress accepted the Application Password when it only confirmed the header arrived.
+- Improvement: The WPVibe admin page links to reviews on WordPress.org.
+
 ## [1.19.0] - 2026-09-24
 
 - Feature: WPVibe can now add SVG images to your Media Library and write SVG files in a draft theme. Every SVG is cleaned before it is saved, including for administrators: scripts, event handlers, links to other sites, embedded web pages and styles that could load or run anything are removed. A file that cannot be cleaned safely is refused, with a suggestion to use PNG or WebP instead.

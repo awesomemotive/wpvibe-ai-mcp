@@ -24,6 +24,8 @@
  * - filesystem              file read/write/copy failed
  * - host_environment        hosting configuration blocks it (DISALLOW_FILE_*,
  *                           disabled functions, chroot, permissions)
+ * - auth_not_received       nobody authenticated and core's 401 carried no
+ *                           contract (WPVibe_Auth_Diagnostics adds it)
  *
  * @package WPVibe
  */
@@ -80,7 +82,23 @@ class WPVibe_Error_Contract {
 			'auth_fallback_seen'      => defined( 'WPVIBE_AUTH_FALLBACK_SEEN' ) ? (bool) WPVIBE_AUTH_FALLBACK_SEEN : null,
 			'auth_fallback_applied'   => defined( 'WPVIBE_AUTH_FALLBACK_APPLIED' ) ? (bool) WPVIBE_AUTH_FALLBACK_APPLIED : null,
 			'app_passwords_available' => function_exists( 'wp_is_application_passwords_available' ) ? (bool) wp_is_application_passwords_available() : null,
+			'app_passwords_in_use'    => self::app_passwords_in_use(),
 			'is_ssl'                  => is_ssl(),
 		);
+	}
+
+	/**
+	 * Whether the site has ever kept an Application Password (core's
+	 * using_application_passwords flag). While it is false, core skips
+	 * Application Password auth entirely, so every credential answers a bare
+	 * 401 with no reject code. One site-wide boolean: nothing is enumerated.
+	 *
+	 * @return bool|null Null on WordPress without WP_Application_Passwords::is_in_use().
+	 */
+	public static function app_passwords_in_use() {
+		if ( ! class_exists( 'WP_Application_Passwords' ) || ! method_exists( 'WP_Application_Passwords', 'is_in_use' ) ) {
+			return null;
+		}
+		return (bool) WP_Application_Passwords::is_in_use();
 	}
 }

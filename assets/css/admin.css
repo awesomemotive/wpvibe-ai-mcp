@@ -427,6 +427,29 @@
 	cursor: not-allowed;
 }
 
+/* Social proof line (above footer) */
+.wpvibe-social-proof {
+	font-size: 13px;
+	color: rgba(0, 0, 0, 0.4);
+	margin: 0 0 12px;
+}
+
+.wpvibe-social-proof-stars {
+	color: #f59e0b;
+	letter-spacing: 1px;
+	margin-right: 4px;
+}
+
+.wpvibe-social-proof a {
+	color: rgba(0, 0, 0, 0.55);
+	text-decoration: none;
+	transition: color 0.2s;
+}
+
+.wpvibe-social-proof a:hover {
+	color: #2563eb;
+}
+
 /* Footer */
 .wpvibe-footer {
 	display: flex;

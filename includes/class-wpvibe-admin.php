@@ -442,6 +442,14 @@ class WPVibe_Admin {
 					<?php echo WPVibe_Uninstall_Notice::settings_html(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped piecewise in settings_html(). ?>
 				<?php endif; ?>
 
+				<!-- Social proof: evergreen, so no review count or rating number. -->
+				<p class="wpvibe-social-proof">
+					<span class="wpvibe-social-proof-stars" aria-hidden="true">&#9733;&#9733;&#9733;&#9733;&#9733;</span>
+					<?php esc_html_e( 'Loved by WordPress users', 'vibe-ai' ); ?>
+					<span class="wpvibe-footer-sep">&middot;</span>
+					<a href="<?php echo esc_url( 'https://wordpress.org/support/plugin/vibe-ai/reviews/' ); ?>" target="_blank" rel="noopener"><?php esc_html_e( 'Read the reviews on WordPress.org', 'vibe-ai' ); ?></a>
+				</p>
+
 				<!-- Footer links -->
 				<div class="wpvibe-footer">
 					<a href="<?php echo esc_url( $footer_home ); ?>" target="_blank" rel="noopener"><?php esc_html_e( 'wpvibe.ai', 'vibe-ai' ); ?></a>

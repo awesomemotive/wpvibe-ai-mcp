@@ -40,6 +40,10 @@ class WPVibe_Auth_Diagnostics {
 		// Core returns the stored app-password error from rest_authentication_errors at
 		// priority 90 (rest_application_password_check_errors); merge after it.
 		add_filter( 'rest_authentication_errors', array( __CLASS__, 'enrich_rest_error' ), PHP_INT_MAX );
+		// A 401 with no core reject code (rest_not_logged_in from a core route) has no
+		// rejection to enrich above, yet it is exactly the 401 a site that has never kept
+		// an Application Password produces. Give it the auth facts too.
+		add_filter( 'rest_request_after_callbacks', array( __CLASS__, 'enrich_unauthenticated_401' ), PHP_INT_MAX );
 	}
 
 	/**
@@ -142,6 +146,38 @@ class WPVibe_Auth_Diagnostics {
 		$detail       = self::$detail;
 		self::$detail = null; // never let a verdict outlive its request in persistent runtimes
 		return self::enrich( $result, $detail );
+	}
+
+	/**
+	 * rest_request_after_callbacks: attach the auth facts to a 401 that carries no
+	 * contract yet (core's rest_not_logged_in, rest_forbidden, ...). Code and
+	 * message stay core's; an existing contract is never overwritten.
+	 *
+	 * @param mixed $response Response or WP_Error from the route.
+	 * @return mixed
+	 */
+	public static function enrich_unauthenticated_401( $response ) {
+		if ( ! is_wp_error( $response ) || ! self::is_wpvibe_request() || ( function_exists( 'is_user_logged_in' ) && is_user_logged_in() ) ) {
+			return $response;
+		}
+		$code = $response->get_error_code();
+		$data = $response->get_error_data( $code );
+		if ( ! is_array( $data ) || 401 !== (int) ( $data['status'] ?? 0 ) || isset( $data['cause'] ) ) {
+			return $response;
+		}
+		$response->add_data(
+			array_merge(
+				$data,
+				array(
+					'cause'         => 'auth_not_received',
+					'retry_ok'      => false,
+					'user_is_admin' => false,
+				),
+				WPVibe_Error_Contract::auth_diagnostics()
+			),
+			$code
+		);
+		return $response;
 	}
 
 	/**

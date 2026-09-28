@@ -27,22 +27,38 @@ class WPVibe_Auth_Fallback {
 	const REAL_KEYS = array( 'HTTP_AUTHORIZATION', 'REDIRECT_HTTP_AUTHORIZATION', 'PHP_AUTH_USER', 'PHP_AUTH_PW' );
 
 	/**
-	 * Whether the server already supplied credentials by any normal route.
+	 * Whether any normal route delivered something credential-shaped.
 	 *
-	 * All four are checked, not just the header: server-level htpasswd leaves
-	 * HTTP_AUTHORIZATION absent while setting PHP_AUTH_*, and overwriting that
-	 * would break protected staging sites.
+	 * This is what the 401 diagnostics and the connectivity check report as
+	 * "header seen": it records that the header arrived, not that it worked.
 	 *
 	 * @param array $server $_SERVER snapshot.
 	 * @return bool
 	 */
-	public static function has_server_credentials( array $server ) {
+	public static function header_seen( array $server ) {
 		foreach ( self::REAL_KEYS as $key ) {
 			if ( ! empty( $server[ $key ] ) ) {
 				return true;
 			}
 		}
 		return false;
+	}
+
+	/**
+	 * Whether the server already supplied usable credentials.
+	 *
+	 * Core reads only PHP_AUTH_USER and PHP_AUTH_PW, filled in by the server or
+	 * by wp_populate_basic_auth_from_authorization_header() before plugins load.
+	 * An Authorization header core could not parse (comma-folded, another
+	 * scheme) leaves them unset, so it must not block the fallback. Server-level
+	 * htpasswd sets both, so protected staging sites are still left alone.
+	 *
+	 * @param array $server $_SERVER snapshot.
+	 * @return bool
+	 */
+	public static function has_server_credentials( array $server ) {
+		// isset(), as core checks: a password of "0" or "" is still the server's.
+		return isset( $server['PHP_AUTH_USER'], $server['PHP_AUTH_PW'] );
 	}
 
 	/**
@@ -94,7 +110,7 @@ class WPVibe_Auth_Fallback {
 	public static function apply() {
 		$server = wp_unslash( $_SERVER ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
 
-		define( 'WPVIBE_AUTH_HEADER_SEEN', self::has_server_credentials( $server ) );
+		define( 'WPVIBE_AUTH_HEADER_SEEN', self::header_seen( $server ) );
 		define( 'WPVIBE_AUTH_FALLBACK_SEEN', ! empty( $server[ self::FALLBACK_KEY ] ) );
 
 		$applied = false;

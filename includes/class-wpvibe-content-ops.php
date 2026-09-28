@@ -18,6 +18,13 @@ class WPVibe_Content_Ops {
 	/** Post columns this tool is allowed to patch. Other columns are scalars or structural. */
 	const EDITABLE_POST_FIELDS = array( 'post_content', 'post_excerpt', 'post_title' );
 
+	/** Short names the AI sends for the editable post fields. */
+	const POST_FIELD_ALIASES = array(
+		'content' => 'post_content',
+		'excerpt' => 'post_excerpt',
+		'title'   => 'post_title',
+	);
+
 	// ------------------------------------------------------------------
 	// Normalization — ported from the MCP file tools' normalize.ts so a
 	// content edit applied via rest_api gets the same resilience to Claude's
@@ -309,6 +316,7 @@ class WPVibe_Content_Ops {
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public function edit( $type, $args, $old_content, $new_content, $replace_all = false, $whole_word = false ) {
+		$args    = self::resolve_field_alias( $type, $args );
 		$current = $this->load( $type, $args );
 		if ( is_wp_error( $current ) ) {
 			return $current;
@@ -323,6 +331,21 @@ class WPVibe_Content_Ops {
 
 		$replaced = 0;
 		$updated  = $this->compute_replacement( $current, $old_content, $new_content, (bool) $replace_all, (bool) $whole_word, $replaced );
+
+		// Text inside a JSON value or block-comment attributes must be escaped
+		// for that context. When the raw edit misses or would corrupt the value,
+		// retry once with the escaped form; the same corruption check decides.
+		$context     = $this->escape_context( $type, $args, $current );
+		$escaped_for = null;
+		if ( is_wp_error( $updated ) ) {
+			if ( null !== $context && 'no_match' === $updated->get_error_code() ) {
+				$retry = $this->escaped_retry( $context, $type, $args, $current, $old_content, $new_content, (bool) $replace_all, (bool) $whole_word, true );
+				if ( null !== $retry ) {
+					list( $updated, $replaced ) = $retry;
+					$escaped_for = $context;
+				}
+			}
+		}
 		if ( is_wp_error( $updated ) ) {
 			if ( is_string( $current ) && in_array( $updated->get_error_code(), array( 'no_match', 'multiple_matches' ), true ) ) {
 				$this->augment_match_error( $updated, $current, $old_content );
@@ -330,22 +353,14 @@ class WPVibe_Content_Ops {
 			return $updated;
 		}
 
-		// A replace that breaks a JSON value (builder layouts like _elementor_data)
-		// would silently destroy the whole structure on save.
-		if ( in_array( $type, array( 'meta', 'option' ), true ) && $this->json_broken_by_edit( $current, $updated ) ) {
-			return new WP_Error(
-				'json_corrupted',
-				__( 'This value is JSON and the replacement would corrupt it (the result no longer parses). Inside JSON, quotes and slashes must stay escaped (\" and \/): take old_content verbatim from content/search and escape new_content the same way. No change was made.', 'vibe-ai' ),
-				WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422 ) )
-			);
-		}
-
-		if ( 'post' === $type && 'post_content' === (string) ( $args['field'] ?? '' ) && $this->content_blocks_broken_by_edit( $current, $updated ) ) {
-			return new WP_Error(
-				'block_json_corrupted',
-				__( 'This edit would damage the block markup: after the replacement a block\'s JSON attributes no longer parse, or the `<!-- wp:` opening-delimiter prefix of a block is malformed (a dropped brace/space, a bad prefix, or an unbalanced closer). Inside a block comment (<!-- wp:... -->) the attribute JSON and the delimiter prefix must stay intact and escaped exactly as stored; take old_content verbatim from content/search and mirror its escaping in new_content. This checks block-attribute JSON and delimiter-prefix integrity; it does not verify that otherwise well-formed markup is semantically correct. No change was made.', 'vibe-ai' ),
-				WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422 ) )
-			);
+		$corrupted = $this->corruption_error( $type, $args, $current, $updated );
+		if ( null !== $corrupted ) {
+			$retry = null === $context || null !== $escaped_for ? null : $this->escaped_retry( $context, $type, $args, $current, $old_content, $new_content, (bool) $replace_all, (bool) $whole_word, false );
+			if ( null === $retry ) {
+				return $corrupted;
+			}
+			list( $updated, $replaced ) = $retry;
+			$escaped_for = $context;
 		}
 
 		$stored = $this->store( $type, $args, $updated );
@@ -396,6 +411,12 @@ class WPVibe_Content_Ops {
 			$response['match_mode'] = 'whitespace_lenient';
 			$response['message']   .= ' ' . __( 'old_content matched only after allowing whitespace differences; verify the result reads as intended.', 'vibe-ai' );
 		}
+		if ( null !== $escaped_for ) {
+			$response['escaped_for'] = $escaped_for;
+			$response['message']    .= ' ' . ( 'json' === $escaped_for
+				? __( 'The text sits inside a JSON value, so it was JSON-escaped (quotes, backslashes, newlines) before writing; the stored JSON still parses and decodes to the text you sent.', 'vibe-ai' )
+				: __( 'The text sits inside block-comment attributes, so it was escaped the way WordPress serializes block attributes (\\u0022 for quotes, \\u002d\\u002d for --) before writing; the block still parses and its attribute decodes to the text you sent.', 'vibe-ai' ) );
+		}
 		if ( false === $verbatim ) {
 			$response['stored_verbatim'] = false;
 			$response['message']         = __( 'Content updated, but the site modified the saved value (a filter such as kses or a security plugin altered it). Your copy of this value is now stale; re-read it with content/search before making further edits.', 'vibe-ai' );
@@ -416,12 +437,21 @@ class WPVibe_Content_Ops {
 			return new WP_Error( 'empty_pattern', __( 'Search pattern cannot be empty.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
 		}
 
+		$args    = self::resolve_field_alias( $type, $args );
 		$current = $this->load( $type, $args );
+		// A meta key the post doesn't have simply holds no matches.
+		if ( is_wp_error( $current ) && 'meta_not_found' === $current->get_error_code() ) {
+			$current = '';
+		}
 		if ( is_wp_error( $current ) ) {
 			return $current;
 		}
+		// Arrays/objects are searched as their JSON text (read-only; edit still refuses them).
 		if ( ! is_string( $current ) ) {
-			return new WP_Error( 'not_text', __( 'Stored value is not searchable as text (it is an array or object).', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 422 ) ) );
+			$current = wp_json_encode( $current, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
+			if ( false === $current ) {
+				return new WP_Error( 'not_text', __( 'Stored value is not searchable as text (it could not be encoded as JSON).', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 422 ) ) );
+			}
 		}
 
 		$result = $this->find_matches( $current, $pattern, (bool) $case_sensitive, max( 1, (int) $max_results ) );
@@ -572,6 +602,14 @@ class WPVibe_Content_Ops {
 	// ------------------------------------------------------------------
 	// Internal: load / store / labels.
 	// ------------------------------------------------------------------
+
+	/** Map a short post field name (content/title/excerpt) to its column. */
+	private static function resolve_field_alias( $type, $args ) {
+		if ( 'post' === $type && isset( self::POST_FIELD_ALIASES[ (string) ( $args['field'] ?? '' ) ] ) ) {
+			$args['field'] = self::POST_FIELD_ALIASES[ (string) $args['field'] ];
+		}
+		return $args;
+	}
 
 	/** @return mixed|WP_Error Current stored value, or an error. */
 	private function load( $type, $args ) {
@@ -752,6 +790,124 @@ class WPVibe_Content_Ops {
 			return false;
 		}
 		return null === json_decode( $updated );
+	}
+
+	/** The json_corrupted / block_json_corrupted refusal for this edit, or null when the result is intact. */
+	private function corruption_error( $type, $args, $current, $updated ) {
+		// A replace that breaks a JSON value (builder layouts like _elementor_data)
+		// would silently destroy the whole structure on save.
+		if ( in_array( $type, array( 'meta', 'option' ), true ) && $this->json_broken_by_edit( $current, $updated ) ) {
+			return new WP_Error(
+				'json_corrupted',
+				__( 'This value is JSON and the replacement would corrupt it (the result no longer parses), even after JSON-escaping new_content. Inside JSON, quotes and slashes must stay escaped (\" and \/): take old_content verbatim from content/search and replace only text inside a string value. No change was made.', 'vibe-ai' ),
+				WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422 ) )
+			);
+		}
+
+		if ( 'post' === $type && 'post_content' === (string) ( $args['field'] ?? '' ) && $this->content_blocks_broken_by_edit( $current, $updated ) ) {
+			return new WP_Error(
+				'block_json_corrupted',
+				__( 'This edit would damage the block markup: after the replacement a block\'s JSON attributes no longer parse, or the `<!-- wp:` opening-delimiter prefix of a block is malformed (a dropped brace/space, a bad prefix, or an unbalanced closer). Inside a block comment (<!-- wp:... -->) the attribute JSON and the delimiter prefix must stay intact and escaped exactly as stored; take old_content verbatim from content/search and mirror its escaping in new_content. This checks block-attribute JSON and delimiter-prefix integrity; it does not verify that otherwise well-formed markup is semantically correct. No change was made.', 'vibe-ai' ),
+				WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422 ) )
+			);
+		}
+		return null;
+	}
+
+	/** 'json' for a JSON meta/option value, 'block' for block-markup post_content, else null. */
+	private function escape_context( $type, $args, $current ) {
+		if ( ! is_string( $current ) ) {
+			return null;
+		}
+		if ( in_array( $type, array( 'meta', 'option' ), true ) ) {
+			$trimmed = ltrim( $current );
+			if ( '' !== $trimmed && ( '[' === $trimmed[0] || '{' === $trimmed[0] ) && null !== json_decode( $current ) ) {
+				return 'json';
+			}
+			return null;
+		}
+		if ( 'post' === $type && 'post_content' === (string) ( $args['field'] ?? '' ) && preg_match( '/<!--\s+wp:/', $current ) ) {
+			return 'block';
+		}
+		return null;
+	}
+
+	/**
+	 * Escape text as the inside of a JSON string for the given context. JSON
+	 * mirrors the stored value's slash/unicode style; block matches core's
+	 * serialize_block_attributes(). Null when the text cannot be encoded.
+	 */
+	private static function escape_for_context( $context, $text, $current ) {
+		if ( 'block' === $context ) {
+			$enc = json_encode( (string) $text, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
+			if ( false === $enc ) {
+				return null;
+			}
+			return str_replace(
+				array( '--', '<', '>', '&', '\\"' ),
+				array( '\\u002d\\u002d', '\\u003c', '\\u003e', '\\u0026', '\\u0022' ),
+				substr( $enc, 1, -1 )
+			);
+		}
+		$flags = 0;
+		if ( false === strpos( $current, '\\/' ) && false !== strpos( $current, '/' ) ) {
+			$flags |= JSON_UNESCAPED_SLASHES;
+		}
+		if ( preg_match( '/[\x80-\xff]/', $current ) ) {
+			$flags |= JSON_UNESCAPED_UNICODE;
+		}
+		$enc = json_encode( (string) $text, $flags );
+		return false === $enc ? null : substr( $enc, 1, -1 );
+	}
+
+	/**
+	 * One retry with new_content (and, after a miss, old_content) escaped for
+	 * its context. Returns array( updated, replaced ) when the escaped edit
+	 * applies and passes the same corruption check, else null.
+	 */
+	private function escaped_retry( $context, $type, $args, $current, $old_content, $new_content, $replace_all, $whole_word, $escape_old ) {
+		$old     = self::desanitize( (string) $old_content );
+		$new     = self::strip_trailing_whitespace( self::desanitize( (string) $new_content ) );
+		$esc_new = self::escape_for_context( $context, $new, $current );
+		$esc_old = $escape_old ? self::escape_for_context( $context, $old, $current ) : $old;
+		if ( null === $esc_new || null === $esc_old || ( $esc_new === $new && $esc_old === $old ) ) {
+			return null;
+		}
+		if ( $escape_old && $esc_old === $old ) {
+			return null; // Escaping old changes nothing; the miss stands.
+		}
+
+		// In block markup, escaped text belongs only inside a block's opening
+		// comment; if any match lies in HTML, the escapes would show on the page.
+		if ( 'block' === $context ) {
+			$hits = preg_match_all( '/' . self::match_lenient_pattern( $esc_old ) . '/u', $current, $m, PREG_OFFSET_CAPTURE );
+			if ( ! $hits ) {
+				return null;
+			}
+			preg_match_all( '/<!--\s+wp:.*?-->/s', $current, $d, PREG_OFFSET_CAPTURE );
+			foreach ( $m[0] as $hit ) {
+				$start  = $hit[1];
+				$end    = $start + strlen( $hit[0] );
+				$inside = false;
+				foreach ( $d[0] as $delim ) {
+					if ( $start >= $delim[1] && $end <= $delim[1] + strlen( $delim[0] ) ) {
+						$inside = true;
+						break;
+					}
+				}
+				if ( ! $inside ) {
+					return null;
+				}
+			}
+		}
+
+		$this->last_match_mode = null;
+		$replaced = 0;
+		$updated  = $this->compute_replacement( $current, $esc_old, $esc_new, $replace_all, $whole_word, $replaced );
+		if ( is_wp_error( $updated ) || null !== $this->corruption_error( $type, $args, $current, $updated ) ) {
+			return null;
+		}
+		return array( $updated, $replaced );
 	}
 
 	/**

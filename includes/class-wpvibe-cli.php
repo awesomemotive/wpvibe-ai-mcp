@@ -324,10 +324,18 @@ class WPVibe_CLI {
 
 	const DEFAULT_ROLES = array( 'administrator', 'editor', 'author', 'contributor', 'subscriber' );
 
-	// Write-blocked options that are safe to READ (security audits need them).
+	// Write-blocked options that are safe to READ (site identity and security audits need them).
 	const READABLE_BLOCKED_OPTIONS = array(
 		'users_can_register',
 		'default_role',
+		'siteurl',
+		'home',
+		'admin_email',
+		'template',
+		'stylesheet',
+		'active_plugins',
+		'db_version',
+		'initial_db_version',
 		'wpvibe_self_update_state',
 		'wpvibe_detached_*',
 	);

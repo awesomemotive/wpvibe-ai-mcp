@@ -9,6 +9,11 @@
  * never run. With the cookie, the draft theme is active everywhere the
  * authenticated admin navigates, so meta boxes for draft-defined fields
  * render correctly and save_post can persist them.
+ *
+ * On wp-admin the cookie only applies to the screens the field API needs
+ * (see ADMIN_SCREENS). Everywhere else in wp-admin runs the live theme, so a
+ * broken draft functions.php can never lock the admin out of Plugins, Themes
+ * or the dashboard (#604).
  */
 
 defined( 'ABSPATH' ) || exit;
@@ -18,8 +23,21 @@ class WPVibe_Preview {
 	const COOKIE_NAME = 'wpvibe_preview';
 	const STOP_PARAM  = 'wpvibe_stop_preview';
 
+	/**
+	 * wp-admin screens where the cookie still swaps in the draft theme: the
+	 * post editor (meta boxes render, save_post persists draft-defined
+	 * fields) and the WPVibe settings page plus its options.php save.
+	 */
+	const ADMIN_SCREENS = array( 'post.php', 'post-new.php', 'options-general.php', 'options.php' );
+
 	private static $instance = null;
 	private $preview_token   = null;
+
+	// get_preview_slug() runs on every template/stylesheet filter call. A host
+	// hook that reads the theme while we check the capability would re-enter
+	// it (#604), so it resolves once per request and bails while resolving.
+	private static $resolving = false;
+	private $resolved         = null;
 
 	// The template/stylesheet filters fire many times per request; resolve the
 	// parent once instead of re-reading style.css on each.
@@ -57,33 +75,71 @@ class WPVibe_Preview {
 	/**
 	 * Resolve the active preview slug from query token OR cookie.
 	 *
-	 * The cookie path requires an authenticated admin with edit_themes —
-	 * a stolen cookie alone is inert.
+	 * The cookie path requires an authenticated admin with edit_themes, so a
+	 * stolen cookie alone is inert. The token is checked first: a stale or
+	 * forged cookie never reaches current_user_can().
 	 *
 	 * @return string|false Draft theme slug or false.
 	 */
 	private function get_preview_slug() {
-		$input = '';
+		if ( self::$resolving ) {
+			return false; // Re-entered from inside our own capability check.
+		}
+		if ( is_admin() && ! in_array( self::admin_screen(), self::ADMIN_SCREENS, true ) ) {
+			return false;
+		}
+		// End Preview runs on the live theme, so it works even when the
+		// draft's functions.php fatals.
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		if ( ! empty( $_GET[ self::STOP_PARAM ] ) ) {
+			return false;
+		}
 
+		$from_cookie = false;
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput.InputNotValidated -- Verified via hash_equals below.
 		if ( ! empty( $_GET[ self::COOKIE_NAME ] ) ) {
 			// phpcs:ignore WordPress.Security.NonceVerification.Recommended
 			$input = sanitize_text_field( wp_unslash( $_GET[ self::COOKIE_NAME ] ) );
-		} elseif ( ! empty( $_COOKIE[ self::COOKIE_NAME ] ) && current_user_can( 'edit_themes' ) ) {
-			$input = sanitize_text_field( wp_unslash( $_COOKIE[ self::COOKIE_NAME ] ) );
-		}
-
-		if ( '' === $input ) {
+		} elseif ( ! empty( $_COOKIE[ self::COOKIE_NAME ] ) ) {
+			$input       = sanitize_text_field( wp_unslash( $_COOKIE[ self::COOKIE_NAME ] ) );
+			$from_cookie = true;
+		} else {
 			return false;
 		}
 
+		$key = ( $from_cookie ? 'cookie:' : 'query:' ) . $input;
+		if ( null !== $this->resolved && $this->resolved['key'] === $key ) {
+			return $this->resolved['slug'];
+		}
+
+		self::$resolving = true;
+		try {
+			$slug = $this->resolve_preview_slug( $input, $from_cookie );
+		} finally {
+			self::$resolving = false;
+		}
+		$this->resolved = array(
+			'key'  => $key,
+			'slug' => $slug,
+		);
+		return $slug;
+	}
+
+	/**
+	 * @param string $input       Token from the query string or cookie.
+	 * @param bool   $from_cookie Whether $input came from the cookie.
+	 * @return string|false
+	 */
+	private function resolve_preview_slug( $input, $from_cookie ) {
 		$token  = get_option( 'wpvibe_preview_token' );
 		$issued = (int) get_option( 'wpvibe_preview_token_issued', 0 );
-		if ( ! $token || ! hash_equals( $token, $input ) ) {
-			return false;
-		}
 		// Tokens expire 24h after issue. Anyone who learns the URL can't use it forever.
-		if ( $issued > 0 && ( time() - $issued ) > DAY_IN_SECONDS ) {
+		$valid = $token && hash_equals( (string) $token, $input )
+			&& ! ( $issued > 0 && ( time() - $issued ) > DAY_IN_SECONDS );
+		if ( ! $valid ) {
+			if ( $from_cookie ) {
+				self::clear_cookie(); // Dead cookie; stop the browser sending it.
+			}
 			return false;
 		}
 
@@ -92,7 +148,16 @@ class WPVibe_Preview {
 			return false;
 		}
 
+		if ( $from_cookie && ! current_user_can( 'edit_themes' ) ) {
+			return false;
+		}
+
 		return $draft_slug;
+	}
+
+	/** @return string The wp-admin file being served, e.g. "post.php". */
+	private static function admin_screen() {
+		return isset( $GLOBALS['pagenow'] ) ? (string) $GLOBALS['pagenow'] : '';
 	}
 
 	public function swap_template( $template ) {
@@ -196,6 +261,7 @@ class WPVibe_Preview {
 		);
 		// Make the cookie visible to code running later in this same request.
 		$_COOKIE[ self::COOKIE_NAME ] = $query_token;
+		$this->resolved               = null;
 	}
 
 	/**
@@ -219,9 +285,15 @@ class WPVibe_Preview {
 
 	/**
 	 * Clear the preview cookie. Called by maybe_stop_preview, publish,
-	 * and delete paths.
+	 * delete, and plugin deactivation paths.
 	 */
 	public static function clear_cookie() {
+		// Forget the cached slug and drop the cookie for the rest of this
+		// request even when the Set-Cookie header can no longer be sent.
+		if ( null !== self::$instance ) {
+			self::$instance->resolved = null;
+		}
+		unset( $_COOKIE[ self::COOKIE_NAME ] );
 		if ( headers_sent() ) {
 			return;
 		}
@@ -237,7 +309,18 @@ class WPVibe_Preview {
 				'samesite' => 'Lax',
 			)
 		);
-		unset( $_COOKIE[ self::COOKIE_NAME ] );
+	}
+
+	/**
+	 * Plugin deactivation: expire the cookie in the deactivating browser and
+	 * retire the token, so a cookie left in any other browser (or one this
+	 * response couldn't reach, e.g. WP-CLI) is rejected on reactivation
+	 * before any capability check. get_preview_url mints a fresh token.
+	 */
+	public static function deactivate() {
+		delete_option( 'wpvibe_preview_token' );
+		delete_option( 'wpvibe_preview_token_issued' );
+		self::clear_cookie();
 	}
 
 	/**

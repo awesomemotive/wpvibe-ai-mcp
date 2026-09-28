@@ -4,7 +4,7 @@ Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.19.0
+Stable tag: 1.19.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -221,6 +221,16 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 
 == Changelog ==
 
+= 1.19.1 =
+* Fix: Opening a draft theme preview can no longer crash wp-admin. On some hosts a preview could run out of memory on every admin page until the browser's site data was cleared, and a broken draft theme could take the whole admin area down with it.
+* Fix: Sites whose server garbles the standard login header now connect. WPVibe falls back to its own copy of the header when WordPress can't read the standard one.
+* Fix: Content search answers instead of refusing. Searching a field a post doesn't have returns 0 matches, list-type fields are searched as text, and short field names like "title" and "content" work.
+* Fix: Content edits inside page builder data (for example Elementor) and block settings now escape quotes and special characters safely instead of being refused.
+* Improvement: WPVibe can read basic site settings such as the site address, home address, active theme and active plugins. Changing them is still blocked.
+* Improvement: When a site has never saved an Application Password, WPVibe now says so, so the connection message can name the cause and offer a fresh connect link.
+* Improvement: The connection check no longer claims WordPress accepted the Application Password when it only confirmed the header arrived.
+* Improvement: The WPVibe admin page links to reviews on WordPress.org.
+
 = 1.19.0 =
 * Feature: WPVibe can now add SVG images to your Media Library and write SVG files in a draft theme. Every SVG is cleaned before it is saved, including for administrators: scripts, event handlers, links to other sites, embedded web pages and styles that could load or run anything are removed. A file that cannot be cleaned safely is refused, with a suggestion to use PNG or WebP instead.
 * Improvement: SVG uploads are allowed for that one file only. Your site's own upload settings do not change, so SVG uploads in wp-admin work exactly as before.
@@ -363,21 +373,6 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 * Hardening: a content edit that would corrupt a page's block markup (leaving a block's settings unreadable, so the block vanishes from the editor) is now refused before it saves.
 * Hardening: WPVibe no longer creates a draft copy of a page builder parent theme (such as Divi or Avada), which would leave the builder unable to load. It points you to the correct path instead.
 * Fix: when a builder value cannot be edited directly, the guidance now names a command that actually works instead of one that dead-ends.
-
-= 1.15.0 =
-* Feature: your AI assistant can now manage navigation menus with WP-CLI style commands (menu create; menu item add-custom, add-post, add-term, update, and delete; menu location assign), no raw database access needed.
-* Feature: category and tag management commands (term create, term update, term delete). Deleting a term asks for your approval first and shows how many posts and child terms are affected.
-* Feature: theme mod set for changing theme customizer values, and rewrite structure for permalink settings.
-* Feature: user account commands (user create, user update, user set-role, user add-role, user remove-role) plus a full user meta family (get, list, add, update, delete).
-* Security: user changes that grant or remove administrator level access, or change a password or email address, always require your approval first. WPVibe also refuses to demote your connected account or the last user holding the administrator role.
-* Security: capability and session storage keys can never be written through user meta commands, closing off role changes that would bypass the permission system. Session hashes, application passwords, and plugin stored secrets (such as two factor seeds and API keys) are withheld from user command output.
-* Hardening: passwords set through user commands are hidden from approval screens, logs, and analytics.
-
-= 1.14.3 =
-* Fix: page builder compatibility. The live-refresh script no longer loads inside Divi, Elementor, Beaver Builder, Bricks, or Breakdance editing sessions, where it could interrupt the builder while your AI assistant was making changes (fixes the "Edit with Divi" endless spinner).
-* Hardening: approved plugin replacements re-verify the installed version and active state at execution, and refuse to run if the site changed after the approval was granted (for example an auto-update during the approval window).
-* Fix: clearer guidance when eval and eval-file commands are blocked. The denial now points to the code snippet workflow instead of a dead-end help lookup.
-* Hardening: the approval gate and the install handler now derive "is this replacing an existing plugin" from one shared check, so they can never disagree.
 
 = Older versions =
 WP.org caps the changelog at 5,000 words. For the full release history back to 1.0.0, see https://wpvibe.ai/changelog/

@@ -146,7 +146,7 @@ class WPVibe_Connection_Check {
 			return array( 'status' => 'unknown', 'summary' => sprintf( __( 'The loopback request returned HTTP %d without the plugin echo, so the Authorization header could not be tested here.', 'vibe-ai' ), (int) wp_remote_retrieve_response_code( $response ) ), 'next' => '' );
 		}
 		if ( ! empty( $seen['authorization'] ) ) {
-			return array( 'status' => 'passed', 'summary' => __( 'The Authorization header reaches WordPress on this host.', 'vibe-ai' ), 'next' => '' );
+			return array( 'status' => 'passed', 'summary' => __( 'The Authorization header arrives at WordPress on this host. This shows only that the header gets through, not that WordPress accepts the Application Password in it.', 'vibe-ai' ), 'next' => '' );
 		}
 		if ( ! empty( $seen['fallback'] ) ) {
 			return array( 'status' => 'limited', 'summary' => __( 'This host strips the standard Authorization header before it reaches WordPress. WPVibe sends its own fallback header, which does arrive, so the connection can still work.', 'vibe-ai' ), 'next' => __( 'No action needed. If a connection fails later, ask your host to pass the Authorization header through to PHP.', 'vibe-ai' ) );
