@@ -12,6 +12,10 @@ trait WPVibe_CLI_Db {
 	private $sr_incomplete = false;
 	private $sr_skipped_serialized = 0;
 	private $sr_timed_out = false;
+	/** Options search-replace may rewrite after approval (a domain migration); every other protected option is skipped. */
+	private static $sr_address_options = array( 'siteurl', 'home' );
+	/** Identity tables resolve_search_replace_tables dropped from scope. */
+	private $sr_protected_tables = array();
 
 
 
@@ -140,9 +144,9 @@ trait WPVibe_CLI_Db {
 			return $this->error_result( __( 'Multiple SQL statements are not allowed. Run one statement at a time.', 'vibe-ai' ) );
 		}
 
-		// MySQL executable comments (/*!...*/) run at the server; no legitimate
-		// query here needs them.
-		if ( false !== strpos( $sql, '/*!' ) ) {
+		// MySQL (/*!...*/) and MariaDB (/*M!...*/) executable comments run at
+		// the server; no legitimate query here needs them.
+		if ( preg_match( '#/\*[Mm]?!#', $sql ) ) {
 			return $this->error_result( __( 'Executable MySQL comments (/*! ... */) are not allowed.', 'vibe-ai' ) );
 		}
 
@@ -173,7 +177,7 @@ trait WPVibe_CLI_Db {
 			// SQL runs with no WP-level guardrails, so one approved statement
 			// against these targets is a site-takeover primitive (siteurl,
 			// active_plugins, wp_capabilities, the users table).
-			$privileged = $this->privileged_sql_target_error( $this->normalize_sql_for_gate( $sql ) );
+			$privileged = $this->privileged_sql_target_error( $sql );
 			if ( $privileged ) {
 				return $privileged;
 			}
@@ -268,85 +272,35 @@ trait WPVibe_CLI_Db {
 	}
 
 	/**
-	 * Hard-refuse mutating SQL aimed at identity/privilege state, even on the
-	 * approved path. $normalized is the uppercased, whitespace-collapsed
-	 * statement (comment tokens are rejected upstream, not stripped, so it may
-	 * still contain `#...` text). Judged on the WRITE TARGET table (not any
-	 * substring), so ordinary content whose prose contains "users"/"options" is
-	 * unaffected. Fails closed: an unparseable target on a privilege-shaped
-	 * statement is still refused.
+	 * Hard-refuse mutating SQL that names a protected identity table anywhere
+	 * in the statement, even on the approved path: the users, usermeta and
+	 * options tables (per-site and multisite forms), the network tables, and
+	 * the WPVibe audit log. Judged on the table, not on which column, row id,
+	 * LIKE, CONCAT or hex literal the statement uses, so no spelling of the
+	 * row gets past it. Identifiers are read with a quote-aware scan (string
+	 * literals are content, not tables), so prose that mentions a table name
+	 * inside a value is unaffected. Reads never reach this.
 	 */
-	private function privileged_sql_target_error( $normalized ) {
-		// DDL against an identity table is destruction/takeover in one statement
-		// (DROP/TRUNCATE/ALTER/RENAME). Anchored at the statement start, so a DDL
-		// keyword inside a value is not matched. The DML target regex below only
-		// covers UPDATE/INSERT/REPLACE/DELETE, so this is a separate guard.
-		if ( preg_match( '/^\s*(?:DROP\s+(?:TEMPORARY\s+)?TABLE(?:\s+IF\s+EXISTS)?|TRUNCATE(?:\s+TABLE)?|ALTER(?:\s+(?:ONLINE|OFFLINE|IGNORE))?\s+TABLE|RENAME\s+TABLE)\s+`?([A-Z0-9_{}.]+)`?/', $normalized, $dm ) ) {
-			if ( in_array( $this->sql_base_table( $dm[1] ), array( 'USERS', 'USERMETA', 'OPTIONS' ), true ) ) {
-				return $this->privileged_refusal( 'a protected identity table (schema change)' );
-			}
-			$extra = $this->sql_extra_target_tables( $normalized, $dm[1] );
-			if ( ! empty( $extra ) ) {
-				return $this->privileged_refusal( 'a protected identity table (' . strtolower( implode( ', ', $extra ) ) . ') later in the table list' );
-			}
+	private function privileged_sql_target_error( $sql ) {
+		$normalized = $this->normalize_sql_for_gate( $sql );
+		if ( preg_match( '/^\s*DROP\s+(?:DATABASE|SCHEMA)\b/', $normalized ) ) {
+			return $this->error_result( __( 'Refused: DROP DATABASE removes every table on the site, including accounts, settings and the WPVibe audit log. It is blocked even with approval.', 'vibe-ai' ) );
 		}
-
-		// INTO is optional for INSERT/REPLACE in MySQL (`INSERT tbl SET ...`),
-		// DELETE may carry a target/alias list before FROM (`DELETE u FROM t u`),
-		// and a table may be schema-qualified (`db.wp_options`); all three must
-		// be handled here or a write to wp_options/wp_users skips every guard.
-		if ( ! preg_match(
-			'/\b(?:UPDATE(?:\s+LOW_PRIORITY)?(?:\s+IGNORE)?|INSERT(?:\s+(?:LOW_PRIORITY|DELAYED|HIGH_PRIORITY))?(?:\s+IGNORE)?(?:\s+INTO)?|REPLACE(?:\s+(?:LOW_PRIORITY|DELAYED))?(?:\s+INTO)?|DELETE(?:\s+LOW_PRIORITY)?(?:\s+QUICK)?(?:\s+IGNORE)?(?:\s+[A-Z0-9_{}.,\s]+?)?\s+FROM)\s+`?([A-Z0-9_{}.]+)`?/',
-			$normalized,
-			$m
-		) ) {
+		// Dynamic SQL runs text the table scan cannot see.
+		if ( preg_match( '/^\s*(?:EXECUTE|PREPARE|DEALLOCATE)\b/', $normalized ) ) {
+			return $this->error_result( __( 'Refused: dynamic SQL (PREPARE / EXECUTE / EXECUTE IMMEDIATE) is not allowed. Run the statement itself.', 'vibe-ai' ) );
+		}
+		// Stored routines and events run a body the table scan never sees at CALL time.
+		if ( preg_match( '/^\s*(?:CALL\b|CREATE\s+(?:OR\s+REPLACE\s+)?(?:DEFINER\s*=\s*\S+\s+)?(?:AGGREGATE\s+)?(?:PROCEDURE|FUNCTION|EVENT)\b|ALTER\s+EVENT\b)/', $normalized ) ) {
+			return $this->error_result( __( 'Refused: stored procedures, functions and events (CREATE PROCEDURE / FUNCTION / EVENT, CALL) are not allowed through db query. Run the statement itself.', 'vibe-ai' ) );
+		}
+		$tables = $this->sql_protected_tables_named( $sql );
+		if ( empty( $tables ) ) {
 			return null;
 		}
-		$base = $this->sql_base_table( $m[1] );
-
-		// Every table the statement can touch, not only the first capture: a
-		// multi-table UPDATE or a cross-table DELETE can name a content table
-		// first and an identity table later (#74).
-		$extra = $this->sql_extra_target_tables( $normalized, $m[1] );
-		if ( ! empty( $extra ) ) {
-			return $this->privileged_refusal( 'a protected identity table (' . strtolower( implode( ', ', $extra ) ) . ') inside a multi-table statement; write it with the single-table commands instead' );
-		}
-
-		// wp_options: raw INSERT/REPLACE is refused wholesale (below); for
-		// UPDATE/DELETE, refuse a write naming a blocked option, a disguised
-		// option name, or a blanket write (no WHERE) that would touch every
-		// option including the blocked ones.
-		if ( 'OPTIONS' === $base ) {
-			// INSERT/REPLACE carry the option name in VALUES(...) where it cannot
-			// be bound to a column predicate, so a disguised name there could
-			// seed or overwrite a protected option and we cannot reliably tell
-			// the name literal from a value literal. Raw row inserts into
-			// wp_options are not a supported path (option add/update fire the
-			// right hooks and gate with a diff), so refuse them wholesale.
-			if ( preg_match( '/^\s*(?:INSERT|REPLACE)\b/', $normalized ) ) {
-				return $this->privileged_refusal( 'the options table via raw INSERT/REPLACE (use option add or option update)' );
-			}
-			// Name-obfuscation fail-closed: an `option_name = <literal>` predicate
-			// can disguise which row MySQL binds (backslash escapes, adjacent-
-			// literal concatenation, hex literals, or a non-ASCII byte inside the
-			// quotes) so a protected option reads as something else to the literal
-			// match below. Emulating MySQL's string grammar is the losing game
-			// #59 documents, so refuse the disguised shape; a plain literal name
-			// is unaffected and `option update` remains the supported path.
-			if ( $this->sql_option_name_obfuscated( $normalized ) ) {
-				return $this->privileged_refusal( 'the options table with a disguised option name (re-run option update with the plain name)' );
-			}
-			// Quote-tolerant of trailing spaces: MySQL's PAD SPACE collation
-			// resolves 'siteurl ' to the siteurl row, so a strpos for the
-			// exact-quoted name would miss the padded write it still performs.
-			foreach ( WPVibe_CLI::BLOCKED_OPTIONS as $name ) {
-				if ( $this->sql_names_option( $normalized, $name ) ) {
-					return $this->privileged_refusal( 'a protected option (' . $name . ')' );
-				}
-			}
-			// Builder design-system options: allowed, but not as an opaque raw
-			// blob write that skips the leaf-level change preview. Route to the
-			// commands that gate WITH a real diff.
+		if ( in_array( 'options', $tables, true ) ) {
+			// Builder design-system options have their own diff-previewing path.
+			$normalized = $this->normalize_sql_for_gate( $sql );
 			foreach ( WPVibe_CLI::GATED_OPTIONS as $name ) {
 				if ( $this->sql_names_option( $normalized, $name ) ) {
 					return $this->error_result( sprintf(
@@ -356,40 +310,251 @@ trait WPVibe_CLI_Db {
 					) );
 				}
 			}
-			$is_update_or_delete = (bool) preg_match( '/^\s*(?:UPDATE|DELETE)\b/', $normalized );
-			if ( $is_update_or_delete && ! preg_match( '/\bWHERE\b/', $normalized ) ) {
-				return $this->privileged_refusal( 'the options table without a WHERE clause' );
-			}
-			return null;
 		}
-
-		// The users table itself (row inserts, role/login/email changes).
-		if ( 'USERS' === $base ) {
-			return $this->privileged_refusal( 'the users table' );
-		}
-
-		// wp_usermeta: refuse only when the write concerns the capability/role map;
-		// ordinary user meta (last_name, session tokens the user owns) is fine.
-		if ( 'USERMETA' === $base
-			&& ( false !== strpos( $normalized, 'CAPABILITIES' ) || false !== strpos( $normalized, 'USER_LEVEL' ) )
-		) {
-			return $this->privileged_refusal( 'user capabilities or roles' );
-		}
-
-		return null;
+		return $this->privileged_refusal( $tables[0] );
 	}
 
 	/**
-	 * True when the normalized (uppercased) SQL names this option in a single- or
-	 * double-quoted literal, tolerating whitespace inside the quotes (the leading
-	 * \s* also refuses a genuinely-different leading-space row, which is harmless
-	 * over-refusal). KNOWN name-blind residual (pre-existing, approval-gated as
-	 * db_query_*, never an unapproved write, so acceptable): a name reached via
-	 * option_id, CONCAT(), hex/0x literals, a backtick-quoted `option_name`
-	 * column with a bare value, a LIKE pattern (WHERE option_name LIKE 'et_divi%'
-	 * mass-updates every gated Divi option at once), a trailing NBSP inside the
-	 * quotes, or REPLACE INTO / INSERT ... ON DUPLICATE KEY still evades this
-	 * string test. Fully parsing SQL is out of scope.
+	 * Protected tables the statement can write, as short keys (users,
+	 * usermeta, options, sitemeta, site, blogs, audit_log). For UPDATE,
+	 * DELETE, INSERT and REPLACE that is every table in the target clause
+	 * (before SET, before WHERE, after INTO), so a subquery that only reads
+	 * the users table in a WHERE stays allowed; for anything else (DDL,
+	 * CREATE VIEW/TRIGGER, LOAD DATA, WITH ...) it is every table named.
+	 * Scanned twice, with and without backslash escapes in literals, so a
+	 * server running NO_BACKSLASH_ESCAPES cannot turn a "literal" into live
+	 * identifiers; a double-quoted literal counts as a name (ANSI_QUOTES).
+	 */
+	private function sql_protected_tables_named( $sql ) {
+		global $wpdb;
+		$sql   = str_ireplace( '{prefix}', (string) $wpdb->prefix, (string) $sql );
+		$found = array();
+		foreach ( array( true, false ) as $backslash ) {
+			foreach ( $this->sql_write_target_zone( $this->sql_identifier_tokens( $sql, $backslash ) ) as $token ) {
+				$key = 'p' === $token[0] ? null : $this->protected_table_key( $token[1] );
+				if ( null !== $key && ! in_array( $key, $found, true ) ) {
+					$found[] = $key;
+				}
+			}
+		}
+		return $found;
+	}
+
+	/** The tokens of the statement's write-target clause (see sql_protected_tables_named). */
+	private function sql_write_target_zone( $tokens ) {
+		$first = '';
+		foreach ( $tokens as $t ) {
+			if ( 'w' === $t[0] ) {
+				$first = strtoupper( $t[1] );
+				break;
+			}
+			if ( 'p' !== $t[0] || '(' !== $t[1] ) {
+				return $tokens;
+			}
+		}
+		// WITH ...: the CTE bodies only read; judge the statement they feed.
+		if ( 'WITH' === $first ) {
+			$depth = 0;
+			$prev  = null;
+			foreach ( $tokens as $idx => $t ) {
+				if ( 'p' === $t[0] && '(' === $t[1] ) {
+					$depth++;
+				} elseif ( 'p' === $t[0] && ')' === $t[1] ) {
+					$depth = max( 0, $depth - 1 );
+				} elseif ( 0 === $depth && 'w' === $t[0] && ( null === $prev || '.' !== $prev[1] ) ) {
+					$w = strtoupper( $t[1] );
+					if ( 'SELECT' === $w ) {
+						return array();
+					}
+					if ( in_array( $w, array( 'UPDATE', 'DELETE', 'INSERT', 'REPLACE' ), true ) ) {
+						return $this->sql_write_target_zone( array_slice( $tokens, $idx ) );
+					}
+				}
+				$prev = $t;
+			}
+			return $tokens;
+		}
+		// Table maintenance (CHECK/ANALYZE/... TABLE) reads or rebuilds; it never
+		// changes a row. MariaDB's ANALYZE UPDATE/DELETE runs the statement, so
+		// only the TABLE form is exempt.
+		if ( in_array( $first, array( 'CHECK', 'CHECKSUM', 'ANALYZE', 'OPTIMIZE', 'REPAIR' ), true ) ) {
+			$words = array();
+			foreach ( $tokens as $t ) {
+				if ( 'w' === $t[0] && count( $words ) < 3 ) {
+					$words[] = strtoupper( $t[1] );
+				}
+			}
+			$form = array_slice( $words, 1 );
+			if ( isset( $form[0] ) && ( 'TABLE' === $form[0] || ( in_array( $form[0], array( 'NO_WRITE_TO_BINLOG', 'LOCAL' ), true ) && isset( $form[1] ) && 'TABLE' === $form[1] ) ) ) {
+				return array();
+			}
+			return $tokens;
+		}
+		// CREATE TABLE ... SELECT / LIKE only reads its source; views, triggers
+		// and routines fall through to every table named.
+		if ( 'CREATE' === $first ) {
+			$zone  = array();
+			$after = false;
+			$seen  = 0;
+			foreach ( $tokens as $t ) {
+				$word = 'w' === $t[0] ? strtoupper( $t[1] ) : null;
+				if ( ! $after ) {
+					if ( null !== $word && ++$seen > 3 ) {
+						return $tokens;
+					}
+					$after = 'TABLE' === $word;
+					continue;
+				}
+				if ( ( 'p' === $t[0] && '(' === $t[1] ) || in_array( $word, array( 'AS', 'SELECT', 'LIKE', 'IGNORE', 'REPLACE', 'WITH' ), true ) ) {
+					return $zone;
+				}
+				$zone[] = $t;
+			}
+			return $after ? $zone : $tokens;
+		}
+		$stops = array(
+			'UPDATE'  => array( 'SET' ),
+			'DELETE'  => array( 'WHERE', 'ORDER', 'LIMIT', 'RETURNING' ),
+			'INSERT'  => array( 'VALUES', 'VALUE', 'SELECT', 'SET', 'TABLE', 'WITH', 'PARTITION', '(' ),
+			'REPLACE' => array( 'VALUES', 'VALUE', 'SELECT', 'SET', 'TABLE', 'WITH', 'PARTITION', '(' ),
+		);
+		if ( ! isset( $stops[ $first ] ) ) {
+			return $tokens;
+		}
+		$zone    = array();
+		$depth   = 0;
+		$started = false;
+				$count   = count( $tokens );
+		for ( $idx = 0; $idx < $count; $idx++ ) {
+			$t = $tokens[ $idx ];
+			if ( ! $started ) {
+				$started = 'w' === $t[0] && strtoupper( $t[1] ) === $first;
+				continue;
+			}
+			$qualified = $idx > 0 && 'p' === $tokens[ $idx - 1 ][0] && '.' === $tokens[ $idx - 1 ][1];
+			// After a dot a keyword is a column name (x.set, x.where), never a clause.
+			$word = 'w' === $t[0] && ! $qualified ? strtoupper( $t[1] ) : ( 'p' === $t[0] && '.' !== $t[1] ? $t[1] : null );
+			if ( 0 === $depth && null !== $word && in_array( $word, $stops[ $first ], true ) ) {
+				return $zone;
+			}
+			// A derived table, (SELECT ...) or (WITH ...), is read-only in MySQL.
+			if ( 'p' === $t[0] && '(' === $t[1] && isset( $tokens[ $idx + 1 ] ) && 'w' === $tokens[ $idx + 1 ][0] && in_array( strtoupper( $tokens[ $idx + 1 ][1] ), array( 'SELECT', 'WITH' ), true ) ) {
+				for ( $inner = 0; $idx < $count; $idx++ ) {
+					if ( 'p' === $tokens[ $idx ][0] && '(' === $tokens[ $idx ][1] ) {
+						$inner++;
+					} elseif ( 'p' === $tokens[ $idx ][0] && ')' === $tokens[ $idx ][1] && 0 === --$inner ) {
+						break;
+					}
+				}
+				continue;
+			}
+			if ( 'p' === $t[0] && '(' === $t[1] ) {
+				$depth++;
+			} elseif ( 'p' === $t[0] && ')' === $t[1] ) {
+				$depth = max( 0, $depth - 1 );
+			}
+			$zone[] = $t;
+		}
+		return $zone;
+	}
+
+	/** Short key (users, usermeta, options, sitemeta, site, blogs, audit_log) when $name is a protected table of this install, else null. */
+	private function protected_table_key( $name ) {
+		global $wpdb;
+		// CUSTOM_USER_TABLE / CUSTOM_USER_META_TABLE and other remaps: the live mapping wins.
+		foreach ( array( 'users', 'usermeta', 'options', 'sitemeta', 'site', 'blogs' ) as $prop ) {
+			// A schema-qualified mapping (shared.accounts) is compared on its table part; tokens arrive split at the dot.
+			$mapped = ! empty( $wpdb->$prop ) ? str_replace( '`', '', (string) $wpdb->$prop ) : '';
+			$mapped = false !== strrpos( $mapped, '.' ) ? substr( $mapped, strrpos( $mapped, '.' ) + 1 ) : $mapped;
+			if ( '' !== $mapped && 0 === strcasecmp( $mapped, (string) $name ) ) {
+				return $prop;
+			}
+		}
+		$prefixes = array_unique( array_filter( array( (string) $wpdb->prefix, isset( $wpdb->base_prefix ) ? (string) $wpdb->base_prefix : '', 'wp_' ), 'strlen' ) );
+		$prefix   = '(?:' . implode( '|', array_map( function ( $p ) {
+			return preg_quote( $p, '/' );
+		}, $prefixes ) ) . ')';
+		if ( ! preg_match( '/^' . $prefix . '(?:\d+_)?(users|usermeta|options|sitemeta|site|blogs|wpvibe_audit_log)$/i', (string) $name, $m ) ) {
+			return null;
+		}
+		$key = strtolower( $m[1] );
+		return 'wpvibe_audit_log' === $key ? 'audit_log' : $key;
+	}
+
+	/**
+	 * Tokens MySQL would see, as [type, text]: w bare word, q `backticked`
+	 * name (`` unescaped), d double-quoted literal, p parenthesis; string
+	 * literals and comments are skipped. An executable comment's body is
+	 * scanned as code.
+	 */
+	private function sql_identifier_tokens( $sql, $backslash_escapes ) {
+		$tokens = array();
+		$len    = strlen( $sql );
+		$i      = 0;
+		while ( $i < $len ) {
+			$c    = $sql[ $i ];
+			$next = $i + 1 < $len ? $sql[ $i + 1 ] : '';
+			if ( "'" === $c || '"' === $c || '`' === $c ) {
+				$buf = '';
+				$i++;
+				while ( $i < $len ) {
+					$ch = $sql[ $i ];
+					if ( $backslash_escapes && '\\' === $ch && '`' !== $c ) {
+						$buf .= $i + 1 < $len ? $sql[ $i + 1 ] : '';
+						$i   += 2;
+						continue;
+					}
+					if ( $ch === $c ) {
+						if ( $i + 1 < $len && $sql[ $i + 1 ] === $c ) {
+							$buf .= $c;
+							$i   += 2;
+							continue;
+						}
+						break;
+					}
+					$buf .= $ch;
+					$i++;
+				}
+				$i++;
+				if ( "'" !== $c ) {
+					$tokens[] = array( '`' === $c ? 'q' : 'd', $buf );
+				}
+				continue;
+			}
+			if ( '#' === $c || ( '-' === $c && '-' === $next && ( $i + 2 >= $len || ctype_space( $sql[ $i + 2 ] ) ) ) ) {
+				$eol = strpos( $sql, "\n", $i );
+				$i   = false === $eol ? $len : $eol + 1;
+				continue;
+			}
+			if ( '/' === $c && '*' === $next ) {
+				if ( preg_match( '/\G\/\*[Mm]?!/', $sql, $em, 0, $i ) ) {
+					$i += strlen( $em[0] );
+					continue;
+				}
+				$end = strpos( $sql, '*/', $i + 2 );
+				$i   = false === $end ? $len : $end + 2;
+				continue;
+			}
+			if ( preg_match( '/[A-Za-z0-9_$\x80-\xff]/', $c ) ) {
+				$start = $i;
+				while ( $i < $len && preg_match( '/[A-Za-z0-9_$\x80-\xff]/', $sql[ $i ] ) ) {
+					$i++;
+				}
+				$tokens[] = array( 'w', substr( $sql, $start, $i - $start ) );
+				continue;
+			}
+			if ( '(' === $c || ')' === $c || '.' === $c ) {
+				$tokens[] = array( 'p', $c );
+			}
+			$i++;
+		}
+		return $tokens;
+	}
+
+	/**
+	 * True when the normalized (uppercased) SQL names this option in a quoted
+	 * literal. Only picks the builder-option guidance; the refusal itself is
+	 * table-based and does not depend on it.
 	 */
 	private function sql_names_option( $normalized, $name ) {
 		$prefix = WPVibe_CLI::option_list_prefix( $name );
@@ -430,118 +595,20 @@ trait WPVibe_CLI_Db {
 	}
 
 
-	/**
-	 * True when an `option_name = <literal>` predicate disguises the bound row:
-	 * concatenated adjacent literals ('siteur' 'l'), a backslash escape
-	 * ('site\url' -> siteurl), a non-ASCII byte inside the quotes (NBSP/ZWSP
-	 * padding that the collation folds to the real name), or a hex literal. The
-	 * column may be backtick-quoted. Scoped to the name predicate only, so an
-	 * ordinary option_value carrying a backslash or accented text is unaffected.
-	 * $normalized is uppercased.
-	 *
-	 * KNOWN residuals (still approval-gated as db_query_*, visible in the
-	 * approval preview, never an unapproved write, so acceptable): a name
-	 * reached via option_id, a LIKE pattern, or CONCAT()/expression rather than
-	 * a direct = literal.
-	 */
-	private function sql_option_name_obfuscated( $normalized ) {
-		if ( preg_match_all( '/`?OPTION_NAME`?\s*=\s*(\'(?:[^\']|\'\')*\'|"(?:[^"]|"")*")(\s*["\'])?/', $normalized, $matches, PREG_SET_ORDER ) ) {
-			foreach ( $matches as $m ) {
-				if ( isset( $m[2] ) && '' !== trim( $m[2] ) ) {
-					return true; // an adjacent literal follows: string concatenation
-				}
-				$inner = substr( $m[1], 1, -1 );
-				if ( false !== strpos( $inner, '\\' ) ) {
-					return true; // backslash escape
-				}
-				// Plain ASCII space (0x20) is intentionally allowed here: the
-				// PAD-SPACE trailing-space case is already caught with its
-				// specific message by sql_names_option, so this only flags the
-				// invisible padding it misses (NBSP, ZWSP, BOM, control bytes).
-				if ( preg_match( '/[^\x20-\x7E]/', $inner ) ) {
-					return true; // NBSP/ZWSP or other non-printable padding
-				}
-			}
-		}
-		return (bool) preg_match( '/`?OPTION_NAME`?\s*=\s*(0X[0-9A-F]+|X\'[0-9A-F]*\')/', $normalized );
-	}
-
-
-	/**
-	 * Normalize a captured table token to its base name: drop backticks, take
-	 * the part after the last dot (so a schema-qualified `db.wp_options` is
-	 * judged on the table, not the DB), then strip the table prefix / {PREFIX} /
-	 * WP_. $token comes from the uppercased normalized SQL.
-	 */
-	/**
-	 * Identity bases (USERS, USERMETA, OPTIONS) named anywhere beyond the first
-	 * target of a multi-table statement: the table list of a multi-table UPDATE
-	 * (everything before SET, across JOINs and commas), a DELETE's FROM/USING
-	 * lists, and the comma lists of DROP/TRUNCATE/RENAME. Aliases cannot be told
-	 * from tables, so an alias literally named after an identity table refuses
-	 * too; that is a harmless over-refusal on approval-gated SQL.
-	 */
-	private function sql_extra_target_tables( $normalized, $primary ) {
-		$segments = array();
-		if ( preg_match( '/^\s*UPDATE\b(.*?)\bSET\b/s', $normalized, $m ) ) {
-			$segments[] = $m[1];
-		}
-		if ( preg_match( '/^\s*DELETE\b(.*?)(?:\bWHERE\b|\bORDER\s+BY\b|\bLIMIT\b|$)/s', $normalized, $m ) ) {
-			$segments[] = $m[1];
-		}
-		if ( preg_match( '/^\s*(?:DROP\s+(?:TEMPORARY\s+)?TABLE(?:\s+IF\s+EXISTS)?|TRUNCATE(?:\s+TABLE)?|RENAME\s+TABLE)\b(.*)$/s', $normalized, $m ) ) {
-			$segments[] = $m[1];
-		}
-		if ( empty( $segments ) ) {
-			return array();
-		}
-		$keywords = array( 'LOW_PRIORITY', 'IGNORE', 'QUICK', 'FROM', 'USING', 'JOIN', 'INNER', 'LEFT', 'RIGHT', 'OUTER', 'CROSS', 'NATURAL', 'STRAIGHT_JOIN', 'ON', 'AS', 'AND', 'OR', 'NOT', 'NULL', 'IS', 'IN', 'TO', 'IF', 'EXISTS', 'TEMPORARY', 'TABLE', 'PARTITION' );
-		$primary = str_replace( '`', '', (string) $primary );
-		$skipped = false;
-		$found   = array();
-		foreach ( $segments as $segment ) {
-			// A comparison's operands are columns, not tables; blank them so
-			// `p.ID = u.ID` cannot contribute identifiers.
-			$segment = preg_replace( '/[A-Z0-9_{}.`]+\s*(?:=|<>|!=|<=|>=|<|>)\s*[A-Z0-9_{}.`\'"]+/', ' ', $segment );
-			preg_match_all( '/`?([A-Z0-9_{}.]+)`?/', $segment, $tokens );
-			foreach ( $tokens[1] as $token ) {
-				if ( in_array( $token, $keywords, true ) || is_numeric( $token ) ) {
-					continue;
-				}
-				// The first capture is judged by the single-table rules above.
-				if ( ! $skipped && $token === $primary ) {
-					$skipped = true;
-					continue;
-				}
-				$base = $this->sql_base_table( $token );
-				if ( in_array( $base, array( 'USERS', 'USERMETA', 'OPTIONS' ), true ) && ! in_array( $base, $found, true ) ) {
-					$found[] = $base;
-				}
-			}
-		}
-		return $found;
-	}
-
-
-	private function sql_base_table( $token ) {
-		global $wpdb;
-		$prefix = strtoupper( $wpdb->prefix );
-		$token  = str_replace( '`', '', (string) $token );
-		if ( false !== strpos( $token, '.' ) ) {
-			$parts = explode( '.', $token );
-			$token = (string) end( $parts );
-		}
-		$token = preg_replace( '/^' . preg_quote( $prefix, '/' ) . '/', '', $token );
-		$token = preg_replace( '/^\{PREFIX\}/', '', $token );
-		return preg_replace( '/^WP_/', '', $token );
-	}
-
-
-	private function privileged_refusal( $what ) {
+	private function privileged_refusal( $table ) {
+		$guidance = array(
+			'users'     => __( 'the users table. Use `user update <id> --user_email=... / --display_name=...`, `user set-role`, or `user create` instead; they carry the approval and last-admin checks raw SQL skips.', 'vibe-ai' ),
+			'usermeta'  => __( 'the usermeta table. Use `user meta update <id> <key> <value>` for ordinary user meta, and `user set-role` / `user add-cap` for roles and capabilities.', 'vibe-ai' ),
+			'options'   => __( 'the options table. Use `option update <name> <value>` or `option patch update <name> <key-path> <value>` instead; ordinary options apply without an approval prompt.', 'vibe-ai' ),
+			'sitemeta'  => __( 'the network options table (sitemeta). Change network settings in Network Admin instead.', 'vibe-ai' ),
+			'site'      => __( 'the network table (site). Change network settings in Network Admin instead.', 'vibe-ai' ),
+			'blogs'     => __( 'the network sites table (blogs). Change a site\'s address in Network Admin > Sites instead.', 'vibe-ai' ),
+			'audit_log' => __( 'the WPVibe audit log. The log is append-only and cannot be edited or cleared through SQL.', 'vibe-ai' ),
+		);
 		return $this->error_result( sprintf(
-			/* translators: %s: description of the blocked SQL target */
-			__( 'Refused: this SQL writes to %s. That target is protected and cannot be changed through raw SQL even with approval, because direct SQL bypasses every WordPress safety check on it. Use the dedicated command instead (option update, user set-role), which enforces the correct guardrails.', 'vibe-ai' ),
-			$what
+			/* translators: %s: the protected table and the command to use instead */
+			__( 'Refused: this SQL writes to %s Raw SQL writes to this table are blocked even with approval, whatever column, row id or expression the statement uses. Reads (SELECT) still work.', 'vibe-ai' ),
+			isset( $guidance[ $table ] ) ? $guidance[ $table ] : $table
 		) );
 	}
 
@@ -659,6 +726,18 @@ trait WPVibe_CLI_Db {
 			'report'       => $report,
 			'message'      => $message,
 		);
+		$address = $this->search_replace_address_warnings( $old );
+		if ( $address ) {
+			$data['site_address_note'] = implode( ' ', $address );
+		}
+		$protected_rows = $this->search_replace_protected_rows_matching( $tables, $old );
+		if ( $protected_rows ) {
+			$data['protected_options_skipped'] = $protected_rows;
+			$data['protected_note']            = $this->search_replace_protected_note( $protected_rows );
+		}
+		if ( ! empty( $this->sr_protected_tables ) ) {
+			$data['protected_tables_skipped'] = $this->sr_protected_tables;
+		}
 		if ( $guid_skipped ) {
 			$data['guid_note'] = __( 'The guid column was skipped (WordPress best practice). Pass --include-guids to replace inside GUIDs too.', 'vibe-ai' );
 		}
@@ -735,10 +814,84 @@ trait WPVibe_CLI_Db {
 			} ) );
 		}
 
+		// Identity tables are never rewritten; the options table stays in scope
+		// with its protected rows filtered out per row (search_replace_row_guard).
+		$protected = array();
+		$tables    = array_values( array_filter( $tables, function ( $t ) use ( &$protected ) {
+			$key = $this->protected_table_key( $t );
+			if ( null === $key || 'options' === $key ) {
+				return true;
+			}
+			$protected[] = $t;
+			return false;
+		} ) );
+		$this->sr_protected_tables = $protected;
+
 		if ( empty( $tables ) ) {
+			if ( ! empty( $protected ) ) {
+				return new WP_Error( 'protected_tables', sprintf(
+					/* translators: %s: table names */
+					__( 'Refused: search-replace never rewrites %s (accounts, roles and capabilities, network settings, or the WPVibe audit log). Use `user update`, `user meta update` or `user set-role` for account changes. Nothing was changed.', 'vibe-ai' ),
+					implode( ', ', $protected )
+				), WPVibe_Error_Contract::data( 'not_allowed', false ) );
+			}
 			return new WP_Error( 'no_tables', __( 'No tables in scope for search-replace.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false ) );
 		}
 		return $tables;
+	}
+
+	/**
+	 * SQL appended to an options-table row match so protected options
+	 * (BLOCKED_OPTIONS and this site's <prefix>user_roles) are never
+	 * rewritten by search-replace, value or name. '' for other tables.
+	 */
+	private function search_replace_row_guard( $table ) {
+		global $wpdb;
+		if ( 'options' !== $this->protected_table_key( $table ) ) {
+			return '';
+		}
+		$exact = array();
+		$like  = array( '%' . $wpdb->esc_like( '_user_roles' ) );
+		foreach ( WPVibe_CLI::BLOCKED_OPTIONS as $name ) {
+			// The site address stays migratable: approved, with the preview saying so.
+			if ( in_array( $name, self::$sr_address_options, true ) ) {
+				continue;
+			}
+			$prefix = WPVibe_CLI::option_list_prefix( $name );
+			if ( null !== $prefix ) {
+				$like[] = $wpdb->esc_like( $prefix ) . '%';
+			} else {
+				$exact[] = $wpdb->prepare( '%s', $name );
+			}
+		}
+		$parts = array( '`option_name` NOT IN (' . implode( ', ', $exact ) . ')' );
+		foreach ( $like as $pattern ) {
+			$parts[] = '`option_name`' . $wpdb->prepare( ' NOT LIKE %s', $pattern );
+		}
+		return ' AND ' . implode( ' AND ', $parts );
+	}
+
+	/** Protected option rows in scope whose value contains the needle: skipped, and named in the result so the change is not silently partial. */
+	private function search_replace_protected_rows_matching( $tables, $old ) {
+		global $wpdb;
+		$names = array();
+		foreach ( $tables as $table ) {
+			$guard = $this->search_replace_row_guard( $table );
+			if ( '' === $guard ) {
+				continue;
+			}
+			$old_json = $this->json_encode_strip_quotes( $old );
+			$match    = '`option_value`' . $wpdb->prepare( ' LIKE BINARY %s', '%' . $wpdb->esc_like( $old ) . '%' );
+			if ( $old_json !== $old ) {
+				$match = '( ' . $match . ' OR `option_value`' . $wpdb->prepare( ' LIKE BINARY %s', '%' . $wpdb->esc_like( $old_json ) . '%' ) . ' )';
+			}
+			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$rows = $wpdb->get_col( 'SELECT `option_name` FROM ' . $this->esc_sql_ident( $table ) . ' WHERE ' . $match . ' AND NOT (1' . $guard . ') LIMIT 20' ); // nosemgrep: direct-db-query
+			foreach ( (array) $rows as $name ) {
+				$names[] = count( $tables ) > 1 ? $table . '.' . $name : (string) $name;
+			}
+		}
+		return $names;
 	}
 
 
@@ -791,7 +944,7 @@ trait WPVibe_CLI_Db {
 				$this->sr_timed_out = true;
 				break;
 			}
-			$where = 'WHERE ' . $match;
+			$where = 'WHERE ' . $match . $this->search_replace_row_guard( $table );
 			if ( $single_pk && null !== $last_key ) {
 				$where .= ' AND ' . $pk_sql . ' > ' . $this->esc_sql_value( $last_key );
 			}
@@ -943,7 +1096,7 @@ trait WPVibe_CLI_Db {
 		$old_json = $this->json_encode_strip_quotes( $old );
 		$new_json = $this->json_encode_strip_quotes( $new );
 		foreach ( $tables as $table ) {
-			if ( ! preg_match( '/options$/i', (string) $table ) || ! $this->search_replace_column_in_scope( $table, 'option_name', $skip_columns, $include_columns ) ) {
+			if ( ( 'options' !== $this->protected_table_key( $table ) && ! preg_match( '/options$/i', (string) $table ) ) || ! $this->search_replace_column_in_scope( $table, 'option_name', $skip_columns, $include_columns ) ) {
 				continue;
 			}
 			list( , $text_columns ) = $this->table_columns( $table );
@@ -979,6 +1132,31 @@ trait WPVibe_CLI_Db {
 			}
 		}
 		return null;
+	}
+
+	private function search_replace_protected_note( $names ) {
+		return sprintf(
+			/* translators: %s: option names */
+			__( 'Not changed: %s. These options are protected (admin email, roles, active plugins, security keys, WPVibe connection state), so search-replace skips them even though they contain the search string. If the admin email should change, the user changes it in wp-admin > Settings > General; tell the user this rather than retrying.', 'vibe-ai' ),
+			implode( ', ', $names )
+		);
+	}
+
+	/** One line per site-address option (siteurl, home) this replacement rewrites. */
+	private function search_replace_address_warnings( $old ) {
+		$warnings = array();
+		foreach ( self::$sr_address_options as $opt ) {
+			$val = get_option( $opt );
+			if ( is_string( $val ) && '' !== $val && false !== strpos( $val, $old ) ) {
+				$warnings[] = sprintf(
+					/* translators: 1: option name, 2: current value */
+					__( 'This changes the site\'s address: the "%1$s" option (currently "%2$s") will be rewritten. The site will load at the new address, everyone is logged out, and the WPVibe connection must be reconnected if the stored site URL no longer matches. Only approve if this is an intentional domain migration.', 'vibe-ai' ),
+					$opt,
+					$val
+				);
+			}
+		}
+		return $warnings;
 	}
 
 	/**
@@ -1032,7 +1210,7 @@ trait WPVibe_CLI_Db {
 			if ( empty( $conds ) ) {
 				continue;
 			}
-			$where = implode( ' OR ', $conds );
+			$where = '( ' . implode( ' OR ', $conds ) . ' )' . $this->search_replace_row_guard( $table );
 			$sql   = 'SELECT COUNT(*) FROM (SELECT 1 FROM ' . $this->esc_sql_ident( $table ) . ' WHERE ' . $where . ' LIMIT ' . ( $cap + 1 ) . ') AS subq';
 			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 			$n = $wpdb->get_var( $sql ); // nosemgrep: direct-db-query
@@ -1063,16 +1241,16 @@ trait WPVibe_CLI_Db {
 			$preview['preview_truncated'] = sprintf( __( '%d table(s) not scanned for the preview (time budget); they will still be processed on execution.', 'vibe-ai' ), $not_previewed );
 		}
 
-		$warnings = array();
-		foreach ( array( 'siteurl', 'home' ) as $opt ) {
-			$val = get_option( $opt );
-			if ( is_string( $val ) && '' !== $val && false !== strpos( $val, $old ) ) {
-				/* translators: 1: option name, 2: current value */
-				$warnings[] = sprintf( __( 'This replacement will change the "%1$s" option (currently "%2$s"). Changing the site URL can break the WPVibe connection itself (the stored site URL will no longer match) and logs everyone out. Only approve if this is an intentional migration.', 'vibe-ai' ), $opt, $val );
-			}
+		$warnings = $this->search_replace_address_warnings( $old );
+		$skipped  = $this->search_replace_protected_rows_matching( $tables, $old );
+		if ( $skipped ) {
+			$warnings[] = $this->search_replace_protected_note( $skipped );
 		}
 		if ( $warnings ) {
 			$preview['warnings'] = $warnings;
+		}
+		if ( ! empty( $this->sr_protected_tables ) ) {
+			$preview['protected_tables_skipped'] = $this->sr_protected_tables;
 		}
 		if ( empty( $flags['include_guids'] ) ) {
 			$preview['guid_note'] = __( 'The guid column is skipped by default (WordPress best practice). Pass --include-guids to replace inside GUIDs too.', 'vibe-ai' );

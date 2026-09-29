@@ -4,7 +4,7 @@ Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.19.1
+Stable tag: 1.19.2
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -221,6 +221,14 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 
 == Changelog ==
 
+= 1.19.2 =
+* Security: WPCode snippets and their storage (the active-snippet cache, the site-wide header and footer scripts, snippet posts) can only change through WPVibe's code snippet flow, which saves new code disabled for you to review. Content edits and page builder saves that would reach them are refused.
+* Security: Raw SQL can no longer write to the users, user meta or options tables, even with approval. WPVibe points the AI to the matching WordPress command instead, which runs WordPress's own checks.
+* Improvement: Fewer approval prompts. Clearing expired transients runs without one, and snippet saves that land disabled no longer ask, because enabling a snippet in wp-admin is the real approval.
+* Improvement: A domain migration with search-replace can change the site and home addresses again after approval, with a clear warning. Other protected settings are skipped.
+* Fix: WPVibe refuses to activate its own working draft of a theme, which would serve the site without its compiled styles. Uninstalling WPVibe keeps an active draft or backup theme in place.
+* Fix: When another plugin or theme prints warnings or errors during a WPVibe request, the response stays clean, so a command that succeeded is no longer reported as a failure.
+
 = 1.19.1 =
 * Fix: Opening a draft theme preview can no longer crash wp-admin. On some hosts a preview could run out of memory on every admin page until the browser's site data was cleared, and a broken draft theme could take the whole admin area down with it.
 * Fix: Sites whose server garbles the standard login header now connect. WPVibe falls back to its own copy of the header when WordPress can't read the standard one.
@@ -363,16 +371,6 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 
 = 1.15.3 =
 * Fix: services that authenticate with WooCommerce REST API keys (TrackShip, Metorik, and similar) no longer receive a 401 Unknown username error on sites where another plugin resolves the user early in the request.
-
-= 1.15.2 =
-* Security: hardened the protections on WPVibe's raw database access so a disguised query cannot slip past them. WPVibe already refuses to change your site's core web addresses, touch the users table, read your site's secret keys, or read and write files on the server, even on a command you approve. This release closes several ways a specially crafted query could hide those actions from the safety checks, such as using SQL comments or unusual spellings of a protected setting's name.
-* Fix: read-only database queries that use REPLACE() to count or inspect content (a common reporting pattern) are no longer refused by mistake.
-
-= 1.15.1 =
-* Hardening: your page builder's site-wide settings and global presets (such as Divi's design presets) now require your approval before any write, on every path including option writes and raw SQL, and the approval screen shows exactly which settings change. This closes a route where a bulk edit could overwrite a builder's global styling and break its editor across the whole site.
-* Hardening: a content edit that would corrupt a page's block markup (leaving a block's settings unreadable, so the block vanishes from the editor) is now refused before it saves.
-* Hardening: WPVibe no longer creates a draft copy of a page builder parent theme (such as Divi or Avada), which would leave the builder unable to load. It points you to the correct path instead.
-* Fix: when a builder value cannot be edited directly, the guidance now names a command that actually works instead of one that dead-ends.
 
 = Older versions =
 WP.org caps the changelog at 5,000 words. For the full release history back to 1.0.0, see https://wpvibe.ai/changelog/

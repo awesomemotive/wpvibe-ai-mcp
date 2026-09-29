@@ -338,6 +338,9 @@ class WPVibe_CLI {
 		'initial_db_version',
 		'wpvibe_self_update_state',
 		'wpvibe_detached_*',
+		// WPCode storage (WPVibe_Code_Snippet::STORAGE_OPTIONS): audits read it, only code_snippet writes it.
+		'wpcode_snippets',
+		'ihaf_insert_*',
 	);
 
 	const BLOCKED_OPTIONS = array(
@@ -351,6 +354,9 @@ class WPVibe_CLI {
 		// Loopback hand-off state: the public run routes trust it, so a seeded row would run as the stored admin.
 		'wpvibe_self_update_state',
 		'wpvibe_detached_*',
+		// WPCode executes these directly; a write skips the code_snippet approval panel (#664).
+		'wpcode_snippets',
+		'ihaf_insert_*',
 		'siteurl',
 		'home',
 		'admin_email',
@@ -597,7 +603,7 @@ class WPVibe_CLI {
 		'rewrite list'            => 'rewrite list',
 		'cache type'              => 'cache type',
 		'cron event list'         => 'cron event list',
-		'db query'                => 'db query "<sql>" [--limit=<n>] (SELECT runs directly; writes need approval)',
+		'db query'                => 'db query "<sql>" [--limit=<n>] (SELECT runs directly; writes need approval; writes to the users, usermeta and options tables are refused, use the user and option commands)',
 		'db tables'               => 'db tables',
 		'db prefix'               => 'db prefix',
 		'core version'            => 'core version [--extra]',

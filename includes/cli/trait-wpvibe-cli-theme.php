@@ -75,6 +75,10 @@ trait WPVibe_CLI_Theme {
 		if ( empty( $positional[0] ) ) {
 			return $this->error_result( __( 'Theme slug required.', 'vibe-ai' ) );
 		}
+		$refused = $this->draft_activation_refusal( $positional[0] );
+		if ( $refused ) {
+			return $refused;
+		}
 		$theme = wp_get_theme( $positional[0] );
 		if ( ! $theme->exists() ) {
 			/* translators: %s: theme slug */
@@ -104,6 +108,29 @@ trait WPVibe_CLI_Theme {
 		) );
 		/* translators: %s: theme name */
 		return $this->success_result( array( 'message' => sprintf( __( 'Switched to theme \'%s\'.', 'vibe-ai' ), $theme->get( 'Name' ) ) ) );
+	}
+
+
+	/** A draft is a working copy: once active, every draft operation refuses it and the site loses its compiled CSS. */
+	private function draft_activation_refusal( $slug ) {
+		$bare  = strtolower( rtrim( trim( (string) $slug ), '/\\' ) );
+		$draft = (string) get_option( 'wpvibe_draft_theme', '' );
+		$is_registered = '' !== $draft && strtolower( $draft ) === $bare;
+		if ( ! $is_registered && '-wpvibe-draft' !== substr( $bare, -13 ) ) {
+			return null;
+		}
+		$source = $is_registered ? (string) get_option( 'wpvibe_draft_source', '' ) : '';
+		if ( '' === $source ) {
+			$source = substr( rtrim( trim( (string) $slug ), '/\\' ), 0, -13 );
+		}
+		return $this->error_result(
+			sprintf(
+				/* translators: 1: draft theme folder, 2: theme the draft belongs to */
+				__( '\'%1$s\' is the WPVibe draft of \'%2$s\', a working copy rather than a theme, so it cannot be activated: an active draft is served without its compiled CSS and blocks every draft operation. Nothing was changed. To show the draft, use get_preview_url; to put it live, use publish_draft_theme once the user has previewed it and said to publish.', 'vibe-ai' ),
+				$slug,
+				$source
+			)
+		);
 	}
 
 

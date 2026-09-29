@@ -129,6 +129,11 @@ class WPVibe_Breakdance {
 		$title     = $args['title'] ?? '';
 		$warnings  = array();
 
+		$code_post = WPVibe_Code_Snippet::code_post_write_error( $post_type, $id );
+		if ( $code_post ) {
+			return $code_post;
+		}
+
 		if ( in_array( $post_type, self::BANNED_POST_TYPES, true ) ) {
 			return new WP_Error( 'breakdance_post_type_banned', sprintf(
 				/* translators: %s: post type slug */

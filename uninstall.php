@@ -56,16 +56,20 @@ delete_transient( 'wpvibe_activation_redirect' );
 delete_transient( 'wpvibe_widget_feed' );
 delete_transient( 'wpvibe_widget_feed_error' );
 
-// Remove any leftover draft / backup theme directories on disk.
-if ( function_exists( 'get_theme_root' ) ) {
+// Remove any leftover draft / backup theme directories on disk. Multisite shares the themes folder, and
+// another site may run on one of these, so the network keeps them.
+if ( function_exists( 'get_theme_root' ) && ! is_multisite() ) {
 	$theme_root = get_theme_root();
 	$suffixes   = array( '-wpvibe-draft', '-wpvibe-backup' );
+
+	// A draft or backup someone made the active theme (or its parent) is the live site now, not a leftover.
+	$wpvibe_in_use = array( (string) get_option( 'stylesheet' ), (string) get_option( 'template' ) );
 
 	if ( is_dir( $theme_root ) ) {
 		$entries = @scandir( $theme_root );
 		if ( is_array( $entries ) ) {
 			foreach ( $entries as $entry ) {
-				if ( '.' === $entry || '..' === $entry ) {
+				if ( '.' === $entry || '..' === $entry || in_array( $entry, $wpvibe_in_use, true ) ) {
 					continue;
 				}
 				foreach ( $suffixes as $suffix ) {

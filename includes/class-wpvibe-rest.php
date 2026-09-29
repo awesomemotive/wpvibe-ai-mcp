@@ -645,46 +645,53 @@ class WPVibe_REST {
 			'args' => array( 'challenge' => array( 'type' => 'string', 'required' => true, 'maxLength' => 80 ) ),
 		) );
 
+		$snippet_args = array(
+			'action' => array(
+				'type'              => 'string',
+				'default'           => 'create',
+				'sanitize_callback' => 'sanitize_key',
+			),
+			'id' => array(
+				'type'              => 'integer',
+				'required'          => false,
+				'sanitize_callback' => 'absint',
+			),
+			'code' => array(
+				'type'     => 'string',
+				'required' => true,
+			),
+			'title' => array(
+				'type'              => 'string',
+				'required'          => true,
+				'sanitize_callback' => 'sanitize_text_field',
+			),
+			'code_type' => array(
+				'type'              => 'string',
+				'required'          => true,
+				'sanitize_callback' => 'sanitize_key',
+			),
+			'location' => array(
+				'type'              => 'string',
+				'required'          => true,
+				'sanitize_callback' => 'sanitize_key',
+			),
+			'insert_method' => array(
+				'type'              => 'string',
+				'default'           => 'auto',
+				'sanitize_callback' => 'sanitize_key',
+			),
+		);
 		register_rest_route( $namespace, '/code-snippet', array(
 			'methods'             => 'POST',
 			'callback'            => array( $this, 'code_snippet' ),
 			'permission_callback' => array( $this, 'can_edit_code_snippets_approved' ),
-			'args'                => array(
-				'action' => array(
-					'type'              => 'string',
-					'default'           => 'create',
-					'sanitize_callback' => 'sanitize_key',
-				),
-				'id' => array(
-					'type'              => 'integer',
-					'required'          => false,
-					'sanitize_callback' => 'absint',
-				),
-				'code' => array(
-					'type'     => 'string',
-					'required' => true,
-				),
-				'title' => array(
-					'type'              => 'string',
-					'required'          => true,
-					'sanitize_callback' => 'sanitize_text_field',
-				),
-				'code_type' => array(
-					'type'              => 'string',
-					'required'          => true,
-					'sanitize_callback' => 'sanitize_key',
-				),
-				'location' => array(
-					'type'              => 'string',
-					'required'          => true,
-					'sanitize_callback' => 'sanitize_key',
-				),
-				'insert_method' => array(
-					'type'              => 'string',
-					'default'           => 'auto',
-					'sanitize_callback' => 'sanitize_key',
-				),
-			),
+			'args'                => $snippet_args,
+		) );
+		register_rest_route( $namespace, '/code-snippet/dormant', array(
+			'methods'             => 'POST',
+			'callback'            => array( $this, 'code_snippet_dormant' ),
+			'permission_callback' => array( $this, 'can_edit_code_snippets_dormant' ),
+			'args'                => $snippet_args,
 		) );
 
 		register_rest_route( $namespace, '/cli/status', array(
@@ -1133,6 +1140,15 @@ class WPVibe_REST {
 		return WPVibe_Op_Proof::verify( $request, '/wpvibe/v1/code-snippet', (string) $request->get_param( 'code' ) );
 	}
 
+	/** No approval, but still only the Worker: the proof is signed for this route alone. */
+	public function can_edit_code_snippets_dormant( $request ) {
+		$ok = $this->can_edit_code_snippets();
+		if ( true !== $ok ) {
+			return $ok;
+		}
+		return WPVibe_Op_Proof::verify( $request, '/wpvibe/v1/code-snippet/dormant', (string) $request->get_param( 'code' ) );
+	}
+
 	public function can_check_op_proof( $request ) {
 		$allowed = $this->can_manage_options();
 		return true === $allowed ? WPVibe_Op_Proof::verify( $request, '/wpvibe/v1/op-proof/check', (string) $request->get_param( 'challenge' ) ) : $allowed;
@@ -1230,7 +1246,7 @@ class WPVibe_REST {
 	 * MCP to compare WPVIBE_VERSION strings — flags are forward-compatible.
 	 */
 	public static function feature_flags() {
-		return array( 'content_edit', 'content_search', 'code_snippet', 'beaver_save', 'breakdance_save', 'bricks_save', 'armor', 'authorize_mint', 'op_proof', 'op_proof_v2', 'detached_ops', 'connection_readiness', 'connection_status', 'svg_sanitize' );
+		return array( 'content_edit', 'content_search', 'code_snippet', 'code_snippet_dormant', 'beaver_save', 'breakdance_save', 'bricks_save', 'armor', 'authorize_mint', 'op_proof', 'op_proof_v2', 'detached_ops', 'connection_readiness', 'connection_status', 'svg_sanitize' );
 	}
 
 	public function get_site_info() {
@@ -1512,6 +1528,10 @@ class WPVibe_REST {
 
 	public function code_snippet( $request ) {
 		return WPVibe_Code_Snippet::handle( $request );
+	}
+
+	public function code_snippet_dormant( $request ) {
+		return WPVibe_Code_Snippet::handle( $request, true );
 	}
 
 	/**

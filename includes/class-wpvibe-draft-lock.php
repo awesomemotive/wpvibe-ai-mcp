@@ -132,6 +132,17 @@ class WPVibe_Draft_Lock {
 		// "Continue editing the current draft" is a dead end when the draft itself is what every draft operation refuses.
 		if ( self::valid_slug( $draft ) && $draft === get_option( 'stylesheet' ) ) {
 			$data['reason'] = 'draft_is_active_theme';
+			if ( self::valid_slug( $source ) && ! is_dir( get_theme_root() . '/' . $source ) ) {
+				$data['source_missing'] = true;
+				// Publish refuses a missing source next to a backup (it would lose that backup), so the backup goes back first.
+				if ( is_dir( get_theme_root() . '/' . $source . '-wpvibe-backup' ) ) {
+					/* translators: 1: draft theme folder, 2: theme the draft publishes to. */
+					return new WP_Error( 'draft_conflict', sprintf( __( 'The draft theme (%1$s) is the active theme on this site, so WPVibe will not edit, preview, publish or delete it as a draft. Nothing was changed. The theme it publishes to (%2$s) is missing, and %2$s-wpvibe-backup holds its previous live version. With the host file manager, rename wp-content/themes/%2$s-wpvibe-backup to %2$s, activate %2$s under Appearance > Themes, then publish the draft through WPVibe (the previous version becomes the new backup).', 'vibe-ai' ), $draft, $source ), WPVibe_Error_Contract::data( 'invalid_input', false, $data ) );
+				}
+				// A create_classic_theme draft has no source folder until its first publish, so "activate the original" names nothing.
+				/* translators: 1: draft theme folder, 2: theme the draft publishes to. */
+				return new WP_Error( 'draft_conflict', sprintf( __( 'The draft theme (%1$s) is the active theme on this site, so WPVibe will not edit, preview, publish or delete it as a draft. Nothing was changed. The theme it publishes to (%2$s) has no folder on this site yet (a new WPVibe theme gets one on its first publish), so under Appearance > Themes activate the theme the site used before, or any theme other than the draft, then publish the draft through WPVibe: that makes it live as %2$s.', 'vibe-ai' ), $draft, $source ), WPVibe_Error_Contract::data( 'invalid_input', false, $data ) );
+			}
 			/* translators: 1: draft theme folder, 2: original theme folder. */
 			return new WP_Error( 'draft_conflict', sprintf( __( 'The draft theme (%1$s) is the active theme on this site, so WPVibe will not edit, preview, publish or delete it as a draft. Nothing was changed. Under Appearance > Themes, activate the theme the draft was copied from (%2$s), then continue editing the draft and publish it through WPVibe.', 'vibe-ai' ), $draft, self::valid_slug( $source ) ? $source : __( 'the original theme', 'vibe-ai' ) ), WPVibe_Error_Contract::data( 'invalid_input', false, $data ) );
 		}

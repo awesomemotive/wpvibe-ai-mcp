@@ -616,7 +616,7 @@ trait WPVibe_CLI_Post {
 			$args['post_date'] = $flags['post_date'];
 		}
 
-		if ( 'wpcode' === $args['post_type'] ) {
+		if ( WPVibe_Code_Snippet::is_code_post_type( $args['post_type'] ) ) {
 			return $this->wpcode_write_refusal();
 		}
 
@@ -683,7 +683,7 @@ trait WPVibe_CLI_Post {
 		if ( empty( $fields ) ) {
 			return $this->error_result( __( 'No fields to update. Use flags like --post_title, --post_content, --post_status.', 'vibe-ai' ) );
 		}
-		if ( isset( $fields['post_type'] ) && 'wpcode' === $fields['post_type'] ) {
+		if ( isset( $fields['post_type'] ) && WPVibe_Code_Snippet::is_code_post_type( $fields['post_type'] ) ) {
 			return $this->wpcode_write_refusal();
 		}
 
@@ -695,7 +695,7 @@ trait WPVibe_CLI_Post {
 				$results[] = array( 'id' => $post_id, 'status' => 'error', 'error' => 'not found' );
 				continue;
 			}
-			if ( 'wpcode' === $post->post_type ) {
+			if ( WPVibe_Code_Snippet::is_code_post( $post ) ) {
 				$results[] = array( 'id' => $post_id, 'status' => 'error', 'error' => 'WPCode snippet — use the code_snippet tool' );
 				continue;
 			}
@@ -776,7 +776,7 @@ trait WPVibe_CLI_Post {
 			/* translators: %s: post ID */
 			return $this->error_result( sprintf( __( 'Post %s not found.', 'vibe-ai' ), $positional[0] ) );
 		}
-		if ( 'wpcode' === $post->post_type ) {
+		if ( WPVibe_Code_Snippet::is_code_post( $post ) ) {
 			return $this->wpcode_write_refusal();
 		}
 
@@ -842,7 +842,7 @@ trait WPVibe_CLI_Post {
 			/* translators: %s: post ID */
 			return $this->error_result( sprintf( __( 'Post %s not found.', 'vibe-ai' ), $positional[0] ) );
 		}
-		if ( 'wpcode' === $post->post_type ) {
+		if ( WPVibe_Code_Snippet::is_code_post( $post ) ) {
 			return $this->wpcode_write_refusal();
 		}
 
@@ -887,7 +887,7 @@ trait WPVibe_CLI_Post {
 			/* translators: %s: post ID */
 			return $this->error_result( sprintf( __( 'Post %s not found.', 'vibe-ai' ), $positional[0] ) );
 		}
-		if ( 'wpcode' === $post->post_type ) {
+		if ( WPVibe_Code_Snippet::is_code_post( $post ) ) {
 			return $this->wpcode_write_refusal();
 		}
 
@@ -953,7 +953,7 @@ trait WPVibe_CLI_Post {
 			/* translators: %s: post ID */
 			return $this->error_result( sprintf( __( 'Post %s not found.', 'vibe-ai' ), $positional[0] ) );
 		}
-		if ( 'wpcode' === $post->post_type ) {
+		if ( WPVibe_Code_Snippet::is_code_post( $post ) ) {
 			return $this->wpcode_write_refusal();
 		}
 

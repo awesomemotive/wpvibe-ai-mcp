@@ -94,6 +94,10 @@ class WPVibe_Beaver {
 		if ( empty( $data ) || ! is_array( $data ) ) {
 			return new WP_Error( 'invalid_input', __( 'The `data` node map is required and must be an object.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
 		}
+		$code_post = WPVibe_Code_Snippet::code_post_write_error( $post_type, (int) $id );
+		if ( $code_post ) {
+			return $code_post;
+		}
 
 		// BB only renders layouts for post types enabled in its settings; writing to
 		// a disabled type "succeeds" but renders a blank page. Fail loudly instead.

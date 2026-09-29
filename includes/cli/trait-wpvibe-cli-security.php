@@ -280,7 +280,7 @@ trait WPVibe_CLI_Security {
 			// classification so no human is handed an approve button the
 			// executor would refuse anyway (and the preview never runs).
 			$normalized = $this->normalize_sql_for_gate( $sql );
-			$privileged = $this->privileged_sql_target_error( $normalized );
+			$privileged = $this->privileged_sql_target_error( $sql );
 			if ( $privileged ) {
 				return array(
 					'operation' => 'db_query_' . strtolower( $keyword ),
@@ -402,22 +402,16 @@ trait WPVibe_CLI_Security {
 			);
 		}
 
-		// Bulk transient wipes — `wp transient delete --all` clears every
-		// transient including licensing tokens, refresh tokens, cached API
-		// responses, etc. Recovery is impossible. Same threat profile as a
-		// destructive option op even though the cap is just manage_options.
-		if ( 'transient delete' === $command_key && ( ! empty( $flags['all'] ) || ! empty( $flags['expired'] ) ) ) {
-			$scope = ! empty( $flags['all'] ) ? 'all' : 'expired';
+		// `--all` clears every transient including licensing tokens, refresh tokens and
+		// cached API responses, so it gates. `--expired` alone is the cleanup WordPress's own
+		// cron runs and our server instructions tell every AI to run, so it does not.
+		if ( 'transient delete' === $command_key && ! empty( $flags['all'] ) ) {
 			return array(
-				'operation' => 'transient_delete_' . $scope,
-				'reason'    => 'all' === $scope
-					? __( '--all wipes every transient on the site, including license tokens, refresh tokens, cached API responses, and any per-plugin state stored as a transient. Cannot be undone.', 'vibe-ai' )
-					: __( '--expired removes every transient WP considers expired. Usually safe (these are caches) but the operation is unbounded — call it out so the user sees what is going.', 'vibe-ai' ),
+				'operation' => 'transient_delete_all',
+				'reason'    => __( '--all wipes every transient on the site, including license tokens, refresh tokens, cached API responses, and any per-plugin state stored as a transient. Cannot be undone.', 'vibe-ai' ),
 				'dry_run'   => array(
-					'command' => 'wp transient delete --' . $scope,
-					'note'    => 'all' === $scope
-						? __( 'Every wp_options row whose name starts with _transient_ is deleted. Site transients (_site_transient_ rows) are left untouched.', 'vibe-ai' )
-						: __( 'Every transient whose expiration timestamp is in the past is deleted.', 'vibe-ai' ),
+					'command' => 'wp transient delete --all',
+					'note'    => __( 'Every wp_options row whose name starts with _transient_ is deleted. Site transients (_site_transient_ rows) are left untouched.', 'vibe-ai' ),
 				),
 			);
 		}

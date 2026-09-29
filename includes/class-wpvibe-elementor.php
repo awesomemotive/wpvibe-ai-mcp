@@ -615,6 +615,11 @@ class WPVibe_Elementor {
 			return new WP_Error( 'invalid_data', __( 'The `data` parameter must be an array of root Elementor elements.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
 		}
 
+		$code_post = WPVibe_Code_Snippet::code_post_write_error( $post_type, (int) $id );
+		if ( $code_post ) {
+			return $code_post;
+		}
+
 		$warnings = array();
 		$document = null;
 		// Defaults belong to creates; an update keeps the post's status and document type unless the caller sets them.

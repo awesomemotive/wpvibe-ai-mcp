@@ -424,6 +424,9 @@ trait WPVibe_CLI_Option {
 
 		if ( ! empty( $flags['expired'] ) ) {
 			$count = $this->purge_expired_transients();
+			if ( null === $count ) {
+				return $this->success_result( array( 'message' => __( 'This site uses a persistent object cache, which expires transients on its own. Nothing was deleted.', 'vibe-ai' ) ) );
+			}
 			WPVibe_Change_Tracker::mark( array( 'summary' => "Expired transients purged: {$count}", 'action_label' => 'Refresh' ) );
 			/* translators: %d: number of expired transients deleted */
 			return $this->success_result( array( 'message' => sprintf( __( 'Deleted %d expired transient(s).', 'vibe-ai' ), $count ) ) );
@@ -483,25 +486,32 @@ trait WPVibe_CLI_Option {
 	}
 
 
+	/**
+	 * WordPress's own cleanup (delete_expired_transients), for this site's transients
+	 * only. A persistent object cache expires transients itself and its entries may be
+	 * fresher than a stale database timeout, so nothing is touched there; otherwise one
+	 * statement removes each value/timeout pair whose timeout is past at delete time.
+	 */
 	private function purge_expired_transients() {
 		global $wpdb;
-		$now = time();
+		if ( wp_using_ext_object_cache() ) {
+			return null;
+		}
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		$expired = $wpdb->get_col(
+		$deleted = $wpdb->query(
 			$wpdb->prepare(
-				"SELECT option_name FROM {$wpdb->options} WHERE option_name LIKE %s AND option_value < %d",
+				"DELETE a, b FROM {$wpdb->options} a, {$wpdb->options} b
+				WHERE a.option_name LIKE %s
+				AND a.option_name NOT LIKE %s
+				AND b.option_name = CONCAT( '_transient_timeout_', SUBSTRING( a.option_name, %d ) )
+				AND b.option_value < %d",
+				$wpdb->esc_like( '_transient_' ) . '%',
 				$wpdb->esc_like( '_transient_timeout_' ) . '%',
-				$now
+				strlen( '_transient_' ) + 1,
+				time()
 			)
 		);
-		$count = 0;
-		foreach ( $expired as $timeout_name ) {
-			$name = preg_replace( '/^_transient_timeout_/', '', $timeout_name );
-			if ( delete_transient( $name ) ) {
-				$count++;
-			}
-		}
-		return $count;
+		return (int) floor( max( 0, (int) $deleted ) / 2 );
 	}
 
 
@@ -851,6 +861,9 @@ trait WPVibe_CLI_Option {
 	/** Blocked options with a supported narrow-door command get it named in the refusal. */
 	private function blocked_option_alternative( $key ) {
 		$canonical = self::match_option_name( $key, self::BLOCKED_OPTIONS );
+		if ( in_array( $canonical, WPVibe_Code_Snippet::STORAGE_OPTIONS, true ) ) {
+			return ' ' . WPVibe_Code_Snippet::write_refusal_text();
+		}
 		if ( 'auto_update_plugins' === $canonical ) {
 			return ' ' . __( 'To change plugin auto-updates, use `plugin auto-updates enable <slug>` or `plugin auto-updates disable <slug>` instead.', 'vibe-ai' );
 		}

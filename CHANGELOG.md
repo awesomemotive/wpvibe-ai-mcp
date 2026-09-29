@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.19.2] - 2026-09-29
+
+- Security: WPCode snippets and their storage (the active-snippet cache, the site-wide header and footer scripts, snippet posts) can only change through WPVibe's code snippet flow, which saves new code disabled for you to review. Content edits and page builder saves that would reach them are refused.
+- Security: Raw SQL can no longer write to the users, user meta or options tables, even with approval. WPVibe points the AI to the matching WordPress command instead, which runs WordPress's own checks.
+- Improvement: Fewer approval prompts. Clearing expired transients runs without one, and snippet saves that land disabled no longer ask, because enabling a snippet in wp-admin is the real approval.
+- Improvement: A domain migration with search-replace can change the site and home addresses again after approval, with a clear warning. Other protected settings are skipped.
+- Fix: WPVibe refuses to activate its own working draft of a theme, which would serve the site without its compiled styles. Uninstalling WPVibe keeps an active draft or backup theme in place.
+- Fix: When another plugin or theme prints warnings or errors during a WPVibe request, the response stays clean, so a command that succeeded is no longer reported as a failure.
+
 ## [1.19.1] - 2026-09-28
 
 - Fix: Opening a draft theme preview can no longer crash wp-admin. On some hosts a preview could run out of memory on every admin page until the browser's site data was cleared, and a broken draft theme could take the whole admin area down with it.

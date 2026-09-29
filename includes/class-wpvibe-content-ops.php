@@ -1012,6 +1012,10 @@ class WPVibe_Content_Ops {
 	private function store( $type, $args, $updated ) {
 		switch ( $type ) {
 			case 'post':
+				$code_post = WPVibe_Code_Snippet::code_post_write_error( '', (int) $args['post_id'] );
+				if ( $code_post ) {
+					return $code_post;
+				}
 				// wp_update_post expects slashed data; it unslashes internally.
 				$res = wp_update_post( self::keep_page_template( array(
 					'ID'           => (int) $args['post_id'],
@@ -1028,6 +1032,10 @@ class WPVibe_Content_Ops {
 			case 'meta':
 				$post_id = (int) $args['post_id'];
 				$key     = (string) $args['key'];
+				$code_post = WPVibe_Code_Snippet::code_post_write_error( '', $post_id );
+				if ( $code_post ) {
+					return $code_post;
+				}
 				// Same meta-level auth boundary as load(); edit_post alone is not it.
 				if ( ! current_user_can( 'edit_post_meta', $post_id, $key ) && ! $this->admin_meta_override( $post_id, $key ) ) {
 					return $this->meta_forbidden_error( $post_id, $key );
@@ -1120,7 +1128,7 @@ class WPVibe_Content_Ops {
 				/* translators: %s: option key */
 				__( 'Option \'%s\' is blocked for security.', 'vibe-ai' ),
 				$name
-			),
+			) . ( WPVibe_Code_Snippet::is_storage_option( $name ) ? ' ' . WPVibe_Code_Snippet::write_refusal_text() : '' ),
 			WPVibe_Error_Contract::data( 'security_gate', false, array( 'status' => 403 ) )
 		);
 	}
