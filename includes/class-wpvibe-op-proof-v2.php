@@ -18,6 +18,10 @@ class WPVibe_Op_Proof_V2 {
 		if ( '' === $op_id || ! preg_match( '/^v2\.([a-zA-Z0-9_-]{1,64})\.([0-9]{1,12})\.([a-zA-Z0-9_-]{86})$/D', $proof, $m ) ) {
 			return self::error( 'missing', __( 'This operation requires a current WPVibe-signed approval. Keep the site connected and use the WPVibe approval flow.', 'vibe-ai' ) );
 		}
+		$bypass = '1' === (string) $request->get_header( 'x_wpvibe_op_bypass' );
+		if ( $bypass && ! in_array( $route, WPVibe_Approval_Bypass::PROOF_ROUTES, true ) ) {
+			return self::error( 'invalid', __( 'This operation cannot run without an approval.', 'vibe-ai' ) );
+		}
 		$exp = (int) $m[2];
 		if ( $exp < time() || $exp > time() + self::MAX_TTL ) {
 			return self::error( 'expired', __( 'The operation approval expired. Request a fresh approval in WPVibe.', 'vibe-ai' ) );
@@ -34,7 +38,8 @@ class WPVibe_Op_Proof_V2 {
 			if ( '' === $password ) { return self::error( 'invalid', __( 'The approved connection credential is missing.', 'vibe-ai' ) ); }
 			$credential = hash( 'sha256', $password );
 		}
-		$message = implode( "\n", array( 'wpvibe-op-proof-v2', $m[1], static::audience(), $credential, $op_id, (string) $route, hash( 'sha256', (string) $subject ), $exp ) );
+		// A bypass claim signs under its own domain, so neither kind of proof verifies as the other.
+		$message = implode( "\n", array( $bypass ? 'wpvibe-op-proof-v2-bypass' : 'wpvibe-op-proof-v2', $m[1], static::audience(), $credential, $op_id, (string) $route, hash( 'sha256', (string) $subject ), $exp ) );
 		$signature = base64_decode( strtr( $m[3], '-_', '+/' ), true );
 		$public_key = base64_decode( strtr( static::PUBLIC_KEYS[ $m[1] ], '-_', '+/' ), true );
 		try {
@@ -51,7 +56,17 @@ class WPVibe_Op_Proof_V2 {
 				}
 			}
 		} catch ( Throwable $error ) { $valid = false; }
-		return $valid ? true : self::error( 'invalid', __( 'The signed approval does not match this site, connection, or operation. Keep the existing connection and send the failed check to WPVibe support.', 'vibe-ai' ) );
+		if ( ! $valid ) {
+			return self::error( 'invalid', __( 'The signed approval does not match this site, connection, or operation. Keep the existing connection and send the failed check to WPVibe support.', 'vibe-ai' ) );
+		}
+		if ( $bypass ) {
+			// The site's own setting decides at the moment of execution, whatever the Worker last saw.
+			if ( ! WPVibe_Approval_Bypass::is_on() ) {
+				return new WP_Error( 'wpvibe_bypass_off', __( 'Not run: this site does not bypass approvals, so this operation needs an approval. Nothing was changed.', 'vibe-ai' ), array( 'status' => 403 ) );
+			}
+			WPVibe_Approval_Bypass::$request_bypassed = true;
+		}
+		return true;
 	}
 
 	private static function error( $code, $message ) {

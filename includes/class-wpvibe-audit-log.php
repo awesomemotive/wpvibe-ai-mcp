@@ -89,7 +89,7 @@ class WPVibe_Audit_Log {
 			array(
 				'user_id'        => get_current_user_id(),
 				'operation'      => substr( (string) ( $args['operation'] ?? 'unknown' ), 0, 64 ),
-				'command'        => (string) ( $args['command'] ?? '' ),
+				'command'        => (string) ( $args['command'] ?? '' ) . ( class_exists( 'WPVibe_Approval_Bypass' ) && WPVibe_Approval_Bypass::$request_bypassed ? ' [no approval: bypass on]' : '' ),
 				'params_json'    => isset( $args['params'] ) ? wp_json_encode( $args['params'] ) : null,
 				'dry_run_json'   => isset( $args['dry_run'] ) ? wp_json_encode( $args['dry_run'] ) : null,
 				'result_summary' => isset( $args['result_summary'] ) ? substr( (string) $args['result_summary'], 0, 500 ) : null,

@@ -8,6 +8,8 @@
 defined( 'ABSPATH' ) || exit;
 
 trait WPVibe_CLI_Db {
+	/** wpdb::$reconnect_retries saved while a db query transaction is open. */
+	private $db_query_reconnect_retries = null;
 	/** Set true when replace_in_value hits a __PHP_Incomplete_Class; the row is skipped. */
 	private $sr_incomplete = false;
 	private $sr_skipped_serialized = 0;
@@ -45,9 +47,23 @@ trait WPVibe_CLI_Db {
 	 * form, is unwrapped with shell semantics (`\"` and `\\` inside double
 	 * quotes; the `'\''` apostrophe idiom inside single quotes). Anything else
 	 * is handed to MySQL exactly as typed, so a quote mark that is not a
-	 * wrapper is a quote mark to MySQL too, never command structure.
+	 * wrapper is a quote mark to MySQL too, never command structure. The one
+	 * exception is a read the model misquoted (see db_query_intended_read).
 	 */
 	private function db_query_raw_statement( $rest ) {
+		$rest   = (string) $rest;
+		$strict = $this->db_query_strict_statement( $rest );
+		if ( '' !== $strict && ( '"' === $strict[0] || "'" === $strict[0] ) ) {
+			$intended = $this->db_query_intended_read( $rest );
+			if ( null !== $intended ) {
+				$this->db_query_glued_limit = $intended[1];
+				return $intended[0];
+			}
+		}
+		return $strict;
+	}
+
+	private function db_query_strict_statement( $rest ) {
 		$rest = trim( (string) $rest );
 		$flag = '--[a-z][\w-]*(?:=(?:"[^"]*"|\'[^\']*\'|\S+))?';
 		$rest = trim( preg_replace( '/^(?:' . $flag . '\s+)+/i', '', $rest ) );
@@ -68,30 +84,148 @@ trait WPVibe_CLI_Db {
 		return $rest;
 	}
 
+	/**
+	 * The read the model meant when its quoting broke: a flag glued inside the
+	 * closing quote (`"SELECT ... --limit=5"`, whose flag value swallows the
+	 * quote), an unescaped `"` inside a double-quoted statement, single quotes
+	 * nested in single quotes, or a missing closing quote. The first and last
+	 * quote marks are taken as the wrapper. Only a statement that starts like a
+	 * read is taken this way; it then runs in a read-only transaction, so a
+	 * wrong guess can fail but cannot write. Returns [sql, glued --limit] or null.
+	 */
+	private function db_query_intended_read( $rest ) {
+		$flag = '--[a-z][\w-]*(?:=(?:"[^"]*"|\'[^\']*\'|\S+))?';
+		$s    = trim( preg_replace( '/^(?:' . $flag . '\s+)+/i', '', trim( (string) $rest ) ) );
+		$q    = '' === $s ? '' : $s[0];
+		if ( '"' !== $q && "'" !== $q ) {
+			return null;
+		}
+		$s     = substr( $s, 1 );
+		$limit = null;
+		for ( $i = 0; $i < 3; $i++ ) {
+			if ( preg_match( '/(?:\s+' . $flag . ')+$/i', $s, $m, PREG_OFFSET_CAPTURE ) ) {
+				if ( preg_match_all( '/--limit=[\'"]?(\d+)/i', $m[0][0], $lm ) ) {
+					$limit = (int) end( $lm[1] );
+				}
+				$s = rtrim( substr( $s, 0, $m[0][1] ) );
+				continue;
+			}
+			if ( '' !== $s && substr( $s, -1 ) === $q ) {
+				$s = rtrim( substr( $s, 0, -1 ) );
+				continue;
+			}
+			break;
+		}
+		$sql = '"' === $q ? preg_replace( '/\\\\(["\\\\])/', '$1', $s ) : str_replace( "'\\''", "'", $s );
+		if ( '' === trim( $sql ) || 'read' !== $this->sql_verdict( $sql )[0] ) {
+			return null;
+		}
+		return array( $sql, $limit );
+	}
+
 
 	/**
-	 * The whole db query gate. A statement that starts with SELECT, SHOW,
-	 * DESCRIBE, DESC or EXPLAIN SELECT is a read: MySQL will not let it write,
-	 * so its text is not scanned for write words (#385: a write word inside a
-	 * quoted literal is not a write). EXPLAIN alone is not enough: EXPLAIN
-	 * ANALYZE executes the statement it explains, UPDATE and DELETE included.
-	 * A read that calls SLEEP, BENCHMARK, GET_LOCK or RELEASE_LOCK can tie up
-	 * the database, so it is held for approval (#397). Everything else is a
-	 * write and is held for approval as before. WITH is not a read marker:
-	 * MySQL 8 allows `WITH ... UPDATE`.
+	 * The whole db query gate. A statement that starts like a read (SELECT,
+	 * WITH, SHOW, DESCRIBE, DESC or EXPLAIN, after any leading parentheses and
+	 * comments) is a read: handle_db_query runs it inside a read-only
+	 * transaction, so the server, not this scan, decides whether it writes
+	 * (#385: a write word inside a quoted literal is not a write; MySQL 8's
+	 * `WITH ... UPDATE` and EXPLAIN ANALYZE of a write are refused by the
+	 * server and come back for approval). A read that calls SLEEP, BENCHMARK,
+	 * GET_LOCK or RELEASE_LOCK can tie up the database, so it is held for
+	 * approval (#397). Everything else is a write and is held for approval.
 	 *
 	 * @return array{0: 'read'|'slow'|'write', 1: string} kind and the first keyword.
 	 */
 	private function sql_verdict( $sql ) {
-		$upper = strtoupper( trim( $this->strip_sql_comments_for_validation( $sql ) ) );
-		if ( ! preg_match( '/^(SELECT|SHOW|DESCRIBE|DESC|EXPLAIN\s+SELECT)\b/', $upper, $m ) ) {
+		$upper = strtoupper( ltrim( trim( $this->strip_sql_comments_for_validation( $sql ) ), "( \t\r\n" ) );
+		if ( ! preg_match( '/^(SELECT|WITH|SHOW|DESCRIBE|DESC|EXPLAIN)\b/', $upper, $m ) ) {
 			preg_match( '/^([A-Z_]+)/', $upper, $w );
 			return array( 'write', isset( $w[1] ) ? $w[1] : 'SQL' );
 		}
 		if ( preg_match( '/\b(SLEEP|BENCHMARK|GET_LOCK|RELEASE_LOCK)\s*\(/', $this->sql_scan_text( $sql ), $s ) ) {
-			return array( 'slow', $s[1] );
+			// An approved slow read runs outside the read-only transaction, so only
+			// a statement MySQL cannot make write gets that path; WITH or EXPLAIN
+			// with one of these is held (and guarded) as a write.
+			return $this->sql_legacy_read( $sql ) ? array( 'slow', $s[1] ) : array( 'write', $m[1] );
 		}
-		return array( 'read', preg_replace( '/\s+.*/s', '', $m[1] ) );
+		return array( 'read', $m[1] );
+	}
+
+	/**
+	 * The reads that ran without a transaction before 1.19.3, and still do on
+	 * a server that refuses START TRANSACTION READ ONLY: MySQL cannot make
+	 * these write, save through a stored function.
+	 */
+	private function sql_legacy_read( $sql ) {
+		// DESC/DESCRIBE are EXPLAIN synonyms: DESC ANALYZE DELETE ... runs the DELETE, so only the table form counts.
+		return (bool) preg_match( '/^(SELECT\b|SHOW\b|(?:EXPLAIN|DESCRIBE|DESC)\s+SELECT\b|(?:DESCRIBE|DESC)\s+(?!(?:ANALYZE|FORMAT|EXTENDED|PARTITIONS|UPDATE|DELETE|INSERT|REPLACE|TABLE|FOR|WITH)\b)[`A-Z0-9_$])/', strtoupper( trim( $this->strip_sql_comments_for_validation( $sql ) ) ) );
+	}
+
+	/** START TRANSACTION READ ONLY (MySQL 5.6.5+, MariaDB 10.0+); false when the server refuses it. */
+	private function db_query_begin_read_only() {
+		global $wpdb;
+		$this->db_query_hold_reconnect();
+		$suppress = $wpdb->suppress_errors( true );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->query( 'START TRANSACTION READ ONLY' ); // nosemgrep: direct-db-query
+		$ok = '' === (string) $wpdb->last_error;
+		$wpdb->suppress_errors( $suppress );
+		$wpdb->last_error = '';
+		if ( ! $ok ) {
+			$this->db_query_restore_reconnect();
+		}
+		return $ok;
+	}
+
+	/**
+	 * wpdb reconnects and replays a query after "server has gone away"; the
+	 * replay would run outside the open transaction (autocommitted), so no
+	 * retries until it ends. Pair with db_query_restore_reconnect.
+	 */
+	private function db_query_hold_reconnect() {
+		global $wpdb;
+		$this->db_query_reconnect_retries = isset( $wpdb->reconnect_retries ) ? $wpdb->reconnect_retries : null;
+		if ( null !== $this->db_query_reconnect_retries ) {
+			$wpdb->reconnect_retries = 0;
+		}
+	}
+
+	/** Whether the transaction's own connection is still up; with retries held at 0 this never reconnects or bails. */
+	private function db_query_connected() {
+		global $wpdb;
+		return (bool) $wpdb->check_connection( false );
+	}
+
+	private function db_query_restore_reconnect() {
+		global $wpdb;
+		if ( null !== $this->db_query_reconnect_retries ) {
+			$wpdb->reconnect_retries = $this->db_query_reconnect_retries;
+		}
+	}
+
+	private function db_query_end_read_only() {
+		global $wpdb;
+		$suppress = $wpdb->suppress_errors( true );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->query( 'ROLLBACK' ); // nosemgrep: direct-db-query
+		$wpdb->suppress_errors( $suppress );
+		$wpdb->last_error = '';
+		$this->db_query_restore_reconnect();
+	}
+
+	/**
+	 * The approval (or refusal) a statement that starts like a read gets when
+	 * it cannot run as one: the server rejected it as a write inside the
+	 * read-only transaction, or the server has no read-only transactions and
+	 * it is not one of the legacy reads.
+	 */
+	private function db_query_hold( $positional, $keyword ) {
+		$destructive = $this->classify_db_query_write( $this->db_query_statement( $positional ), $keyword );
+		if ( ! empty( $destructive['refuse'] ) ) {
+			return $destructive['refuse'];
+		}
+		return $this->approval_required_error( $destructive, 'db query' );
 	}
 
 
@@ -160,28 +294,18 @@ trait WPVibe_CLI_Db {
 		}
 
 		list( $kind, $keyword ) = $this->sql_verdict( $sql );
-		$is_select = ( 'SELECT' === $keyword );
 
 		// classify_destructive holds writes and slow reads for approval; this is
 		// defense in depth for a direct call.
 		if ( 'write' === $kind && ! $this->skip_destructive ) {
-			return $this->error_result( __( 'Mutating SQL requires explicit approval. Only SELECT and schema reads (DESCRIBE, SHOW, EXPLAIN) auto-execute.', 'vibe-ai' ) );
+			return $this->error_result( __( 'Mutating SQL requires explicit approval. Only reads (SELECT, WITH, SHOW, DESCRIBE, EXPLAIN) auto-execute.', 'vibe-ai' ) );
 		}
 		if ( 'slow' === $kind && ! $this->skip_destructive ) {
 			/* translators: %s: SQL function name */
 			return $this->error_result( sprintf( __( 'SQL that calls %s() can tie up the database and needs explicit approval.', 'vibe-ai' ), $keyword ) );
 		}
 
-		if ( 'write' === $kind ) {
-			// Identity/privilege state is unapprovable by design: approval-gated
-			// SQL runs with no WP-level guardrails, so one approved statement
-			// against these targets is a site-takeover primitive (siteurl,
-			// active_plugins, wp_capabilities, the users table).
-			$privileged = $this->privileged_sql_target_error( $sql );
-			if ( $privileged ) {
-				return $privileged;
-			}
-		} else {
+		if ( 'write' !== $kind ) {
 			// A read that locks rows or writes a variable/file is not a read.
 			if ( preg_match( '/\bINTO\s+@/', $scan ) ) {
 				return $this->error_result( __( 'SELECT INTO is not allowed.', 'vibe-ai' ) );
@@ -190,62 +314,98 @@ trait WPVibe_CLI_Db {
 				return $this->error_result( __( 'FOR UPDATE/SHARE is not allowed.', 'vibe-ai' ) );
 			}
 
-			$sql = rtrim( $sql, '; ' );
-			// Enforce LIMIT on SELECT; DESCRIBE/SHOW/EXPLAIN don't accept LIMIT and
-			// return bounded rows. Appended on a new line so a trailing `-- note`
-			// comment cannot swallow it.
-			if ( $is_select ) {
+			$read = rtrim( $sql, '; ' );
+			// Enforce LIMIT on SELECT and WITH; DESCRIBE/SHOW/EXPLAIN don't accept
+			// LIMIT and return bounded rows. Appended on a new line so a trailing
+			// `-- note` comment cannot swallow it.
+			if ( in_array( $keyword, array( 'SELECT', 'WITH' ), true ) ) {
 				$default_limit = 100;
-				if ( ! empty( $flags['limit'] ) && is_numeric( $flags['limit'] ) ) {
-					$default_limit = min( (int) $flags['limit'], 1000 );
+				$limit_flag    = ! empty( $flags['limit'] ) ? $flags['limit'] : $this->db_query_glued_limit;
+				if ( ! empty( $limit_flag ) && is_numeric( $limit_flag ) ) {
+					$default_limit = min( (int) $limit_flag, 1000 );
 				}
-				if ( preg_match( '/\bLIMIT\s+(\d+)/i', $sql ) ) {
-					$sql = preg_replace_callback( '/\bLIMIT\s+(\d+)/i', function ( $m ) {
+				if ( preg_match( '/\bLIMIT\s+(\d+)/i', $read ) ) {
+					$read = preg_replace_callback( '/\bLIMIT\s+(\d+)/i', function ( $m ) {
 						return 'LIMIT ' . min( (int) $m[1], 1000 );
-					}, $sql );
+					}, $read );
 				} else {
-					$sql .= "\nLIMIT " . $default_limit;
+					$read .= "\nLIMIT " . $default_limit;
 				}
 			}
 
-			/*
-			 * Raw SQL justification: this handler accepts user-provided read
-			 * statements for database inspection; $wpdb->prepare() cannot be used
-			 * because the whole statement is dynamic. Only SELECT/SHOW/DESCRIBE/
-			 * EXPLAIN-led statements reach here, single statement, no file access,
-			 * no row locks, LIMIT enforced, 30 s statement timeout.
-			 */
-			$this->db_query_read_timeout( 30 );
-			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, PluginCheck.Security.DirectDB.UnescapedDBParameter
-			$results = $wpdb->get_results( $sql, ARRAY_A ); // nosemgrep: direct-db-query
-			$error   = $wpdb->last_error;
-			$this->db_query_read_timeout( 0 );
-			if ( $error ) {
-				/* translators: %s: SQL error message */
-				return $this->error_result( sprintf( __( 'SQL error: %s', 'vibe-ai' ), $error ) );
+			// Unapproved reads run inside a read-only transaction that is always
+			// rolled back, so the server refuses any write the text hides; that
+			// refusal comes back as an approval. A server without read-only
+			// transactions keeps the legacy read set. Approved statements (slow
+			// reads, reads the server refused as writes) run as approved.
+			// A database drop-in (HyperDB, LudicrousDB) can send the statement to a different
+			// connection than the transaction, so only core wpdb gets the wider read set.
+			$read_only = 'read' === $kind && ! $this->skip_destructive && $this->wpdb_is_core() && $this->db_query_begin_read_only();
+			if ( $read_only || 'slow' === $kind || $this->sql_legacy_read( $sql ) ) {
+				/*
+				 * Raw SQL justification: this handler accepts user-provided read
+				 * statements for database inspection; $wpdb->prepare() cannot be used
+				 * because the whole statement is dynamic. Single statement, no file
+				 * access, no row locks, LIMIT enforced, 30 s statement timeout, and a
+				 * read-only transaction wherever the server supports one.
+				 */
+				$this->db_query_read_timeout( 30 );
+				// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, PluginCheck.Security.DirectDB.UnescapedDBParameter
+				$results = $wpdb->get_results( $read, ARRAY_A ); // nosemgrep: direct-db-query
+				$error   = $wpdb->last_error;
+				if ( $read_only ) {
+					$this->db_query_end_read_only();
+				}
+				$this->db_query_read_timeout( 0 );
+				if ( $error && $read_only && false !== stripos( $error, 'READ ONLY transaction' ) ) {
+					return $this->db_query_hold( $positional, $keyword );
+				}
+				if ( $error ) {
+					/* translators: %s: SQL error message */
+					return $this->error_result( sprintf( __( 'SQL error: %s', 'vibe-ai' ), $error ) );
+				}
+
+				$output = array(
+					'table_prefix'  => $wpdb->prefix,
+					'rows_returned' => count( $results ),
+					'results'       => $results,
+				);
+
+				return array(
+					'exit_code' => 0,
+					'stdout'    => wp_json_encode( $output, JSON_PRETTY_PRINT ),
+					'stderr'    => '',
+				);
 			}
+			if ( ! $this->skip_destructive ) {
+				return $this->db_query_hold( $positional, $keyword );
+			}
+		}
 
-			$output = array(
-				'table_prefix'  => $wpdb->prefix,
-				'rows_returned' => count( $results ),
-				'results'       => $results,
-			);
-
-			return array(
-				'exit_code' => 0,
-				'stdout'    => wp_json_encode( $output, JSON_PRETTY_PRINT ),
-				'stderr'    => '',
-			);
+		// Identity/privilege state is unapprovable by design: approval-gated SQL
+		// runs with no WP-level guardrails, so one approved statement against
+		// these targets is a site-takeover primitive (siteurl, active_plugins,
+		// wp_capabilities, the users table).
+		$privileged = $this->privileged_sql_target_error( $sql );
+		if ( $privileged ) {
+			return $privileged;
 		}
 
 		// Mutating path — only reachable when skip_destructive is true (caller is run_approved).
 		// Use $wpdb->query() which returns affected row count for INSERT/UPDATE/DELETE.
 		$sql = rtrim( $sql, '; ' );
-		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, PluginCheck.Security.DirectDB.UnescapedDBParameter
-		$affected = $wpdb->query( $sql ); // nosemgrep: direct-db-query
-		if ( false === $affected || $wpdb->last_error ) {
-			/* translators: %s: SQL error message */
-			return $this->error_result( sprintf( __( 'SQL error: %s', 'vibe-ai' ), $wpdb->last_error ) );
+		if ( $this->db_query_session ) {
+			$affected = $this->db_query_session_write( $sql );
+			if ( is_array( $affected ) ) {
+				return $affected;
+			}
+		} else {
+			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, PluginCheck.Security.DirectDB.UnescapedDBParameter
+			$affected = $wpdb->query( $sql ); // nosemgrep: direct-db-query
+			if ( false === $affected || $wpdb->last_error ) {
+				/* translators: %s: SQL error message */
+				return $this->error_result( sprintf( __( 'SQL error: %s', 'vibe-ai' ), $wpdb->last_error ) );
+			}
 		}
 
 		WPVibe_Change_Tracker::mark( array(
@@ -268,6 +428,276 @@ trait WPVibe_CLI_Db {
 			// SELECT-only). Override to 'write' on the mutating execution path so
 			// the response label matches reality.
 			'tier'      => 'write',
+		);
+	}
+
+	/**
+	 * Row writes (UPDATE, INSERT, DELETE, REPLACE) a session approval may
+	 * cover. Never: schema changes and every other statement; a write whose
+	 * target names a code table (Code Snippets, HFCM, Wow Coder), a WPVibe
+	 * table or WooCommerce API keys; a statement naming another database; any
+	 * write on multisite (other sites' tables are outside the code-storage
+	 * check); or any write on a database with triggers, views or stored
+	 * routines (their effects are invisible to the table scan), or whose post
+	 * and term tables cannot roll back (db_query_session_write needs that).
+	 */
+	private function sql_session_rememberable( $sql, $keyword ) {
+		if ( ! in_array( $keyword, array( 'UPDATE', 'INSERT', 'DELETE', 'REPLACE' ), true ) || is_multisite() ) {
+			return false;
+		}
+		global $wpdb;
+		// Case-sensitive, as execution substitutes it: {PREFIX} stays a literal table name.
+		$sql        = str_replace( '{prefix}', (string) $wpdb->prefix, (string) $sql );
+		$qualifiers = array();
+		foreach ( array( true, false ) as $backslash ) {
+			$tokens = $this->sql_identifier_tokens( $sql, $backslash );
+			foreach ( $this->sql_write_target_zone( $tokens ) as $token ) {
+				if ( 'p' !== $token[0] && preg_match( '/snippets$|hfcm_scripts$|wow_coder|wpvibe_|woocommerce_api_keys$/i', $token[1] ) ) {
+					return false;
+				}
+			}
+			foreach ( $tokens as $i => $token ) {
+				if ( 'p' !== $token[0] && isset( $tokens[ $i + 1 ] ) && array( 'p', '.' ) === $tokens[ $i + 1 ] ) {
+					$qualifiers[ strtolower( $token[1] ) ] = true;
+				}
+			}
+		}
+		if ( $qualifiers && $this->sql_names_other_schema( array_keys( $qualifiers ) ) ) {
+			return false;
+		}
+		if ( ! $this->site_allows_session_sql() ) {
+			return false;
+		}
+		// A rollback leaves a MyISAM (or other non-transactional) table's rows written, so none may appear anywhere in the statement.
+		$loose = $this->site_non_transactional_tables();
+		if ( null === $loose ) {
+			return false;
+		}
+		foreach ( array( true, false ) as $backslash ) {
+			foreach ( $this->sql_identifier_tokens( $sql, $backslash ) as $token ) {
+				if ( 'p' !== $token[0] && isset( $loose[ strtolower( $token[1] ) ] ) ) {
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+
+	/** Lowercased names of this database's base tables that cannot roll back, as keys; null when they cannot be read. */
+	private function site_non_transactional_tables() {
+		if ( null === $this->non_transactional_tables ) {
+			global $wpdb;
+			$suppress = $wpdb->suppress_errors( true );
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$names = $wpdb->get_col( "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE' AND (ENGINE IS NULL OR ENGINE <> 'InnoDB')" ); // nosemgrep: direct-db-query
+			$ok    = '' === (string) $wpdb->last_error && is_array( $names );
+			$wpdb->suppress_errors( $suppress );
+			$wpdb->last_error = '';
+			if ( ! $ok ) {
+				return null;
+			}
+			$this->non_transactional_tables = array_fill_keys( array_map( 'strtolower', $names ), true );
+		}
+		return $this->non_transactional_tables;
+	}
+
+	/**
+	 * db.php drop-ins that make their own connections (HyperDB, LudicrousDB,
+	 * the SQLite integration) route statements by table or role and retry on
+	 * other servers, so a transaction and its checks may not share one
+	 * session. Query Monitor only wraps query() and stays allowed.
+	 */
+	private function wpdb_is_core() {
+		global $wpdb;
+		if ( ! class_exists( 'wpdb', false ) ) {
+			return true;
+		}
+		if ( ! $wpdb instanceof wpdb ) {
+			return false;
+		}
+		foreach ( array( 'db_connect', 'check_connection' ) as $method ) {
+			if ( method_exists( $wpdb, $method ) && 'wpdb' !== ( new ReflectionMethod( $wpdb, $method ) )->getDeclaringClass()->getName() ) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/** True when a qualifier (`x.` in `x.table` or `x.fn()`) is another database this connection can see, or the list cannot be read. */
+	private function sql_names_other_schema( $qualifiers ) {
+		global $wpdb;
+		$suppress = $wpdb->suppress_errors( true );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$schemas = $wpdb->get_col( 'SELECT LOWER(SCHEMA_NAME) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME <> DATABASE()' ); // nosemgrep: direct-db-query
+		$failed  = '' !== (string) $wpdb->last_error || ! is_array( $schemas );
+		$wpdb->suppress_errors( $suppress );
+		$wpdb->last_error = '';
+		return $failed || (bool) array_intersect( $qualifiers, $schemas );
+	}
+
+	/** True for the operation keys classify_db_query_write marks rememberable. */
+	private static function is_session_sql_operation( $operation ) {
+		return (bool) preg_match( '/^db_query_(update|insert|delete|replace):sql$/D', (string) $operation );
+	}
+
+	/**
+	 * On the approved path, SQL the human did not approve statement by
+	 * statement (no approval snapshot naming this operation, so a remembered
+	 * session approval) may run only as a rememberable row write, and then
+	 * only through db_query_session_write. Everything else needs its own
+	 * approval, whatever the caller claims.
+	 */
+	private function db_query_approval_scope( $destructive ) {
+		$operation = is_array( $destructive ) && isset( $destructive['operation'] ) ? (string) $destructive['operation'] : '';
+		if ( 0 !== strpos( $operation, 'db_query_' ) ) {
+			return null;
+		}
+		// A human approval: the snapshot names this operation and the exact SQL the approval page showed.
+		$approved_sql = is_array( $this->approved_state ) && isset( $this->approved_state['dry_run']['sql'] ) ? $this->approved_state['dry_run']['sql'] : null;
+		$fresh_sql    = isset( $destructive['dry_run']['sql'] ) ? $destructive['dry_run']['sql'] : null;
+		if ( isset( $this->approved_state['operation'] ) && (string) $this->approved_state['operation'] === $operation && is_string( $approved_sql ) && $approved_sql === $fresh_sql ) {
+			return null;
+		}
+		if ( self::is_session_sql_operation( $operation ) ) {
+			$this->db_query_session = true;
+			return null;
+		}
+		return new WP_Error(
+			'sql_needs_own_approval',
+			__( 'Not run: this SQL (a schema change, a write to a code-snippet, WPVibe or credential table, or a statement other than a plain row write) needs the user to approve this exact statement. A session approval does not cover it, and nothing was changed.', 'vibe-ai' ),
+			WPVibe_Error_Contract::data( 'approval_flow', false, array( 'status' => 409 ) )
+		);
+	}
+
+	/**
+	 * Whether this database can host remembered SQL at all: the post and term
+	 * tables are InnoDB (a transaction around the write can roll it back),
+	 * the schema has no triggers, views or stored routines, and $wpdb is
+	 * core's single connection.
+	 */
+	private function site_allows_session_sql() {
+		if ( ! $this->wpdb_is_core() ) {
+			return false;
+		}
+		if ( null === $this->code_storage_transactional ) {
+			global $wpdb;
+			$tables   = array( $wpdb->posts, $wpdb->postmeta, $wpdb->term_relationships, $wpdb->term_taxonomy, $wpdb->terms );
+			$in       = "'" . implode( "','", array_map( 'esc_sql', $tables ) ) . "'";
+			$suppress = $wpdb->suppress_errors( true );
+			// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$innodb = $wpdb->get_var( "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ({$in}) AND ENGINE = 'InnoDB'" ); // nosemgrep: direct-db-query
+			$ok     = '' === (string) $wpdb->last_error;
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$indirect = $wpdb->get_var( 'SELECT (SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = DATABASE()) + (SELECT COUNT(*) FROM information_schema.VIEWS WHERE TABLE_SCHEMA = DATABASE()) + (SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = DATABASE())' ); // nosemgrep: direct-db-query
+			$ok     = $ok && '' === (string) $wpdb->last_error && null !== $indirect;
+			$wpdb->suppress_errors( $suppress );
+			$wpdb->last_error                 = '';
+			$this->code_storage_transactional = $ok && count( array_unique( $tables ) ) === (int) $innodb && 0 === (int) $indirect;
+		}
+		return $this->code_storage_transactional;
+	}
+
+	/**
+	 * WPCode and Elementor Pro custom code live in the posts table (their
+	 * posts, meta and type/location terms), so no table name marks a write to
+	 * them. Null when the rows cannot be read.
+	 */
+	private function code_storage_fingerprint() {
+		global $wpdb;
+		$rows  = array();
+		$posts = $wpdb->get_results( "SELECT * FROM {$wpdb->posts} WHERE post_type IN ('wpcode','elementor_snippet') ORDER BY ID", ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		if ( $wpdb->last_error || ! is_array( $posts ) ) {
+			return null;
+		}
+		$ids = implode( ',', array_map( 'intval', array_column( $posts, 'ID' ) ) );
+		$ids = '' === $ids ? '0' : $ids;
+		$rows[] = $posts;
+		foreach ( array(
+			"SELECT * FROM {$wpdb->postmeta} WHERE post_id IN ({$ids}) ORDER BY meta_id",
+			"SELECT * FROM {$wpdb->term_relationships} WHERE object_id IN ({$ids}) ORDER BY object_id, term_taxonomy_id",
+			"SELECT tt.*, t.name, t.slug, t.term_group FROM {$wpdb->term_taxonomy} tt JOIN {$wpdb->terms} t ON t.term_id = tt.term_id WHERE tt.taxonomy LIKE 'wpcode%' ORDER BY tt.term_taxonomy_id",
+		) as $query ) {
+			$result = $wpdb->get_results( $query, ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			if ( $wpdb->last_error || ! is_array( $result ) ) {
+				return null;
+			}
+			$rows[] = $result;
+		}
+		return md5( serialize( $rows ) ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_serialize
+	}
+
+	/**
+	 * A remembered row write runs in a transaction and is rolled back if it
+	 * changed WPCode or Elementor custom code: that storage is code the user
+	 * reviews in code_snippet, never through a session approval. Returns the
+	 * affected-row count, or an error result.
+	 */
+	private function db_query_session_write( $sql ) {
+		$this->db_query_hold_reconnect();
+		try {
+			return $this->db_query_session_transaction( $sql );
+		} finally {
+			$this->db_query_restore_reconnect();
+		}
+	}
+
+	private function db_query_session_transaction( $sql ) {
+		global $wpdb;
+		// A dropped connection cannot take a ROLLBACK (wpdb would bail), and the server discards the open transaction itself.
+		$abort = function ( $result ) use ( $wpdb ) {
+			if ( ! $this->db_query_connected() ) {
+				return $this->db_query_connection_lost( false );
+			}
+			$wpdb->query( 'ROLLBACK' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			return $result;
+		};
+		// wpdb::query() returns false with no last_error when the connection is gone and not re-made.
+		if ( false === $wpdb->query( 'START TRANSACTION' ) || $wpdb->last_error ) { // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			if ( ! $this->db_query_connected() ) {
+				return $this->db_query_connection_lost( false );
+			}
+			/* translators: %s: SQL error message */
+			return $this->error_result( sprintf( __( 'SQL error: %s', 'vibe-ai' ), $wpdb->last_error ) );
+		}
+		$unreadable = __( 'Not run: WPVibe could not read the code-snippet storage to check this statement against it, so nothing was changed.', 'vibe-ai' );
+		$before     = $this->code_storage_fingerprint();
+		if ( null === $before ) {
+			return $abort( $this->error_result( $unreadable ) );
+		}
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, PluginCheck.Security.DirectDB.UnescapedDBParameter
+		$affected = $wpdb->query( $sql ); // nosemgrep: direct-db-query
+		$error    = $wpdb->last_error;
+		if ( false === $affected || $error ) {
+			/* translators: %s: SQL error message */
+			return $abort( $this->error_result( sprintf( __( 'SQL error: %s', 'vibe-ai' ), $error ) ) );
+		}
+		$after = $this->code_storage_fingerprint();
+		// A read on a dropped connection comes back empty, not as an error, so both fingerprints count only if the connection held.
+		if ( ! $this->db_query_connected() ) {
+			return $this->db_query_connection_lost( false );
+		}
+		if ( null === $after ) {
+			return $abort( $this->error_result( $unreadable ) );
+		}
+		if ( $after !== $before ) {
+			return $abort( $this->error_result( __( 'Not run: this statement changes WPCode or Elementor custom-code snippets (their posts, meta or type/location terms). A session approval never covers code, so the statement was rolled back and nothing changed. Leave those rows out (for example post_type NOT IN (\'wpcode\',\'elementor_snippet\')), or use code_snippet for snippet changes.', 'vibe-ai' ) ) );
+		}
+		$committed = $wpdb->query( 'COMMIT' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		if ( false === $committed || $wpdb->last_error ) {
+			if ( ! $this->db_query_connected() ) {
+				return $this->db_query_connection_lost( true );
+			}
+			/* translators: %s: SQL error message */
+			return $this->error_result( sprintf( __( 'SQL error: %s', 'vibe-ai' ), $wpdb->last_error ) );
+		}
+		return (int) $affected;
+	}
+
+	private function db_query_connection_lost( $at_commit ) {
+		return $this->error_result(
+			$at_commit
+				? __( 'Failed: the database connection was lost while committing this statement, so WPVibe cannot confirm whether it was saved. It was not retried. Check the affected rows before running it again.', 'vibe-ai' )
+				: __( 'Failed: the database connection was lost during this statement, before it was committed, so the database server discarded it. WPVibe does not reconnect and retry inside the transaction. Check the site\'s database connection, then run the statement again.', 'vibe-ai' )
 		);
 	}
 

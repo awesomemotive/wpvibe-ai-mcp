@@ -58,6 +58,12 @@ class WPVibe_CLI {
 	private $approved_state   = null;
 	/** Raw `db query` statement captured by execute() before tokenizing (#397); null for every other command. */
 	private $db_query_raw = null;
+	/** Approved SQL running under a remembered session approval, not a per-statement one. */
+	private $db_query_session = false;
+	private $code_storage_transactional = null;
+	private $non_transactional_tables = null;
+	/** --limit=N the model glued inside the closing quote of a read (`"SELECT ... --limit=5"`). */
+	private $db_query_glued_limit = null;
 	/** Running out of band (WPVibe_Detached_Ops): no request deadline applies. */
 	private $detached = false;
 
@@ -338,6 +344,7 @@ class WPVibe_CLI {
 		'initial_db_version',
 		'wpvibe_self_update_state',
 		'wpvibe_detached_*',
+		'wpvibe_bypass_approvals',
 		// WPCode storage (WPVibe_Code_Snippet::STORAGE_OPTIONS): audits read it, only code_snippet writes it.
 		'wpcode_snippets',
 		'ihaf_insert_*',
@@ -351,6 +358,8 @@ class WPVibe_CLI {
 		'wpvibe_connection_status',
 		'wpvibe_authorization_pending_at',
 		'wpvibe_allow_app_passwords',
+		// Only the wp-admin form turns approval bypass on (WPVibe_Approval_Bypass).
+		'wpvibe_bypass_approvals',
 		// Loopback hand-off state: the public run routes trust it, so a seeded row would run as the stored admin.
 		'wpvibe_self_update_state',
 		'wpvibe_detached_*',
@@ -827,6 +836,19 @@ class WPVibe_CLI {
 		return $this->execute( $command, $confirm_write, true );
 	}
 
+	private function approval_required_error( $destructive, $command_key ) {
+		return new WP_Error(
+			'approval_required',
+			$destructive['reason'],
+			WPVibe_Error_Contract::data( 'approval_flow', true, array(
+				'status'    => 409,
+				'operation' => $destructive['operation'],
+				'dry_run'   => $destructive['dry_run'],
+				'command'   => 'wp ' . $command_key,
+			) )
+		);
+	}
+
 	private function execute( $command, $confirm_write, $skip_destructive ) {
 		$this->skip_destructive = (bool) $skip_destructive;
 		$command = trim( $command );
@@ -838,7 +860,8 @@ class WPVibe_CLI {
 		$is_db_query = ( strpos( $command, 'db query' ) === 0 );
 		// The SQL is taken from the raw text, not the quote-stripped tokens:
 		// the tokenizer would turn `SELECT 1 "UNION SELECT SLEEP(1)"` into live SQL.
-		$this->db_query_raw = $is_db_query ? $this->db_query_raw_statement( substr( $command, 8 ) ) : null;
+		$this->db_query_glued_limit = null;
+		$this->db_query_raw         = $is_db_query ? $this->db_query_raw_statement( substr( $command, 8 ) ) : null;
 		$blocked_char = $this->find_unquoted_shell_char( $command, $is_db_query );
 		if ( null !== $blocked_char ) {
 			$hint = ( '<' === $blocked_char || '>' === $blocked_char )
@@ -896,16 +919,7 @@ class WPVibe_CLI {
 		// human an approve button for something that can never run.
 		$refusal = $destructive && ! empty( $destructive['refuse'] ) ? $destructive['refuse'] : null;
 		if ( $destructive && ! $refusal && ! $skip_destructive ) {
-			return new WP_Error(
-				'approval_required',
-				$destructive['reason'],
-				WPVibe_Error_Contract::data( 'approval_flow', true, array(
-					'status'    => 409,
-					'operation' => $destructive['operation'],
-					'dry_run'   => $destructive['dry_run'],
-					'command'   => 'wp ' . $command_key,
-				) )
-			);
+			return $this->approval_required_error( $destructive, $command_key );
 		}
 
 		// Approve-to-execute drift check (issue #30): the approval was granted
@@ -916,6 +930,10 @@ class WPVibe_CLI {
 			$drift = $this->check_approved_state_drift( $destructive );
 			if ( is_wp_error( $drift ) ) {
 				return $drift;
+			}
+			$scope = $this->db_query_approval_scope( $destructive );
+			if ( is_wp_error( $scope ) ) {
+				return $scope;
 			}
 		}
 

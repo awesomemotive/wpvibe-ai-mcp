@@ -89,7 +89,8 @@
 		var routed = function ( options ) {
 			if ( options && typeof options.path === 'string' && options.path.indexOf( '/wp/v2/users/me/application-passwords' ) === 0 && ( options.method || 'GET' ).toUpperCase() === 'POST' ) {
 				var q = options.path.indexOf( '?' );
-				options = $.extend( {}, options, { path: cfg.mintPath + ( q >= 0 ? options.path.slice( q ) : '' ) } );
+				// dataType: a site serving REST as text/html otherwise hands core a string and it redirects with password=undefined (#689).
+				options = $.extend( {}, options, { path: cfg.mintPath + ( q >= 0 ? options.path.slice( q ) : '' ), dataType: 'json' } );
 			}
 			return origApiRequest.call( this, options );
 		};

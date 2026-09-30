@@ -252,17 +252,20 @@ trait WPVibe_CLI_Security {
 		}
 
 		// db query: one rule, shared with handle_db_query (sql_verdict). A
-		// SELECT/SHOW/DESCRIBE/EXPLAIN-led statement is a read and runs; a read
-		// that calls SLEEP/BENCHMARK/GET_LOCK is held; anything else is a write
-		// and is held. The statement is the raw text, never the quote-stripped
-		// token join (#385, #397).
+		// statement that starts like a read runs in the handler inside a
+		// read-only transaction, and one the server refuses as a write comes
+		// back for approval from there; a read that calls SLEEP/BENCHMARK/
+		// GET_LOCK is held; anything else is a write and is held. On the
+		// approved path a read-like statement is classified as the write it
+		// turned out to be. The statement is the raw text, never the
+		// quote-stripped token join (#385, #397).
 		if ( 'db query' === $command_key ) {
 			$sql = $this->db_query_statement( $positional );
 			if ( '' === $sql ) {
 				return null; // Handler will return a usage error.
 			}
 			list( $kind, $keyword ) = $this->sql_verdict( $sql );
-			if ( 'read' === $kind ) {
+			if ( 'read' === $kind && ! $this->skip_destructive ) {
 				return null;
 			}
 			if ( 'slow' === $kind ) {
@@ -276,28 +279,7 @@ trait WPVibe_CLI_Security {
 					'dry_run'   => array( 'sql' => $sql ),
 				);
 			}
-			// An identity/privilege target is unapprovable: refuse at
-			// classification so no human is handed an approve button the
-			// executor would refuse anyway (and the preview never runs).
-			$normalized = $this->normalize_sql_for_gate( $sql );
-			$privileged = $this->privileged_sql_target_error( $sql );
-			if ( $privileged ) {
-				return array(
-					'operation' => 'db_query_' . strtolower( $keyword ),
-					'reason'    => (string) $privileged['stderr'],
-					'dry_run'   => null,
-					'refuse'    => $privileged,
-				);
-			}
-			return array(
-				'operation' => 'db_query_' . strtolower( $keyword ),
-				'reason'    => sprintf(
-					/* translators: %s: SQL keyword */
-					__( 'Mutating SQL (%s) bypasses all plugin safety. Direct DB writes need explicit approval.', 'vibe-ai' ),
-					$keyword
-				),
-				'dry_run'   => $this->build_db_query_dry_run( $keyword, $sql, $normalized ),
-			);
+			return $this->classify_db_query_write( $sql, $keyword );
 		}
 
 		// Enabling white label hides every WPVibe surface in wp-admin, including
@@ -1339,6 +1321,37 @@ trait WPVibe_CLI_Security {
 		return $dry;
 	}
 
+
+	/**
+	 * Approval (or refusal) for a db query write. An identity/privilege target
+	 * is unapprovable: refused here so no human is handed an approve button the
+	 * executor would refuse anyway (and the preview never runs).
+	 */
+	private function classify_db_query_write( $sql, $keyword ) {
+		$operation  = 'db_query_' . strtolower( $keyword );
+		$privileged = $this->privileged_sql_target_error( $sql );
+		if ( $privileged ) {
+			return array(
+				'operation' => $operation,
+				'reason'    => (string) $privileged['stderr'],
+				'dry_run'   => null,
+				'refuse'    => $privileged,
+			);
+		}
+		// The `:sql` key is the only form the Worker lets a session approval cover.
+		if ( $this->sql_session_rememberable( $sql, $keyword ) ) {
+			$operation .= ':sql';
+		}
+		return array(
+			'operation' => $operation,
+			'reason'    => sprintf(
+				/* translators: %s: SQL keyword */
+				__( 'Mutating SQL (%s) bypasses all plugin safety. Direct DB writes need explicit approval.', 'vibe-ai' ),
+				$keyword
+			),
+			'dry_run'   => $this->build_db_query_dry_run( $keyword, $sql, $this->normalize_sql_for_gate( $sql ) ),
+		);
+	}
 
 	private function build_db_query_dry_run( $keyword, $sql, $normalized ) {
 		global $wpdb;

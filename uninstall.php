@@ -32,6 +32,7 @@ delete_option( 'wpvibe_op_proof_key' );
 delete_option( 'wpvibe_op_proof_required' );
 delete_option( 'wpvibe_op_proof_minter' );
 delete_option( 'wpvibe_op_proof_pending_minter' );
+delete_option( 'wpvibe_bypass_approvals' );
 
 // Drop our auto-update enrollment (white label adds it) now that the plugin is gone.
 $wpvibe_auto = get_option( 'auto_update_plugins' );

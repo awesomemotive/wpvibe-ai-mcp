@@ -864,6 +864,9 @@ trait WPVibe_CLI_Option {
 		if ( in_array( $canonical, WPVibe_Code_Snippet::STORAGE_OPTIONS, true ) ) {
 			return ' ' . WPVibe_Code_Snippet::write_refusal_text();
 		}
+		if ( 'wpvibe_bypass_approvals' === $canonical ) {
+			return ' ' . __( 'Only a site administrator can change "Dangerously bypass approvals", on the WPVibe page in wp-admin.', 'vibe-ai' );
+		}
 		if ( 'auto_update_plugins' === $canonical ) {
 			return ' ' . __( 'To change plugin auto-updates, use `plugin auto-updates enable <slug>` or `plugin auto-updates disable <slug>` instead.', 'vibe-ai' );
 		}

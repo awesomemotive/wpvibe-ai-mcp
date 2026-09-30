@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.20.0] - 2026-09-30
+
+- Feature: Dangerously bypass approvals. A new per-site checkbox on the WPVibe settings page in wp-admin, off by default. When it's on, WPVibe asks for no approvals on that site: deletes, SQL, WP-CLI, REST writes, abilities and fleet jobs run right away. Only a logged-in administrator can turn it on or off, from wp-admin. WPVibe's tools can't change it. A red banner shows on every admin page while it's on, and turning it on or off, plus every operation that ran without approval, is recorded in the Approval Log. Code snippets are still saved disabled, so enabling one stays a click in wp-admin.
+- Improvement: Fewer SQL prompts. Approving a database row change (UPDATE, INSERT, DELETE or REPLACE) can now cover the rest of your session on that site, for 30 minutes or 25 statements. Schema changes, code snippet tables, WPVibe's own tables and WooCommerce API keys still ask every time, and remembering stays off on multisite and on databases with triggers, views, stored routines or custom database drop-ins.
+- Security: Remembered SQL writes run inside a transaction, and any change to code snippet storage rolls the write back. If the database connection drops mid-write, WPVibe reports an error instead of replaying the statement.
+- Security: Database reads now run inside a read-only transaction, so a query that looks like a read can never change data. Reads with unusual quoting that used to be refused now run.
+- Fix: Approving a connection no longer fails on sites whose server labels REST answers as HTML. WordPress used to hand back an unreadable password, and the connect link failed with a misleading hint.
+- Improvement: The Approval Log header now says it lists approved and bypassed operations.
+
 ## [1.19.2] - 2026-09-29
 
 - Security: WPCode snippets and their storage (the active-snippet cache, the site-wide header and footer scripts, snippet posts) can only change through WPVibe's code snippet flow, which saves new code disabled for you to review. Content edits and page builder saves that would reach them are refused.

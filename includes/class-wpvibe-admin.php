@@ -438,6 +438,8 @@ class WPVibe_Admin {
 				</div>
 				<?php endif; ?>
 
+				<?php echo WPVibe_Approval_Bypass::settings_html(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped piecewise in settings_html(). ?>
+
 				<?php if ( $connected ) : ?>
 					<?php echo WPVibe_Uninstall_Notice::settings_html(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped piecewise in settings_html(). ?>
 				<?php endif; ?>
@@ -502,7 +504,7 @@ class WPVibe_Admin {
 		<div class="wrap">
 			<h1><?php esc_html_e( 'Approval Log', 'vibe-ai' ); ?></h1>
 			<p class="description">
-				<?php esc_html_e( 'Every destructive operation WPVibe has executed on this site after your explicit approval. Append-only — entries cannot be modified or deleted from the dashboard.', 'vibe-ai' ); ?>
+				<?php esc_html_e( 'Every destructive operation WPVibe has run on this site, whether you approved it or it ran with approvals bypassed, plus every time bypass was turned on or off. Append-only: entries cannot be changed or deleted from the dashboard.', 'vibe-ai' ); ?>
 			</p>
 
 			<?php if ( empty( $entries ) ) : ?>

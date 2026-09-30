@@ -4,7 +4,7 @@ Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.19.2
+Stable tag: 1.20.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -221,6 +221,14 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 
 == Changelog ==
 
+= 1.20.0 =
+* Feature: Dangerously bypass approvals. A new per-site checkbox on the WPVibe settings page in wp-admin, off by default. When it's on, WPVibe asks for no approvals on that site: deletes, SQL, WP-CLI, REST writes, abilities and fleet jobs run right away. Only a logged-in administrator can turn it on or off, from wp-admin. WPVibe's tools can't change it. A red banner shows on every admin page while it's on, and turning it on or off, plus every operation that ran without approval, is recorded in the Approval Log. Code snippets are still saved disabled, so enabling one stays a click in wp-admin.
+* Improvement: Fewer SQL prompts. Approving a database row change (UPDATE, INSERT, DELETE or REPLACE) can now cover the rest of your session on that site, for 30 minutes or 25 statements. Schema changes, code snippet tables, WPVibe's own tables and WooCommerce API keys still ask every time, and remembering stays off on multisite and on databases with triggers, views, stored routines or custom database drop-ins.
+* Security: Remembered SQL writes run inside a transaction, and any change to code snippet storage rolls the write back. If the database connection drops mid-write, WPVibe reports an error instead of replaying the statement.
+* Security: Database reads now run inside a read-only transaction, so a query that looks like a read can never change data. Reads with unusual quoting that used to be refused now run.
+* Fix: Approving a connection no longer fails on sites whose server labels REST answers as HTML. WordPress used to hand back an unreadable password, and the connect link failed with a misleading hint.
+* Improvement: The Approval Log header now says it lists approved and bypassed operations.
+
 = 1.19.2 =
 * Security: WPCode snippets and their storage (the active-snippet cache, the site-wide header and footer scripts, snippet posts) can only change through WPVibe's code snippet flow, which saves new code disabled for you to review. Content edits and page builder saves that would reach them are refused.
 * Security: Raw SQL can no longer write to the users, user meta or options tables, even with approval. WPVibe points the AI to the matching WordPress command instead, which runs WordPress's own checks.
@@ -361,16 +369,6 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 * Hardening: PHP file writes are refused when they would redeclare a function or class the running site already has, and publishing a draft theme renders the front page afterwards and rolls back to the backup on a fatal, keeping the draft for editing.
 * Fix: the Approve click on the connection screen now creates the application password through WPVibe's own route with your logged-in session, so hosts that block the core users endpoint as "user enumeration" no longer stop the one-click connect.
 * Fix: when the connection check fails, the connected page now says what actually came back (a firewall page, a redirect, a server error) and what to do about it, instead of one generic message.
-
-= 1.15.5 =
-* Fix: when WordPress rejects the application password it created seconds earlier, the plugin now reports whether that user has any application passwords stored at all, plus the install facts that explain a lost one (persistent object cache, shared user tables, wp-content drop-ins). WPVibe uses this to say "your site did not keep the password" instead of blaming the host for stripping the Authorization header.
-* Fix: the Approve page no longer leaves an empty red bar when the site's REST API answers with a firewall page or nothing at all. It now says what came back (status, page vs JSON, the security vendor if recognisable), the two fixes, and where to get help, and warns before you click when the same request is already blocked. Advisory only; the Approve form is never changed. Disable with the WPVIBE_DISABLE_AUTHORIZE_NOTICE constant or the wpvibe_authorize_notice filter.
-
-= 1.15.4 =
-* Fix: sites running WPCode with Error Logging turned on no longer hit a "Class WPCode_File_Cache not found" fatal on WPVibe requests when a snippet emits a warning. WPCode only loads that class inside wp-admin, so WPVibe now loads it for its own requests. This restores code snippet creation and WP-CLI reads on affected sites.
-
-= 1.15.3 =
-* Fix: services that authenticate with WooCommerce REST API keys (TrackShip, Metorik, and similar) no longer receive a 401 Unknown username error on sites where another plugin resolves the user early in the request.
 
 = Older versions =
 WP.org caps the changelog at 5,000 words. For the full release history back to 1.0.0, see https://wpvibe.ai/changelog/
