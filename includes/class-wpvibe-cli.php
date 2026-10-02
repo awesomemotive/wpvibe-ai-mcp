@@ -927,6 +927,10 @@ class WPVibe_CLI {
 		// Reuses the classification computed above — never classify twice, the
 		// dry-run builders run preview SQL.
 		if ( $skip_destructive && ! $refusal ) {
+			$always_ask = $destructive && class_exists( 'WPVibe_Approval_Bypass' ) ? WPVibe_Approval_Bypass::allows( $destructive['operation'] ) : true;
+			if ( is_wp_error( $always_ask ) ) {
+				return $always_ask;
+			}
 			$drift = $this->check_approved_state_drift( $destructive );
 			if ( is_wp_error( $drift ) ) {
 				return $drift;

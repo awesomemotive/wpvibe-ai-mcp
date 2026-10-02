@@ -199,6 +199,7 @@ class WPVibe_Admin {
 		$mcp_url       = 'https://mcp.wpvibe.ai/mcp';
 		$connect_cta   = $this->utm( 'https://wpvibe.ai/docs/ai-client-setup/', 'cta_connect', 'cta' );
 		$chatgpt_app   = WPVibe_Dashboard_Widget::CHATGPT_APP_URL;
+		$claude_app    = WPVibe_Dashboard_Widget::CLAUDE_DIRECTORY_URL;
 		$footer_home   = $this->utm( 'https://wpvibe.ai/', 'footer_home' );
 		$footer_docs   = $this->utm( 'https://wpvibe.ai/docs/', 'footer_docs' );
 		$footer_supp   = $this->utm( 'https://wpvibe.ai/support/', 'footer_support' );
@@ -361,10 +362,10 @@ class WPVibe_Admin {
 							<span class="wpvibe-step-label wpvibe-step-label--first"><strong><?php esc_html_e( 'A.', 'vibe-ai' ); ?></strong> <?php esc_html_e( 'Add WPVibe to your AI. Already have it? Skip to B.', 'vibe-ai' ); ?></span>
 							<div class="wpvibe-client-links">
 								<a class="wpvibe-btn wpvibe-btn--secondary" href="<?php echo esc_url( $chatgpt_app ); ?>" target="_blank" rel="noopener"><?php esc_html_e( 'Add to ChatGPT', 'vibe-ai' ); ?></a>
-								<a class="wpvibe-btn wpvibe-btn--secondary" href="<?php echo esc_url( $connect_cta ); ?>" target="_blank" rel="noopener"><?php esc_html_e( 'Claude setup guide', 'vibe-ai' ); ?></a>
+								<a class="wpvibe-btn wpvibe-btn--secondary" href="<?php echo esc_url( $claude_app ); ?>" target="_blank" rel="noopener"><?php esc_html_e( 'Add to Claude', 'vibe-ai' ); ?></a>
 								<a class="wpvibe-btn wpvibe-btn--secondary" href="<?php echo esc_url( $connect_cta ); ?>" target="_blank" rel="noopener"><?php esc_html_e( 'Cursor and other clients', 'vibe-ai' ); ?></a>
 							</div>
-							<span class="wpvibe-step-hint"><?php esc_html_e( 'WPVibe has an official ChatGPT app. Other clients add it as a custom connector with the address below. Sign in with your WPVibe account when the client asks.', 'vibe-ai' ); ?></span>
+							<span class="wpvibe-step-hint"><?php esc_html_e( 'WPVibe has an official ChatGPT app and a listing in Claude\'s connectors directory. Other clients, including Claude Code, add it as a custom connector with the address below. Sign in with your WPVibe account when the client asks.', 'vibe-ai' ); ?></span>
 							<span class="wpvibe-step-label"><?php esc_html_e( 'MCP server address:', 'vibe-ai' ); ?></span>
 							<div class="wpvibe-copy-row">
 								<code class="wpvibe-copy-text"><?php echo esc_html( $mcp_url ); ?></code>

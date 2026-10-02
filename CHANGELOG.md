@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.20.1] - 2026-10-02
+
+- Improvement: Claude users can add WPVibe from Claude's connectors directory. The "Add to Claude" button on the WPVibe settings page and a new link in the dashboard widget open the listing. The server address is still there for Claude Code, Cursor and other clients.
+- Hardening: Turning on white label mode always asks for approval, even when "Dangerously bypass approvals" is on. White label hides the Approval Log, so a person confirms it each time. Sites that already use white label are not affected.
+
 ## [1.20.0] - 2026-09-30
 
 - Feature: Dangerously bypass approvals. A new per-site checkbox on the WPVibe settings page in wp-admin, off by default. When it's on, WPVibe asks for no approvals on that site: deletes, SQL, WP-CLI, REST writes, abilities and fleet jobs run right away. Only a logged-in administrator can turn it on or off, from wp-admin. WPVibe's tools can't change it. A red banner shows on every admin page while it's on, and turning it on or off, plus every operation that ran without approval, is recorded in the Approval Log. Code snippets are still saved disabled, so enabling one stays a click in wp-admin.

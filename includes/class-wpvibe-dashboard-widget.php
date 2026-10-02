@@ -15,6 +15,7 @@ class WPVibe_Dashboard_Widget {
 
 	const FEED_URL             = 'https://wpvibe.ai/wp-json/wpvibe/v1/widget-feed';
 	const CHATGPT_APP_URL      = 'https://chatgpt.com/plugins/plugin_asdk_app_6a244fb509e481918985fee76373b0f9';
+	const CLAUDE_DIRECTORY_URL = 'https://claude.ai/directory/wpvibe-ai';
 	const FEED_TRANSIENT       = 'wpvibe_widget_feed';
 	const FEED_ERROR_TRANSIENT = 'wpvibe_widget_feed_error';
 	const FEED_TTL             = 43200; // 12 hours.
@@ -100,6 +101,8 @@ class WPVibe_Dashboard_Widget {
 			<p class="wpvibe-widget-micro">
 				<?php esc_html_e( 'Using ChatGPT?', 'vibe-ai' ); ?>
 				<a href="<?php echo esc_url( self::CHATGPT_APP_URL ); ?>" target="_blank" rel="noopener"><?php esc_html_e( 'Add WPVibe with one click', 'vibe-ai' ); ?></a>.
+				<?php esc_html_e( 'Using Claude?', 'vibe-ai' ); ?>
+				<a href="<?php echo esc_url( self::CLAUDE_DIRECTORY_URL ); ?>" target="_blank" rel="noopener"><?php esc_html_e( 'Find WPVibe in the connectors directory', 'vibe-ai' ); ?></a>.
 			</p>
 			<div class="wpvibe-widget-copy-row">
 				<span class="wpvibe-widget-copy-hint"><?php esc_html_e( 'Or paste into an AI that has WPVibe:', 'vibe-ai' ); ?></span>

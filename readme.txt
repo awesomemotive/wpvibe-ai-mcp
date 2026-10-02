@@ -4,7 +4,7 @@ Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.20.0
+Stable tag: 1.20.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -220,6 +220,10 @@ Yes. Connected sites are unlimited on every plan, including the free plan. Conne
 No. WPVibe lets you manage your WordPress site entirely through conversation with your AI assistant. No coding required for content management. Theme editing is also conversational, your AI writes the code for your WordPress theme.
 
 == Changelog ==
+
+= 1.20.1 =
+* Improvement: Claude users can add WPVibe from Claude's connectors directory. The "Add to Claude" button on the WPVibe settings page and a new link in the dashboard widget open the listing. The server address is still there for Claude Code, Cursor and other clients.
+* Hardening: Turning on white label mode always asks for approval, even when "Dangerously bypass approvals" is on. White label hides the Approval Log, so a person confirms it each time. Sites that already use white label are not affected.
 
 = 1.20.0 =
 * Feature: Dangerously bypass approvals. A new per-site checkbox on the WPVibe settings page in wp-admin, off by default. When it's on, WPVibe asks for no approvals on that site: deletes, SQL, WP-CLI, REST writes, abilities and fleet jobs run right away. Only a logged-in administrator can turn it on or off, from wp-admin. WPVibe's tools can't change it. A red banner shows on every admin page while it's on, and turning it on or off, plus every operation that ran without approval, is recorded in the Approval Log. Code snippets are still saved disabled, so enabling one stays a click in wp-admin.

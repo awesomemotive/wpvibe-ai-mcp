@@ -146,7 +146,7 @@ class WPVibe_Op_Receipts {
 
 		if ( null === $existing ) {
 			if ( self::insert_started( $op_id, $route ) ) {
-				self::$started_ops[ $op_id ] = true;
+				self::$started_ops[ $op_id ] = 'new';
 			}
 			return $response;
 		}
@@ -183,7 +183,7 @@ class WPVibe_Op_Receipts {
 		// Stale 'started': the earlier attempt died without completing, so this
 		// request becomes the live one and the clock restarts.
 		if ( self::restart_started( $op_id, $route ) ) {
-			self::$started_ops[ $op_id ] = true;
+			self::$started_ops[ $op_id ] = 'restarted';
 		}
 		return $response;
 	}
@@ -209,9 +209,22 @@ class WPVibe_Op_Receipts {
 		if ( '' === $op_id || empty( self::$started_ops[ $op_id ] ) ) {
 			return $response;
 		}
+		$fresh = 'new' === self::$started_ops[ $op_id ];
 		unset( self::$started_ops[ $op_id ] );
+		// A refused bypass claim ran nothing and the Worker re-opens the same op for a human, so the op id must stay unused.
+		// A reclaimed stale receipt may stand for an earlier run still going, so only this request's own row is released.
+		if ( $fresh && is_wp_error( $response ) && 'wpvibe_bypass_off' === $response->get_error_code() ) {
+			self::release( $op_id );
+			return $response;
+		}
 		self::complete( $op_id, self::response_status( $response ), self::summarize( $response ) );
 		return $response;
+	}
+
+	private static function release( $op_id ) {
+		global $wpdb;
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->delete( self::table_name(), array( 'op_id' => $op_id, 'state' => 'started' ), array( '%s', '%s' ) );
 	}
 
 	private static function request_op_id( $request ) {

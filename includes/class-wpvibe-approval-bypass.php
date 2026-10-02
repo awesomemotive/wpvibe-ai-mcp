@@ -18,6 +18,8 @@ class WPVibe_Approval_Bypass {
 	const ACTION = 'wpvibe_bypass_approvals';
 	/** The only routes a bypass-claim proof may execute on. */
 	const PROOF_ROUTES = array( '/wpvibe/v1/cli/run-approved', '/wpvibe/v1/code-snippet' );
+	/** Operations a bypass claim never runs: turning white label on hides the Approval Log, so a human approves it every time. */
+	const ALWAYS_ASK = array( 'white_label_enable' );
 
 	private static $instance   = null;
 	private static $admin_save = false;
@@ -40,6 +42,14 @@ class WPVibe_Approval_Bypass {
 
 	private static function value_on( $value ) {
 		return is_array( $value ) && ! empty( $value['enabled'] );
+	}
+
+	/** @return true|WP_Error A bypass-claimed run of an ALWAYS_ASK operation is refused like a site with bypass off, so the Worker falls back to an approval. */
+	public static function allows( $operation ) {
+		if ( ! self::$request_bypassed || ! in_array( (string) $operation, self::ALWAYS_ASK, true ) ) {
+			return true;
+		}
+		return new WP_Error( 'wpvibe_bypass_off', __( 'Not run: turning on white label mode always needs an approval, even with "Dangerously bypass approvals" on. Nothing was changed.', 'vibe-ai' ), array( 'status' => 403 ) );
 	}
 
 	public static function is_on() {
