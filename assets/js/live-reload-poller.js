@@ -6,6 +6,27 @@
 	var outageTimeout = 120000;
 	var idleTimeout = 300000;
 	var maxFailures = 5;
+	var stallCooldown = 300000;
+	var stallKey = 'wpvibeLiveReloadStalledAt';
+
+	// localStorage, so a stall seen in one tab stops every tab on the site: each open preview tab held its own worker (#738).
+	function stalledRecently() {
+		try {
+			var at = Number( window.localStorage.getItem( stallKey ) );
+			var age = Date.now() - at;
+			// A marker from the future (the clock moved back, or a stored "Infinity") is ignored rather than trusted
+			// to suppress polling for longer than the cooldown.
+			return at > 0 && isFinite( at ) && age >= 0 && age < stallCooldown;
+		} catch ( e ) {
+			return false;
+		}
+	}
+
+	function rememberStall() {
+		try {
+			window.localStorage.setItem( stallKey, String( Date.now() ) );
+		} catch ( e ) {}
+	}
 
 	function validChange( change ) {
 		return change && typeof change === 'object' && typeof change.timestamp === 'number' &&
@@ -30,6 +51,11 @@
 		start: function ( options ) {
 			// A delayed footer script must never start a second poller in this tab.
 			if ( active ) return active;
+			// A reload must not hand a stalled server a fresh round of polls.
+			if ( stalledRecently() ) {
+				active = { stop: function () {} };
+				return active;
+			}
 			var stopped = false;
 			var inFlight = false;
 			var failures = 0;
@@ -87,13 +113,16 @@
 			function poll() {
 				if ( stopped || inFlight || document.hidden ) return;
 				if ( Date.now() >= deadline() ) return stop();
+				// Another tab hit a stalled server: this one stops before adding a request of its own.
+				if ( stalledRecently() ) return stop();
 				inFlight = true;
 				controller = new AbortController();
 				var timedOut = false;
 				requestTimer = setTimeout( function () {
+					// Aborting does not stop PHP: every retry would hold another worker on a stalled server.
 					timedOut = true;
-					controller.abort();
-					fail();
+					rememberStall();
+					stop();
 				}, requestTimeout );
 				Promise.resolve().then( function () {
 					return fetch( options.url(), {

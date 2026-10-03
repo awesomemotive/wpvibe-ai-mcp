@@ -963,9 +963,13 @@ class WPVibe_CLI {
 				'command'        => 'wp ' . $command_key,
 				'params'         => array( 'positional' => $this->redact_sensitive_flags( $args ), 'key_length' => $key_length ),
 				'dry_run'        => $destructive['dry_run'],
+				// A failed run logs its error: the stdout of a failure is empty, which left the log blank exactly when someone
+				// came looking (#756).
 				'result_summary' => $refusal
 					? 'REFUSED: ' . mb_substr( (string) ( $result['stderr'] ?? '' ), 0, 480 )
-					: ( isset( $result['stdout'] ) ? mb_substr( (string) $result['stdout'], 0, 500 ) : '' ),
+					: ( 0 !== (int) ( $result['exit_code'] ?? 0 ) && '' !== trim( (string) ( $result['stderr'] ?? '' ) )
+						? 'FAILED: ' . mb_substr( (string) $result['stderr'], 0, 480 )
+						: ( isset( $result['stdout'] ) ? mb_substr( (string) $result['stdout'], 0, 500 ) : '' ) ),
 			) );
 		}
 

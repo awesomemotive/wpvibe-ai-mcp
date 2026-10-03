@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.20.2] - 2026-10-03
+
+- Fix: Live reload puts much less load on your server. It checks for changes every five seconds instead of every two and a half. When a check times out, every open tab of the site stops checking, so it cannot tie up the server's PHP workers; reload the page after five minutes to turn live reload back on.
+- Fix: When an approved database change fails, the Approval Log now records the error message instead of an empty result, and the change is labelled as a write.
+
 ## [1.20.1] - 2026-10-02
 
 - Improvement: Claude users can add WPVibe from Claude's connectors directory. The "Add to Claude" button on the WPVibe settings page and a new link in the dashboard widget open the listing. The server address is still there for Claude Code, Cursor and other clients.

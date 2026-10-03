@@ -92,7 +92,9 @@ class WPVibe_Audit_Log {
 				'command'        => (string) ( $args['command'] ?? '' ) . ( class_exists( 'WPVibe_Approval_Bypass' ) && WPVibe_Approval_Bypass::$request_bypassed ? ' [no approval: bypass on]' : '' ),
 				'params_json'    => isset( $args['params'] ) ? wp_json_encode( $args['params'] ) : null,
 				'dry_run_json'   => isset( $args['dry_run'] ) ? wp_json_encode( $args['dry_run'] ) : null,
-				'result_summary' => isset( $args['result_summary'] ) ? substr( (string) $args['result_summary'], 0, 500 ) : null,
+				// Cut by character, not byte: a cut inside a multibyte character is invalid UTF-8, which wpdb refuses to insert,
+				// and the whole row would be lost (a failed run's error now lands here, #756).
+				'result_summary' => isset( $args['result_summary'] ) ? mb_substr( (string) $args['result_summary'], 0, 500 ) : null,
 			),
 			array( '%d', '%s', '%s', '%s', '%s', '%s' )
 		);

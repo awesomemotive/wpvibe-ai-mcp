@@ -21,7 +21,8 @@
 	var isAdmin       = config.isAdmin === '1';
 	var currentPostId = parseInt( config.postId, 10 ) || 0;
 	var currentUserId = parseInt( config.userId, 10 ) || 0;
-	var pollInterval  = 2500;
+	// Every poll is a full WordPress request on the customer's server (#738).
+	var pollInterval  = 5000;
 	var toastDuration = 15000;
 
 	var lastTimestamp = 0;

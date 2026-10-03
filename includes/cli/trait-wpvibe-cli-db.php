@@ -394,17 +394,18 @@ trait WPVibe_CLI_Db {
 		// Mutating path — only reachable when skip_destructive is true (caller is run_approved).
 		// Use $wpdb->query() which returns affected row count for INSERT/UPDATE/DELETE.
 		$sql = rtrim( $sql, '; ' );
+		// A failed write is still a write: without the tier the response falls back to db query's static 'read' (#756).
 		if ( $this->db_query_session ) {
 			$affected = $this->db_query_session_write( $sql );
 			if ( is_array( $affected ) ) {
-				return $affected;
+				return $affected + array( 'tier' => 'write' );
 			}
 		} else {
 			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, PluginCheck.Security.DirectDB.UnescapedDBParameter
 			$affected = $wpdb->query( $sql ); // nosemgrep: direct-db-query
 			if ( false === $affected || $wpdb->last_error ) {
 				/* translators: %s: SQL error message */
-				return $this->error_result( sprintf( __( 'SQL error: %s', 'vibe-ai' ), $wpdb->last_error ) );
+				return $this->error_result( sprintf( __( 'SQL error: %s', 'vibe-ai' ), $wpdb->last_error ) ) + array( 'tier' => 'write' );
 			}
 		}
 

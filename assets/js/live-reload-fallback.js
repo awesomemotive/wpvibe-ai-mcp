@@ -10,7 +10,7 @@ document.addEventListener( 'DOMContentLoaded', function () {
 	window.WPVibePoller.start( {
 		url: function () { return config.endpoint; },
 		nonce: config.nonce,
-		interval: 3000,
+		interval: 5000,
 		onData: function ( data ) {
 			var changes = data.changes || ( data.timestamp ? [ data ] : [] );
 			var baseline = lastTs === 0;
