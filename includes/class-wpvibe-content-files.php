@@ -180,11 +180,21 @@ class WPVibe_Content_Files {
 		) );
 	}
 
+	/** Relative to the listed directory; a pattern that spells out the directory itself keeps the older full-path form. */
+	private static function pattern_matches( $pattern, $path, $base ) {
+		if ( '' === $base || 0 !== strpos( $path, $base . '/' ) ) {
+			return WPVibe_File_Ops::path_matches( $pattern, $path );
+		}
+		$full = 0 === stripos( ltrim( $pattern, './' ), $base . '/' );
+		return WPVibe_File_Ops::path_matches( $pattern, $full ? $path : substr( $path, strlen( $base ) + 1 ) );
+	}
+
 	public function list_files( $pattern = null, $directory = '' ) {
 		$full = $this->resolve( $directory, true );
 		if ( is_wp_error( $full ) ) {
 			return $full;
 		}
+		$base  = trim( (string) $directory, '/' );
 		$stack = array( array( $full, $directory ) );
 		$files = array();
 		$visited = 0;
@@ -208,7 +218,7 @@ class WPVibe_Content_Files {
 					}
 					if ( $is_dir ) {
 						$stack[] = array( $item->getPathname(), $path );
-					} elseif ( ! $pattern || fnmatch( $pattern, $path, FNM_PATHNAME | FNM_CASEFOLD ) ) {
+					} elseif ( ! $pattern || self::pattern_matches( $pattern, $path, $base ) ) {
 						$files[] = array( 'path' => $path, 'type' => 'file', 'size' => $item->getSize(), 'extension' => strtolower( $item->getExtension() ) );
 					}
 				}

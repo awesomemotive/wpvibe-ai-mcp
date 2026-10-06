@@ -498,6 +498,7 @@ class WPVibe_REST {
 			'permission_callback' => array( $this, 'can_publish_theme' ),
 			'args'                => array(
 				'expected_source_hash' => array( 'type' => 'string', 'pattern' => '^[a-f0-9]{64}$' ),
+				'saved_customizations' => array( 'type' => 'string', 'enum' => array( 'set_aside', 'keep' ) ),
 			),
 		) );
 
@@ -1501,7 +1502,7 @@ class WPVibe_REST {
 			return $check;
 		}
 		$draft = new WPVibe_Draft_Theme();
-		return $draft->publish();
+		return $draft->publish( $request ? $request->get_param( 'saved_customizations' ) : null );
 	}
 
 	public function get_preview_url() {

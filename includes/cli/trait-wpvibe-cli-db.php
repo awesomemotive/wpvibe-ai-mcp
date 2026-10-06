@@ -72,7 +72,8 @@ trait WPVibe_CLI_Db {
 			return $rest;
 		}
 		$q = $rest[0];
-		if ( '"' === $q && preg_match( '/^"((?:[^"\\\\]|\\\\.)*)"$/s', $rest, $m ) ) {
+		// Possessive: the backtracking form exhausts PCRE's JIT stack past ~8 KB and silently keeps the quotes.
+		if ( '"' === $q && preg_match( '/^"((?:[^"\\\\]++|\\\\.)*+)"$/s', $rest, $m ) ) {
 			return preg_replace( '/\\\\(["\\\\])/', '$1', $m[1] );
 		}
 		if ( "'" === $q ) {

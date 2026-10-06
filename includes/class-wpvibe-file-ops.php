@@ -661,6 +661,51 @@ class WPVibe_File_Ops {
 		) );
 	}
 
+	/** Glob match for listings: no "/" matches the file name at any depth (as in .gitignore), and "**" spans zero or more folders. */
+	public static function path_matches( $pattern, $path ) {
+		$pattern = ltrim( 0 === strpos( $pattern, './' ) ? substr( $pattern, 2 ) : $pattern, '/' );
+		if ( '/' === substr( $pattern, -1 ) ) {
+			$pattern .= '**';
+		}
+		if ( false === strpos( $pattern, '/' ) ) {
+			return fnmatch( $pattern, basename( $path ), FNM_PATHNAME | FNM_CASEFOLD );
+		}
+		if ( false === strpos( $pattern, '**' ) ) {
+			return fnmatch( $pattern, $path, FNM_PATHNAME | FNM_CASEFOLD );
+		}
+		return 1 === preg_match( self::globstar_regex( $pattern ), $path );
+	}
+
+	/** fnmatch has no "**"; a single "*" here still stops at "/". */
+	private static function globstar_regex( $pattern ) {
+		$re  = '';
+		$len = strlen( $pattern );
+		for ( $i = 0; $i < $len; $i++ ) {
+			$c = $pattern[ $i ];
+			if ( '*' === $c && '*' === ( $pattern[ $i + 1 ] ?? '' ) ) {
+				$i++;
+				if ( '/' === ( $pattern[ $i + 1 ] ?? '' ) ) {
+					$i++;
+					$re .= '(?:.*/)?';
+				} else {
+					$re .= '.*';
+				}
+			} elseif ( '*' === $c ) {
+				$re .= '[^/]*';
+			} elseif ( '?' === $c ) {
+				$re .= '[^/]';
+			} elseif ( '[' === $c && false !== ( $end = strpos( $pattern, ']', $i + 2 ) ) ) {
+				$class = substr( $pattern, $i + 1, $end - $i - 1 );
+				$neg   = '!' === $class[0] || '^' === $class[0];
+				$re   .= '[' . ( $neg ? '^' : '' ) . str_replace( array( '\\', '#' ), array( '\\\\', '\\#' ), $neg ? substr( $class, 1 ) : $class ) . ']';
+				$i     = $end;
+			} else {
+				$re .= preg_quote( $c, '#' );
+			}
+		}
+		return '#^' . $re . '$#i';
+	}
+
 	/**
 	 * List all files in the draft theme, optionally filtered by glob pattern.
 	 *
@@ -693,7 +738,7 @@ class WPVibe_File_Ops {
 			$relative = $iterator->getSubPathName();
 
 			// Apply glob pattern filter if provided.
-			if ( $pattern && ! $item->isDir() && ! fnmatch( $pattern, $relative, FNM_PATHNAME | FNM_CASEFOLD ) ) {
+			if ( $pattern && ! $item->isDir() && ! self::path_matches( $pattern, $relative ) ) {
 				continue;
 			}
 

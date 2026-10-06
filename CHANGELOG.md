@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.20.3] - 2026-10-06
+
+- Fix: Approved database writes that are long (over about 8 KB) and wrapped in double quotes no longer fail with a syntax error on some hosts.
+- Fix: File listings with a name pattern such as *.php now find matching files in every folder, and a pattern used with a folder now matches inside that folder. Before, *.php found only top-level files, and with a folder it found nothing.
+- Fix: Saved Site Editor changes on the live theme no longer override a published draft theme by default. Publishing sets aside the live theme's saved global styles, and its saved templates and template parts that the draft also has. Set-aside changes are kept and can be brought back, and you can ask to keep them instead. Changes saved in the Site Editor during the preview now go live with the theme, unless you keep a live change with the same name. Deleting a draft sets its saved changes aside too.
+- Feature: The preview and the publish result warn when the theme's folder name belongs to a theme on WordPress.org, because a WordPress.org update could replace a custom theme. Adding "Update URI: false" to style.css stops this.
+
 ## [1.20.2] - 2026-10-03
 
 - Fix: Live reload puts much less load on your server. It checks for changes every five seconds instead of every two and a half. When a check times out, every open tab of the site stops checking, so it cannot tie up the server's PHP workers; reload the page after five minutes to turn live reload back on.

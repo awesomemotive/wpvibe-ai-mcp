@@ -4,7 +4,7 @@ Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.20.2
+Stable tag: 1.20.3
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -221,6 +221,12 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 
 == Changelog ==
 
+= 1.20.3 =
+* Fix: Approved database writes that are long (over about 8 KB) and wrapped in double quotes no longer fail with a syntax error on some hosts.
+* Fix: File listings with a name pattern such as *.php now find matching files in every folder, and a pattern used with a folder now matches inside that folder. Before, *.php found only top-level files, and with a folder it found nothing.
+* Fix: Saved Site Editor changes on the live theme no longer override a published draft theme by default. Publishing sets aside the live theme's saved global styles, and its saved templates and template parts that the draft also has. Set-aside changes are kept and can be brought back, and you can ask to keep them instead. Changes saved in the Site Editor during the preview now go live with the theme, unless you keep a live change with the same name. Deleting a draft sets its saved changes aside too.
+* Feature: The preview and the publish result warn when the theme's folder name belongs to a theme on WordPress.org, because a WordPress.org update could replace a custom theme. Adding "Update URI: false" to style.css stops this.
+
 = 1.20.2 =
 * Fix: Live reload puts much less load on your server. It checks for changes every five seconds instead of every two and a half. When a check times out, every open tab of the site stops checking, so it cannot tie up the server's PHP workers; reload the page after five minutes to turn live reload back on.
 * Fix: When an approved database change fails, the Approval Log now records the error message instead of an empty result, and the change is labelled as a write.
@@ -356,27 +362,6 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 * Fix: reading a translated page's HTML on a WPML site with language directories now returns that language's page instead of the default one.
 * Feature: the WPVibe row on the Plugins screen explains that deactivating or deleting the plugin does not disconnect the site or revoke its application password, with links to do both, and a confirm on Deactivate says the same before the plugin's code stops running.
 * Fix: `comment create` now applies WordPress's comment filtering for authors who lack the unfiltered_html capability (non-super-admins on multisite, sites with DISALLOW_UNFILTERED_HTML), matching what core does for those users.
-
-= 1.16.0 =
-* Feature: WPVibe can now update itself through your AI assistant. `plugin update vibe-ai` schedules the update to run out-of-band (the same model WordPress core uses), so the connection serving the request is never the one replacing the plugin's files. Where available, WordPress's automatic updater runs it, with its post-update fatal check and rollback for active plugins. Progress and the outcome are recorded in a status option your AI can read back.
-* Feature: `plugin auto-updates enable|disable|status` commands, matching real WP-CLI behavior, so your AI can enroll any plugin (including WPVibe) in WordPress auto-updates. Also fixes auto-update enrollment on multisite, where the setting lives in a network option.
-* Feature: `theme update --all` with `--exclude` and `--dry-run`, and multiple theme slugs in one command, matching the plugin update family.
-* Feature: `--expect-version` on `plugin update` and `theme update` (a WPVibe extension): the update refuses if the available version is not the one you named, closing the race where a newer release lands between review and execution.
-* Fix: publishing a draft theme whose functions.php fatals now rolls back to the theme the site was actually running, and only ever activates a theme that is really installed, instead of leaving the site pointed at a directory that no longer exists.
-* Fix: raw SQL that writes to a protected identity table (users, usermeta, blocked options), including through a JOIN from another table, is now refused when submitted instead of after a human approves it, and the refusal names the protected table.
-* Fix: `theme install --version=<version>` now installs the version you asked for. The themes API ignores a version argument, so the flag was silently dropped and the latest release was installed instead; an unavailable version is refused by name.
-* Feature: comment moderation from your AI assistant: `comment create` (replies via `--comment_parent`), `comment approve`, `unapprove`, `spam`, `unspam`, `trash`, `untrash`, and `comment delete`. Deleting without `--force` moves comments to the trash; `--force` permanently deletes and pauses for approval. `comment list` gains `--format=ids|count`, `--orderby`, `--order`, `--offset`, and `--comment__in`.
-* Feature: approved long-running commands (a live `search-replace`, mutating `db query`) can run in the background: the request answers immediately, a one-shot WP-Cron job (or a token-authenticated loopback when cron is disabled) runs the command as the approving user, and the outcome is recorded in the operation receipt your AI polls. No more connection timeouts on big search-replace runs.
-* Feature: `post list` and `user list` accept `--paged=<n>` / `--offset=<n>` so large sites can be enumerated page by page; the truncation notice names the next page.
-* Security: the approval-only routes (`cli/run-approved`, `code-snippet`) now verify a per-operation proof signed by WPVibe with a key provisioned per site, so an approved operation can only be executed by the approval flow that showed it to you, never by a request that merely holds the application password. Sites without a key keep working as before until WPVibe provisions one.
-* Fix: operation receipts now accept the fleet runner's operation ids, so background jobs can recover the outcome of a call that timed out mid-flight instead of re-probing.
-* Feature: `core update` and `core update-db`. Updating WordPress core pauses for browser approval and shows the exact version change; the approval is re-verified against the site at execution, and a leftover .maintenance file is cleaned up so a failed update cannot strand the site.
-* Fix: when a security plugin filters WordPress core update data, `core check-update` and `core update` now say so instead of reporting "no update available" as a certainty.
-* Fix: Elementor pages saved through WPVibe are verified after the save. If Elementor stored the layout empty, WPVibe writes the requested structure directly, removes the empty autosave the editor would otherwise open, and never reports success on a page that is still empty.
-* Fix: a content edit whose old text differs from the stored value only by whitespace now applies when it is the one unambiguous match, and a miss says what was tried instead of a bare "not found".
-* Hardening: PHP file writes are refused when they would redeclare a function or class the running site already has, and publishing a draft theme renders the front page afterwards and rolls back to the backup on a fatal, keeping the draft for editing.
-* Fix: the Approve click on the connection screen now creates the application password through WPVibe's own route with your logged-in session, so hosts that block the core users endpoint as "user enumeration" no longer stop the one-click connect.
-* Fix: when the connection check fails, the connected page now says what actually came back (a firewall page, a redirect, a server error) and what to do about it, instead of one generic message.
 
 = Older versions =
 WP.org caps the changelog at 5,000 words. For the full release history back to 1.0.0, see https://wpvibe.ai/changelog/
