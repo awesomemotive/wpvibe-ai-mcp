@@ -91,9 +91,10 @@ class WPVibe_Elementor {
 				'type'       => array( 'type' => 'string',  'required' => true,  'sanitize_callback' => 'sanitize_key' ),
 				'status'     => array( 'type' => 'string',  'required' => false, 'sanitize_callback' => 'sanitize_key' ),
 				'data'       => array( 'type' => 'array',   'required' => true ),
+				// No default: an omitted `conditions` means "leave unchanged" on update.
+				// save_template() applies the entire-site fallback only when creating.
 				'conditions' => array(
 					'type'              => 'array',
-					'default'           => array( 'include/general' ),
 					'sanitize_callback' => array( $this, 'sanitize_conditions' ),
 				),
 			),
@@ -830,22 +831,29 @@ class WPVibe_Elementor {
 			"post_id={$id}"
 		);
 
-		// Use Conditions_Manager::save_conditions — handles meta write AND cache regen
-		// in one call. Falls back to manual path if for some reason it isn't available.
-		$this->try_step(
-			$warnings,
-			function() use ( $id, $conditions ) {
-				$manager = \ElementorPro\Modules\ThemeBuilder\Module::instance()->get_conditions_manager();
-				$manager->save_conditions( $id, $this->parse_conditions( $conditions ) );
-			},
-			'conditions_save_failed',
-			"post_id={$id}"
-		);
+		// Write conditions only on create or when the caller sent them; an update
+		// with no `conditions` leaves the stored set untouched (new = entire-site).
+		$is_create          = empty( $request['id'] );
+		$conditions_sent    = null !== $conditions;
+		$conditions_applied = null;
+		if ( $is_create || $conditions_sent ) {
+			$conditions_applied = $conditions_sent ? $conditions : array( 'include/general' );
+			// Conditions_Manager::save_conditions handles the meta write and cache regen.
+			$this->try_step(
+				$warnings,
+				function() use ( $id, $conditions_applied ) {
+					$manager = \ElementorPro\Modules\ThemeBuilder\Module::instance()->get_conditions_manager();
+					$manager->save_conditions( $id, $this->parse_conditions( $conditions_applied ) );
+				},
+				'conditions_save_failed',
+				"post_id={$id}"
+			);
+		}
 
 		return rest_ensure_response( array(
 			'id'         => $id,
 			'type'       => $type,
-			'conditions' => $conditions,
+			'conditions' => null === $conditions_applied ? 'unchanged' : $conditions_applied,
 			'edit_url'   => admin_url( 'post.php?post=' . $id . '&action=elementor' ),
 			'warnings'   => $warnings,
 		) );
