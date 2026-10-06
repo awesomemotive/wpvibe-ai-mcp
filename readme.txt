@@ -4,7 +4,7 @@ Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.20.2
+Stable tag: 1.20.3
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -220,6 +220,9 @@ Yes. Connected sites are unlimited on every plan, including the free plan. Conne
 No. WPVibe lets you manage your WordPress site entirely through conversation with your AI assistant. No coding required for content management. Theme editing is also conversational, your AI writes the code for your WordPress theme.
 
 == Changelog ==
+
+= 1.20.3 =
+* Fix: Updating an Elementor header, footer or popup template no longer changes where it appears. Saving a template without display conditions used to reset it to the whole site; now WPVibe only updates the conditions when you send new ones, and leaves them as they are otherwise.
 
 = 1.20.2 =
 * Fix: Live reload puts much less load on your server. It checks for changes every five seconds instead of every two and a half. When a check times out, every open tab of the site stops checking, so it cannot tie up the server's PHP workers; reload the page after five minutes to turn live reload back on.

@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.20.3] - 2026-10-06
+
+- Fix: Updating an Elementor header, footer or popup template no longer changes where it appears. Saving a template without display conditions used to reset it to the whole site; now WPVibe only updates the conditions when you send new ones, and leaves them as they are otherwise.
+
 ## [1.20.2] - 2026-10-03
 
 - Fix: Live reload puts much less load on your server. It checks for changes every five seconds instead of every two and a half. When a check times out, every open tab of the site stops checking, so it cannot tie up the server's PHP workers; reload the page after five minutes to turn live reload back on.
