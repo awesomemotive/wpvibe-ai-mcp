@@ -64,6 +64,13 @@ trait WPVibe_CLI_Option {
 			return $this->error_result( __( 'Usage: option pluck <option> <key-path>...', 'vibe-ai' ) );
 		}
 
+		// Upstream also takes yaml; refuse it and any other value loudly rather than print plain text under its name.
+		$format = ! isset( $flags['format'] ) ? 'plaintext' : ( is_string( $flags['format'] ) ? strtolower( $flags['format'] ) : '' );
+		if ( ! in_array( $format, array( 'plaintext', 'json' ), true ) ) {
+			/* translators: %s: requested format */
+			return $this->error_result( sprintf( __( '`option pluck` supports --format=json|plaintext; --format=%s is not emulated.', 'vibe-ai' ), $format ) );
+		}
+
 		$key = $positional[0];
 		if ( null === self::match_option_name( $key, self::READABLE_BLOCKED_OPTIONS ) && null !== self::match_option_name( $key, self::BLOCKED_OPTIONS ) ) {
 			return $this->error_result(
@@ -102,6 +109,21 @@ trait WPVibe_CLI_Option {
 				/* translators: %s: key path */
 				return $this->error_result( sprintf( __( 'No data exists at key path \'%s\'.', 'vibe-ai' ), $trail ) );
 			}
+		}
+
+		// Upstream prints json_encode( $value ) here; the 'format' key marks typed output for the Worker.
+		if ( 'json' === $format ) {
+			$json = wp_json_encode( $node );
+			if ( false === $json ) {
+				/* translators: %s: key path */
+				return $this->error_result( sprintf( __( 'The value at key path \'%s\' cannot be encoded as JSON.', 'vibe-ai' ), $trail ) );
+			}
+			return array(
+				'exit_code' => 0,
+				'stdout'    => $json,
+				'stderr'    => '',
+				'format'    => 'json',
+			);
 		}
 
 		return array(

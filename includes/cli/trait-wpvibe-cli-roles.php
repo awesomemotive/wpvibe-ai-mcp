@@ -1136,8 +1136,9 @@ trait WPVibe_CLI_Roles {
 		if ( 'delete' === $mode && ! empty( $flags['all'] ) ) {
 			return $this->error_result( __( 'Refused: `user meta delete --all` would delete every meta row for the user, including the capability and session keys that define their access. Delete specific keys by name instead.', 'vibe-ai' ) );
 		}
-		$reject = $this->reject_unknown_flags( 'user meta ' . $mode, $flags, array( 'force' ), array(
-			'format' => __( 'Structured JSON values ({...}/[...]) are decoded automatically; drop --format.', 'vibe-ai' ),
+		// Upstream `meta delete` has no --format: its <value> always matches as literal text.
+		$reject = $this->reject_unknown_flags( 'user meta ' . $mode, $flags, ( 'delete' === $mode ) ? array( 'force' ) : array( 'force', 'format' ), array(
+			'format' => __( 'user meta delete matches <value> as literal text, as WP-CLI does; drop --format.', 'vibe-ai' ),
 		) );
 		if ( $reject ) {
 			return $reject;
@@ -1196,7 +1197,7 @@ trait WPVibe_CLI_Roles {
 		}
 
 		if ( 'delete' === $mode ) {
-			$value   = isset( $positional[2] ) ? $this->maybe_decode_meta_value( $positional[2] ) : '';
+			$value   = isset( $positional[2] ) ? (string) $positional[2] : '';
 			$deleted = delete_user_meta( (int) $user->ID, $key, $value );
 			if ( ! $deleted ) {
 				/* translators: 1: key, 2: user ID */
@@ -1205,8 +1206,13 @@ trait WPVibe_CLI_Roles {
 			$msg     = sprintf( /* translators: 1: key, 2: user ID */ __( 'Deleted \'%1$s\' meta from user %2$d.', 'vibe-ai' ), $key, (int) $user->ID );
 			$summary = 'User meta deleted: #' . (int) $user->ID . ' -> ' . $key;
 		} elseif ( 'add' === $mode ) {
-			$value = $this->maybe_decode_meta_value( $positional[2] );
-			$res   = add_user_meta( (int) $user->ID, $key, $value );
+			$parsed = $this->parse_meta_value( $positional[2], $flags, $key, metadata_exists( 'user', (int) $user->ID, $key ) ? get_user_meta( (int) $user->ID, $key, true ) : null );
+			if ( isset( $parsed['error'] ) ) {
+				return $this->error_result( $parsed['error'] );
+			}
+			$value = $parsed['value'];
+			// update_metadata() unslashes on the way in, as WP-CLI's own handler accounts for.
+			$res   = add_user_meta( (int) $user->ID, $key, wp_slash( $value ) );
 			if ( ! $res ) {
 				/* translators: 1: key, 2: user ID */
 				return $this->error_result( sprintf( __( 'Failed to add \'%1$s\' meta for user %2$d.', 'vibe-ai' ), $key, (int) $user->ID ) );
@@ -1214,7 +1220,11 @@ trait WPVibe_CLI_Roles {
 			$msg     = sprintf( /* translators: 1: key, 2: user ID */ __( 'Added \'%1$s\' meta on user %2$d.', 'vibe-ai' ), $key, (int) $user->ID );
 			$summary = 'User meta added: #' . (int) $user->ID . ' -> ' . $key;
 		} else {
-			$value   = $this->maybe_decode_meta_value( $positional[2] );
+			$parsed = $this->parse_meta_value( $positional[2], $flags, $key, metadata_exists( 'user', (int) $user->ID, $key ) ? get_user_meta( (int) $user->ID, $key, true ) : null );
+			if ( isset( $parsed['error'] ) ) {
+				return $this->error_result( $parsed['error'] );
+			}
+			$value   = $parsed['value'];
 			$current = get_user_meta( (int) $user->ID, $key, true );
 			if ( $current === $value ) {
 				// Upstream short-circuits an unchanged value as success with no write.
@@ -1223,7 +1233,7 @@ trait WPVibe_CLI_Roles {
 					'message' => sprintf( __( 'Value passed for \'%1$s\' on user %2$d is unchanged.', 'vibe-ai' ), $key, (int) $user->ID ),
 				) );
 			}
-			if ( false === update_user_meta( (int) $user->ID, $key, $value ) ) {
+			if ( false === update_user_meta( (int) $user->ID, $key, wp_slash( $value ) ) ) {
 				// A filter (or DB fault) short-circuited the write; do not claim success.
 				/* translators: 1: key, 2: user ID */
 				return $this->error_result( sprintf( __( 'Failed to update \'%1$s\' meta on user %2$d.', 'vibe-ai' ), $key, (int) $user->ID ) );
@@ -1237,7 +1247,7 @@ trait WPVibe_CLI_Roles {
 			'action_label' => 'Manage Users',
 			'admin_url'    => admin_url( 'users.php' ),
 		) );
-		return $this->success_result( array( 'message' => $msg ) );
+		return $this->success_result( array( 'message' => $msg ), $parsed['notice'] ?? '' );
 	}
 
 }

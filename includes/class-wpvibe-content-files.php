@@ -38,12 +38,12 @@ class WPVibe_Content_Files {
 		if ( false === $real ) {
 			return $this->error( 'not_found', 'The requested wp-content path was not found.', 404 );
 		}
-		if ( $real !== $base && strpos( $real, $base . '/' ) !== 0 ) {
+		if ( ! WPVibe_File_Ops::is_within( $real, $base ) ) {
 			return $this->error( 'path_traversal', 'The resolved path is outside wp-content.' );
 		}
 		$uploads = wp_get_upload_dir();
 		$upload_dir = isset( $uploads['basedir'] ) ? realpath( $uploads['basedir'] ) : false;
-		if ( $upload_dir && ( $real === $upload_dir || strpos( $real, $upload_dir . '/' ) === 0 ) ) {
+		if ( $upload_dir && WPVibe_File_Ops::is_within( $real, $upload_dir ) ) {
 			return $this->error( 'forbidden_path', 'Uploads are excluded from wp-content reads.' );
 		}
 		if ( $directory ) {

@@ -825,6 +825,20 @@ trait WPVibe_CLI_Db {
 		return $found;
 	}
 
+	/** Whether any identifier anywhere in the statement (not only its write target) is a protected table. */
+	private function sql_any_protected_table_named( $sql ) {
+		global $wpdb;
+		$sql = str_ireplace( '{prefix}', (string) $wpdb->prefix, (string) $sql );
+		foreach ( array( true, false ) as $backslash ) {
+			foreach ( $this->sql_identifier_tokens( $sql, $backslash ) as $token ) {
+				if ( 'p' !== $token[0] && null !== $this->protected_table_key( $token[1] ) ) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
 	/** The tokens of the statement's write-target clause (see sql_protected_tables_named). */
 	private function sql_write_target_zone( $tokens ) {
 		$first = '';

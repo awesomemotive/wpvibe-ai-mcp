@@ -24,6 +24,7 @@ class WPVibe_Builder_Login {
 	const TRANSIENT_PREFIX = 'wpvibe_bl_';
 	const RATE_KEY         = 'wpvibe_bl_rate';
 	const CACHE_GROUP      = 'wpvibe_builder_login';
+	const SESSION_MARK     = 'wpvibe_builder';
 
 	private static $instance = null;
 
@@ -221,6 +222,19 @@ class WPVibe_Builder_Login {
 		return 1 === $rows;
 	}
 
+	/** True when the current browser session was opened by a builder sign-in link. */
+	public static function is_builder_session() {
+		if ( ! function_exists( 'wp_get_session_token' ) || ! class_exists( 'WP_Session_Tokens' ) ) {
+			return false;
+		}
+		$token = wp_get_session_token();
+		if ( ! $token ) {
+			return false;
+		}
+		$session = WP_Session_Tokens::get_instance( get_current_user_id() )->get( $token );
+		return is_array( $session ) && ! empty( $session[ self::SESSION_MARK ] );
+	}
+
 	public function maybe_consume() {
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput.InputNotValidated -- Single-use token validated via hashed transient lookup in consume().
 		if ( empty( $_GET[ self::QUERY_PARAM ] ) ) {
@@ -240,7 +254,16 @@ class WPVibe_Builder_Login {
 		}
 
 		wp_set_current_user( $result['user_id'] );
+		// The link is minted with an application password, so the session it opens is
+		// marked: it can open the builder, never the wp-admin form that only a real browser
+		// login may submit (security audit 10-20, #6; WPVibe_Approval_Bypass::is_cookie_session()).
+		$mark = static function ( $info ) {
+			$info[ self::SESSION_MARK ] = true;
+			return $info;
+		};
+		add_filter( 'attach_session_information', $mark );
 		wp_set_auth_cookie( $result['user_id'], false, is_ssl() );
+		remove_filter( 'attach_session_information', $mark );
 
 		if ( class_exists( 'WPVibe_Audit_Log' ) ) {
 			WPVibe_Audit_Log::log_execution(

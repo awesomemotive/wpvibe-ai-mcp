@@ -121,6 +121,8 @@ class WPVibe_Draft_Lock {
 		return self::valid_slug( $draft ) && self::valid_slug( $source )
 			&& $draft === $source . '-wpvibe-draft'
 			&& $draft !== get_option( 'stylesheet' )
+			// A child theme's parent is live too (security audit 10-20, #5).
+			&& $draft !== get_option( 'template' )
 			&& ! is_link( get_theme_root() . '/' . $draft )
 			&& ! is_link( get_theme_root() . '/' . $source );
 	}

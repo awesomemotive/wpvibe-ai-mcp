@@ -4,7 +4,7 @@ Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.20.5
+Stable tag: 1.21.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -218,8 +218,21 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 
 == Changelog ==
 
+= 1.21.0 =
+* Security: Pending plugin, theme and WordPress updates can no longer be pointed at a different download through an option change. WordPress's update records are now read-only to your AI.
+* Security: The list of user roles is now protected on every site, including sites with a custom database table prefix and every multisite subsite.
+* Security: The draft theme file tools only ever work inside a draft theme WPVibe created, never in your live theme or its parent theme.
+* Security: The SeedProd builder sign-in that WPVibe opens to compile your pages can no longer switch on "Dangerously bypass approvals".
+* Security: The approval preview for a database query no longer runs statements the query itself would refuse, such as file reads or queries on protected tables.
+* Security: With "Allow for WPVibe" on behind a security plugin that blocks application passwords, only the WPVibe password of an account connected to WPVibe gets through. Other accounts, and the same account's other application passwords, stay blocked.
+* Fix: Draft theme editing works on Windows hosts and local Windows installs (for example Local). Reading, editing and outlining existing files no longer fail with a path error.
+* Fix: Your AI can no longer delete the WordPress user WPVibe is connected as, which used to break the connection until you reconnected by hand. It is told to reconnect as another user first.
+* Fix: Post meta and user meta writes follow WP-CLI's --format option. JSON text stored by plugins such as SeedProd and Elementor stays text instead of being turned into an array, and --format=json or --format=plaintext picks either one.
+* Fix: User meta saved through WPVibe keeps escaped quotes, so JSON text in user meta stays valid.
+* Improvement: option pluck supports --format=json, so your AI can tell true, 1 and "1" apart. Undoing an Astra setting change uses it.
+
 = 1.20.5 =
-* Security: User meta changes that need your approval can no longer be slipped past it with a key the database treats as the same as a protected one (for example a different letter case, an accent or a hidden character). Keys like that are refused, and a write is refused whenever WPVibe cannot confirm which stored key it would touch. Thanks to the user who reported it.
+* Security: User meta changes that need your approval can no longer be slipped past it with a key the database treats as the same as a protected one (for example a different letter case, an accent or a hidden character). Keys like that are refused, and a write is refused whenever WPVibe cannot confirm which stored key it would touch. Thanks to Mahesh Bohara (https://github.com/maheshbohara) for reporting it.
 * Improvement: WPVibe's own updates are safer. An update waits while WordPress is running its own background updates, a failed or rolled-back update is always reported as failed (with the reason when the site could not reach itself to check the new version), maintenance mode is cleared if an update is interrupted, and WPVibe records a note whenever it had to switch itself back on.
 * Fix: Approved database writes no longer fail with "Multiple SQL statements" when a quoted value contains a semicolon, such as serialized data or CSS. Anything the check cannot read with certainty is still refused.
 * Fix: When another plugin or theme crashes while WPVibe saves an edit, administrators see the PHP error with its file, line and the plugin or theme it came from, instead of WordPress's bare "critical error". Your AI is told to check whether the change was saved rather than send the same edit again.
@@ -355,18 +368,6 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 * Fix: live reload polling is bounded with timeout and backoff and stops after repeated failures instead of polling forever.
 * Hardening: reconnecting keeps the existing Application Password until the replacement verifies; the browser-approved credential can seed the proof key only once.
 * Fix: proof key provisioning, reset and rotation work on SQLite-backed sites (WordPress Studio, Playground, the SQLite integration plugin).
-
-= 1.16.5 =
-* Fix: publishing Tailwind themes now collects source files in one request, reducing host rate-limit errors on themes with many templates.
-* Hardening: publishing stops if source files cannot be collected completely or if the draft changes during preparation, preventing incomplete or stale compiled styles from going live.
-
-= 1.16.4 =
-* Fix: approved long-running commands (a live `search-replace`, mutating `db query`) no longer depend on WP-Cron to run in the background. On some hosts WP-Cron never fires, so from 1.16.0 to 1.16.3 those commands could sit for 30 minutes and then report an unknown outcome without ever running. The request now answers immediately and keeps running the command in the same PHP process after releasing the connection (PHP-FPM and LiteSpeed); where PHP cannot release a connection early, the site hands the job to itself over a one-time token, and where it cannot reach itself either, the command simply runs inline. Jobs that an earlier version left queued for WP-Cron are expired if that cron ever fires, never run late.
-* Fix: a fatal error during a background run (memory, an engine time limit that could not be lifted) is now recorded in the operation receipt instead of leaving it open.
-* Fix: `plugin update vibe-ai` (WPVibe updating itself) uses the same hand-off and no longer depends on WP-Cron either.
-
-= 1.16.3 =
-* Fix: sites on XSERVER with the WAF "Command" rule enabled can connect again. That rule blocks any URL containing "ping", which was the name of the route WPVibe checks before connecting. The check now also answers at /wpvibe/v1/health, and the plugin's own self-update loopback moved off that word too. The /ping route stays for older connections.
 
 = Older versions =
 WP.org caps the changelog at 5,000 words. For the full release history back to 1.0.0, see https://wpvibe.ai/changelog/

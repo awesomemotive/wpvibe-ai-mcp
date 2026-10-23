@@ -1,8 +1,22 @@
 # Changelog
 
+## [1.21.0] - 2026-10-23
+
+- Security: Pending plugin, theme and WordPress updates can no longer be pointed at a different download through an option change. WordPress's update records are now read-only to your AI.
+- Security: The list of user roles is now protected on every site, including sites with a custom database table prefix and every multisite subsite.
+- Security: The draft theme file tools only ever work inside a draft theme WPVibe created, never in your live theme or its parent theme.
+- Security: The SeedProd builder sign-in that WPVibe opens to compile your pages can no longer switch on "Dangerously bypass approvals".
+- Security: The approval preview for a database query no longer runs statements the query itself would refuse, such as file reads or queries on protected tables.
+- Security: With "Allow for WPVibe" on behind a security plugin that blocks application passwords, only the WPVibe password of an account connected to WPVibe gets through. Other accounts, and the same account's other application passwords, stay blocked.
+- Fix: Draft theme editing works on Windows hosts and local Windows installs (for example Local). Reading, editing and outlining existing files no longer fail with a path error.
+- Fix: Your AI can no longer delete the WordPress user WPVibe is connected as, which used to break the connection until you reconnected by hand. It is told to reconnect as another user first.
+- Fix: Post meta and user meta writes follow WP-CLI's --format option. JSON text stored by plugins such as SeedProd and Elementor stays text instead of being turned into an array, and --format=json or --format=plaintext picks either one.
+- Fix: User meta saved through WPVibe keeps escaped quotes, so JSON text in user meta stays valid.
+- Improvement: option pluck supports --format=json, so your AI can tell true, 1 and "1" apart. Undoing an Astra setting change uses it.
+
 ## [1.20.5] - 2026-10-14
 
-- Security: User meta changes that need your approval can no longer be slipped past it with a key the database treats as the same as a protected one (for example a different letter case, an accent or a hidden character). Keys like that are refused, and a write is refused whenever WPVibe cannot confirm which stored key it would touch. Thanks to the user who reported it.
+- Security: User meta changes that need your approval can no longer be slipped past it with a key the database treats as the same as a protected one (for example a different letter case, an accent or a hidden character). Keys like that are refused, and a write is refused whenever WPVibe cannot confirm which stored key it would touch. Thanks to Mahesh Bohara (https://github.com/maheshbohara) for reporting it.
 - Improvement: WPVibe's own updates are safer. An update waits while WordPress is running its own background updates, a failed or rolled-back update is always reported as failed (with the reason when the site could not reach itself to check the new version), maintenance mode is cleared if an update is interrupted, and WPVibe records a note whenever it had to switch itself back on.
 - Fix: Approved database writes no longer fail with "Multiple SQL statements" when a quoted value contains a semicolon, such as serialized data or CSS. Anything the check cannot read with certainty is still refused.
 - Fix: When another plugin or theme crashes while WPVibe saves an edit, administrators see the PHP error with its file, line and the plugin or theme it came from, instead of WordPress's bare "critical error". Your AI is told to check whether the change was saved rather than send the same edit again.

@@ -348,6 +348,12 @@ class WPVibe_CLI {
 		// WPCode storage (WPVibe_Code_Snippet::STORAGE_OPTIONS): audits read it, only code_snippet writes it.
 		'wpcode_snippets',
 		'ihaf_insert_*',
+		// Update availability: reading it is harmless, only writes choose a package URL.
+		'_site_transient_update_*',
+		'_site_transient_timeout_update_*',
+		'_transient_update_*',
+		'_transient_timeout_update_*',
+		'wpvibe_draft_theme',
 	);
 
 	const BLOCKED_OPTIONS = array(
@@ -382,6 +388,18 @@ class WPVibe_CLI {
 		'uninstall_plugins',
 		'auto_update_plugins',
 		'auto_update_themes',
+		// Core's upgrader reads each update's download URL (`package`) out of these rows, so a
+		// write chooses what `plugin update` installs (security audit 10-20, #4). Trailing `*`
+		// covers plugins, themes, core and their timeout rows.
+		'_site_transient_update_*',
+		'_site_transient_timeout_update_*',
+		'_transient_update_*',
+		'_transient_timeout_update_*',
+		// Every file route measures containment against the draft this names, so a write
+		// chooses where file/write may put PHP (security audit 10-20, #5). Not
+		// wpvibe_draft_source: draft recovery tells the AI to delete it, and valid_draft()
+		// refuses any pair that isn't <source>-wpvibe-draft.
+		'wpvibe_draft_theme',
 		'auth_key',
 		'secure_auth_key',
 		'logged_in_key',
@@ -582,7 +600,7 @@ class WPVibe_CLI {
 		'theme mod list'          => 'theme mod list',
 		'theme mod get'           => 'theme mod get <mod>... | --all [--field=key|value] (missing mods return null; values keep their stored JSON types)',
 		'option get'              => 'option get <key>',
-		'option pluck'            => 'option pluck <option> <key-path>... (read one nested key without fetching the whole option)',
+		'option pluck'            => 'option pluck <option> <key-path>... [--format=json|plaintext] (read one nested key without fetching the whole option; --format=json keeps its type)',
 		'option list'             => 'option list [--search=<pattern>] [--autoload=<on|off>] [--transients] [--format=json|ids|count] (transients are excluded unless --transients; capped at 100 rows)',
 		'user list'               => 'user list [--role=<role>] [--number=<n>] [--paged=<n>|--offset=<n>] [--format=json|ids|count] (defaults to 100 rows, max 1000; page with --paged)',
 		'post list'               => 'post list [--post_type=<type>] [--post_status=<status>] [--posts_per_page=<n>] [--paged=<n>|--offset=<n>] [--s=<search>] [--author=<id>] [--year=<yyyy>] [--monthnum=<1-12>] [--format=json|ids|count] (defaults to 20 rows, max 100; page with --paged)',
@@ -652,8 +670,8 @@ class WPVibe_CLI {
 		'post create'             => 'post create --post_title=<title> [--post_content=<content>] [--post_content_base64=<b64>] [--post_status=<status>] [--post_type=<type>] [--post_date=<Y-m-d H:i:s>] [--porcelain] (use base64 when content mixes single AND double quotes; plain --post_content silently drops colliding quotes; --porcelain returns just the new post ID)',
 		'post update'             => 'post update <id> [<id>...] [--post_title=<title>] [--post_content=<content>] [--post_content_base64=<b64>] [--post_status=<status>] (use base64 when content mixes single AND double quotes)',
 		'post delete'             => 'post delete <id> [<id>...] [--force]',
-		'post meta update'        => 'post meta update <id> <key> <value> [--force] (replaces all rows of the key)',
-		'post meta add'           => 'post meta add <id> <key> <value> [--force] (appends a row; use for multi-value metas)',
+		'post meta update'        => 'post meta update <id> <key> <value> [--format=plaintext|json] [--force] (replaces all rows of the key; a {...}/[...] value with no --format keeps the stored shape: array, or JSON text when the current value is text)',
+		'post meta add'           => 'post meta add <id> <key> <value> [--format=plaintext|json] [--force] (appends a row; use for multi-value metas; a {...}/[...] value with no --format keeps the stored shape: array, or JSON text when the current value is text)',
 		'post meta delete'        => 'post meta delete <id> <key> [<value>] [--force] (with <value>: removes only the matching row)',
 		'cache flush'             => 'cache flush',
 		'cache purge'             => 'cache purge [--url=<url>[,<url>...]] [--skip=<target>[,...]] (detects the installed cache plugin and purges it, plus the object cache; --url purges just those URLs on engines with a URL API, others flush fully; --skip omits named targets, e.g. cloudflare,object)',
@@ -687,8 +705,8 @@ class WPVibe_CLI {
 		'user remove-role'        => 'user remove-role <id|login|email> <role> [<role>...] (removing admin access needs approval; the last admin is protected)',
 		'user meta get'           => 'user meta get <id|login|email> <key>',
 		'user meta list'          => 'user meta list <id|login|email> [--keys=<key,key>]',
-		'user meta add'           => 'user meta add <id|login|email> <key> <value> [--force] (appends a row; --force overrides protected _-prefixed keys)',
-		'user meta update'        => 'user meta update <id|login|email> <key> <value> [--force] (replaces the key; capability/session keys are never writable)',
+		'user meta add'           => 'user meta add <id|login|email> <key> <value> [--format=plaintext|json] [--force] (appends a row; --force overrides protected _-prefixed keys)',
+		'user meta update'        => 'user meta update <id|login|email> <key> <value> [--format=plaintext|json] [--force] (replaces the key; capability/session keys are never writable)',
 		'user meta delete'        => 'user meta delete <id|login|email> <key> [<value>] [--force] (with <value>: removes only the matching row)',
 		'search-replace'          => 'search-replace <old> <new> [<table>...] [--dry-run] [--skip-tables=<tables>] [--skip-columns=<cols>] [--include-guids] [--all-tables]',
 		'menu create'             => 'menu create <menu-name> [--porcelain]',
@@ -731,6 +749,9 @@ class WPVibe_CLI {
 	 */
 	public static function match_option_name( $name, $list ) {
 		$name = trim( (string) $name );
+		if ( self::is_role_map_name( $name, $list ) ) {
+			return 'wp_user_roles';
+		}
 		foreach ( $list as $candidate ) {
 			if ( self::option_name_is( $name, $candidate ) ) {
 				return $candidate;
@@ -747,12 +768,29 @@ class WPVibe_CLI {
 		if ( null === $canonical ) {
 			return null;
 		}
+		if ( self::is_role_map_name( (string) $canonical, $list ) ) {
+			return 'wp_user_roles';
+		}
 		foreach ( $list as $candidate ) {
 			if ( self::option_name_is( (string) $canonical, $candidate ) ) {
 				return $candidate;
 			}
 		}
 		return null;
+	}
+
+	/**
+	 * The `wp_user_roles` entry stands for this site's real role-map row, which WordPress
+	 * keeps at get_blog_prefix() . 'user_roles' (vp_user_roles, wp_2_user_roles, ...), not the
+	 * literal (security audit 10-20, #1). Resolved per call: switch_to_blog() changes it.
+	 */
+	private static function is_role_map_name( $name, $list ) {
+		global $wpdb;
+		if ( ! isset( $wpdb ) || ! in_array( 'wp_user_roles', (array) $list, true ) ) {
+			return false;
+		}
+		$prefix = method_exists( $wpdb, 'get_blog_prefix' ) ? $wpdb->get_blog_prefix() : (string) ( $wpdb->prefix ?? '' );
+		return '' !== $prefix && self::option_name_is( $name, $prefix . 'user_roles' );
 	}
 
 	/** The prefix a list entry ending in `*` stands for, or null for an exact name (a bare `*` is not a wildcard). */
@@ -984,6 +1022,11 @@ class WPVibe_CLI {
 			'stderr'            => $result['stderr'],
 			'execution_time_ms' => $elapsed,
 		);
+
+		// option pluck --format=json marks typed output, so the Worker can tell it from an older plugin's plain text.
+		if ( isset( $result['format'] ) ) {
+			$response['format'] = $result['format'];
+		}
 
 		if ( ! empty( $result['requires_confirmation'] ) ) {
 			$response['requires_confirmation'] = true;

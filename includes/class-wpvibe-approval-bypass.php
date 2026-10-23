@@ -95,7 +95,11 @@ class WPVibe_Approval_Bypass {
 			return false;
 		}
 		$uid = function_exists( 'wp_validate_auth_cookie' ) ? wp_validate_auth_cookie( '', 'logged_in' ) : false;
-		return $uid && (int) $uid === get_current_user_id();
+		if ( ! $uid || (int) $uid !== get_current_user_id() ) {
+			return false;
+		}
+		// A builder sign-in link turns the AI's application password into a cookie; that session stays the AI's.
+		return ! ( class_exists( 'WPVibe_Builder_Login' ) && WPVibe_Builder_Login::is_builder_session() );
 	}
 
 	/** @return true|WP_Error */

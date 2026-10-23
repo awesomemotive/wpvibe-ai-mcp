@@ -157,7 +157,8 @@ class WPVibe_File_Ops {
 		return new WP_Error( 'no_draft', __( 'No draft theme active. Create one first with create_draft_theme.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 400 ) ) );
 		}
 
-		if ( ! WPVibe_Draft_Lock::valid_slug( $draft_slug ) || $draft_slug === get_option( 'stylesheet' ) || is_link( get_theme_root() . '/' . $draft_slug ) ) {
+		// The file routes' containment root: only a draft WPVibe made, never a live theme (security audit 10-20, #5).
+		if ( ! WPVibe_Draft_Lock::valid_draft() ) {
 			return WPVibe_Draft_Lock::conflict();
 		}
 		$dir = get_theme_root() . '/' . $draft_slug;
@@ -226,18 +227,38 @@ class WPVibe_File_Ops {
 			$probe = dirname( $probe );
 		}
 		$real = realpath( $probe );
-		if ( false === $real || ( $real !== $base && strpos( $real, $base . '/' ) !== 0 ) ) {
+		if ( false === $real || ! self::is_within( $real, $base ) ) {
 			return new WP_Error( 'path_traversal', __( 'Resolved path is outside the draft theme.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'security_gate', false, array( 'status' => 403 ) ) );
 		}
 		// The directory walk above cannot see a symlinked file; the file itself must resolve inside too.
 		if ( file_exists( $full_path ) ) {
 			$real_file = realpath( $full_path );
-			if ( false === $real_file || ( $real_file !== $base && strpos( $real_file, $base . '/' ) !== 0 ) ) {
+			if ( false === $real_file || ! self::is_within( $real_file, $base ) ) {
 				return new WP_Error( 'path_traversal', __( 'Resolved path is outside the draft theme.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'security_gate', false, array( 'status' => 403 ) ) );
 			}
 		}
 
 		return $full_path;
+	}
+
+	/**
+	 * Whether a resolved path is $base itself or inside it.
+	 *
+	 * Both sides are normalized first: realpath() returns backslashes on
+	 * Windows, which never match a forward-slash prefix. The trailing slash
+	 * keeps a sibling like draft-evil out of draft.
+	 *
+	 * @param string $path Resolved path.
+	 * @param string $base Resolved base directory.
+	 * @return bool
+	 */
+	public static function is_within( $path, $base ) {
+		if ( ! is_string( $path ) || ! is_string( $base ) || '' === $base ) {
+			return false;
+		}
+		$path = wp_normalize_path( $path );
+		$base = wp_normalize_path( $base );
+		return $path === $base || 0 === strpos( $path, $base . '/' );
 	}
 
 	/**

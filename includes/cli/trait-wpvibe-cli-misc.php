@@ -590,6 +590,12 @@ trait WPVibe_CLI_Misc {
 				$results[] = array( 'target' => $ident, 'status' => 'error', 'error' => 'not found' );
 				continue;
 			}
+			// The connection signs in as this user: deleting it deletes WPVibe's application
+			// password with it and every later call fails (#714). wp-admin refuses the same.
+			if ( (int) $user->ID === (int) get_current_user_id() ) {
+				$results[] = array( 'target' => $user->user_login, 'id' => $user->ID, 'status' => 'error', 'error' => __( 'refused: this is the account WPVibe is connected as; deleting it would disconnect WPVibe. Have another administrator delete it in wp-admin, after reconnecting WPVibe as a different user.', 'vibe-ai' ) );
+				continue;
+			}
 			if ( in_array( (int) $user->ID, $admin_ids, true ) ) {
 				if ( $admins_remaining <= 1 ) {
 					$results[] = array( 'target' => $user->user_login, 'id' => $user->ID, 'status' => 'error', 'error' => __( 'refused: this is the last administrator (lockout protection)', 'vibe-ai' ) );

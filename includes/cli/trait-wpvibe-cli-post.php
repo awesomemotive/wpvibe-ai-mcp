@@ -797,7 +797,12 @@ trait WPVibe_CLI_Post {
 			return $cap_check;
 		}
 
-		$value = $this->maybe_decode_meta_value( $positional[2] );
+		$stored = metadata_exists( 'post', $post_id, $key ) ? get_post_meta( $post_id, $key, true ) : null;
+		$parsed = $this->parse_meta_value( $positional[2], $flags, $key, $stored );
+		if ( isset( $parsed['error'] ) ) {
+			return $this->error_result( $parsed['error'] );
+		}
+		$value = $parsed['value'];
 
 		// update_metadata() unslashes on the way in, as WP-CLI's own handler accounts for.
 		update_post_meta( $post_id, $key, wp_slash( $value ) );
@@ -808,23 +813,44 @@ trait WPVibe_CLI_Post {
 		) );
 
 		/* translators: 1: meta key, 2: post ID */
-		return $this->success_result( array( 'message' => sprintf( __( 'Updated meta \'%1$s\' on post #%2$d.', 'vibe-ai' ), $key, $post_id ) ) );
+		return $this->success_result( array( 'message' => sprintf( __( 'Updated meta \'%1$s\' on post #%2$d.', 'vibe-ai' ), $key, $post_id ) ), $parsed['notice'] ?? '' );
 	}
 
 
-	/**
-	 * Decode only structured JSON ({...} / [...]) into arrays. Scalars stay raw
-	 * strings to match real WP-CLI (which stores "true" literally without
-	 * --format=json); decoding them stored booleans as "1"/"" and silently
-	 * broke string-typed metas like GeneratePress's _generate-full-width-content.
-	 */
-	private function maybe_decode_meta_value( $value ) {
-		$trimmed = ltrim( (string) $value );
-		if ( '' === $trimmed || ( '{' !== $trimmed[0] && '[' !== $trimmed[0] ) ) {
-			return $value;
+	// Unflagged JSON follows the stored shape (null = no row; '' has none): plugins differ on JSON text vs array.
+	private function parse_meta_value( $raw, $flags, $key, $stored ) {
+		$raw    = (string) $raw;
+		$format = isset( $flags['format'] ) ? strtolower( (string) $flags['format'] ) : '';
+		if ( '' !== $format && ! in_array( $format, array( 'json', 'plaintext' ), true ) ) {
+			return array( 'error' => __( 'Unknown --format. Use --format=json for structured values or --format=plaintext for literal strings.', 'vibe-ai' ) );
 		}
-		$decoded = json_decode( $value, true );
-		return null === $decoded ? $value : $decoded;
+		if ( 'json' === $format ) {
+			$decoded = json_decode( $raw, true );
+			if ( null === $decoded && 'null' !== trim( $raw ) ) {
+				return array( 'error' => __( 'Value is not valid JSON. Fix the JSON, or drop --format=json to store the text as a plain string.', 'vibe-ai' ) );
+			}
+			return array( 'value' => $decoded );
+		}
+		if ( is_serialized( trim( $raw ) ) ) {
+			/* translators: %s: meta key */
+			return array( 'error' => sprintf( __( 'Value for \'%s\' looks like a PHP-serialized string. WordPress serializes values automatically, so writing this would store the serialized text inside another serialized string. Write the structured value with --format=json instead.', 'vibe-ai' ), $key ) );
+		}
+		$json = json_decode( $raw, true );
+		if ( 'plaintext' === $format || ! is_array( $json ) ) {
+			return array( 'value' => $raw );
+		}
+		if ( null === $stored || '' === $stored || is_array( $stored ) || is_object( $stored ) ) {
+			return array(
+				'value'  => $json,
+				/* translators: %s: meta key */
+				'notice' => sprintf( __( 'Stored \'%s\' as an array (decoded JSON). To store the JSON text instead, re-run with --format=plaintext.', 'vibe-ai' ), $key ),
+			);
+		}
+		return array(
+			'value'  => $raw,
+			/* translators: %s: meta key */
+			'notice' => sprintf( __( 'Stored \'%s\' as JSON text, because its current value is text. To store an array instead, re-run with --format=json.', 'vibe-ai' ), $key ),
+		);
 	}
 
 	private function handle_post_meta_add( $positional, $flags ) {
@@ -862,7 +888,12 @@ trait WPVibe_CLI_Post {
 			return $cap_check;
 		}
 
-		$value = $this->maybe_decode_meta_value( $positional[2] );
+		$stored = metadata_exists( 'post', $post_id, $key ) ? get_post_meta( $post_id, $key, true ) : null;
+		$parsed = $this->parse_meta_value( $positional[2], $flags, $key, $stored );
+		if ( isset( $parsed['error'] ) ) {
+			return $this->error_result( $parsed['error'] );
+		}
+		$value = $parsed['value'];
 
 		add_post_meta( $post_id, $key, wp_slash( $value ) );
 
@@ -872,7 +903,7 @@ trait WPVibe_CLI_Post {
 		) );
 
 		/* translators: 1: meta key, 2: post ID */
-		return $this->success_result( array( 'message' => sprintf( __( 'Added meta \'%1$s\' on post #%2$d.', 'vibe-ai' ), $key, $post_id ) ) );
+		return $this->success_result( array( 'message' => sprintf( __( 'Added meta \'%1$s\' on post #%2$d.', 'vibe-ai' ), $key, $post_id ) ), $parsed['notice'] ?? '' );
 	}
 
 

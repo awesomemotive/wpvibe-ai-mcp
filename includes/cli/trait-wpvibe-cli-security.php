@@ -1353,6 +1353,45 @@ trait WPVibe_CLI_Security {
 		);
 	}
 
+	/** The preview runs this exact SQL before approval: never one that names a protected table or a file, sleep or lock function. */
+	private function preview_sql_safe( $sql ) {
+		return ! $this->sql_any_protected_table_named( $sql )
+			&& ! preg_match( '/\bINTO\s+(?:OUTFILE|DUMPFILE)\b|\bLOAD_FILE\s*\(|\b(?:SLEEP|BENCHMARK|GET_LOCK|RELEASE_LOCK)\s*\(/', $this->sql_scan_text( $sql ) )
+			&& ! preg_match( '#/\*[Mm]?!#', $sql );
+	}
+
+	/** $sql with the inside of every quoted string or identifier replaced by x, same length, so offsets still line up. */
+	private function sql_mask_literals( $sql ) {
+		$out = $sql;
+		$len = strlen( $sql );
+		for ( $i = 0; $i < $len; $i++ ) {
+			$q = $sql[ $i ];
+			if ( "'" !== $q && '"' !== $q && '`' !== $q ) {
+				continue;
+			}
+			for ( $j = $i + 1; $j < $len; $j++ ) {
+				if ( '\\' === $sql[ $j ] && '`' !== $q ) {
+					$out[ $j ] = 'x';
+					if ( $j + 1 < $len ) {
+						$out[ ++$j ] = 'x';
+					}
+					continue;
+				}
+				if ( $sql[ $j ] === $q ) {
+					if ( $j + 1 < $len && $sql[ $j + 1 ] === $q ) {
+						$out[ $j ] = 'x';
+						$out[ ++$j ] = 'x';
+						continue;
+					}
+					break;
+				}
+				$out[ $j ] = 'x';
+			}
+			$i = $j;
+		}
+		return $out;
+	}
+
 	private function build_db_query_dry_run( $keyword, $sql, $normalized ) {
 		global $wpdb;
 		// Resolve {prefix} placeholder so the regex parsers below can find the
@@ -1376,6 +1415,22 @@ trait WPVibe_CLI_Security {
 			$preview['note'] = __( 'Affected-row preview skipped: the statement could not be safely parsed for preview.', 'vibe-ai' );
 			return $preview;
 		}
+		// The preview runs before approval and before handle_db_query()'s guards, so it
+		// must refuse what they refuse, and never read a protected table (users,
+		// options, ...) from inside a WHERE: the row count would leak it one bit at a
+		// time (security audit 10-20, #2.2). Execution still applies its own guards.
+		$scan = $this->sql_scan_text( $sql );
+		if ( preg_match( '#/\*[Mm]?!#', $sql )
+			|| preg_match( '/\bINTO\s+(?:OUTFILE|DUMPFILE)\b|\bLOAD_FILE\s*\(|\b(?:SLEEP|BENCHMARK|GET_LOCK|RELEASE_LOCK)\s*\(/', $scan )
+			|| $this->sql_any_protected_table_named( $sql ) ) {
+			$preview['note'] = __( 'Affected-row preview skipped: the statement reads a protected table or uses SQL the preview does not run.', 'vibe-ai' );
+			return $preview;
+		}
+		// A comment outside a string can hide or re-join SQL around the splice below.
+		if ( preg_match( '/--|#|\/\*/', $this->sql_mask_literals( trim( $sql ) ) ) ) {
+			$preview['note'] = __( 'Affected-row preview skipped: the statement contains SQL comments.', 'vibe-ai' );
+			return $preview;
+		}
 
 		// Cap counting at this many rows so we don't lock up sites with millions
 		// of rows. The subquery LIMIT bounds the scan; outer COUNT(*) returns
@@ -1383,12 +1438,12 @@ trait WPVibe_CLI_Security {
 		$cap = 1000;
 
 		// For DELETE/UPDATE we can count affected rows by translating the WHERE.
-		if ( 'DELETE' === $keyword && preg_match( '/^DELETE\s+FROM\s+([`\w]+)(.*)$/i', trim( $sql ), $m ) ) {
+		if ( 'DELETE' === $keyword && preg_match( '/^DELETE\s+FROM\s+(`\w+`|\w+)(\s.*)?$/is', trim( $sql ), $m ) ) {
 			$table = trim( $m[1], '`' );
-			$rest  = trim( rtrim( $m[2], '; ' ) );
+			$rest  = isset( $m[2] ) ? trim( rtrim( $m[2], '; ' ) ) : '';
 			$count_sql = "SELECT COUNT(*) FROM (SELECT 1 FROM `{$table}` {$rest} LIMIT " . ( $cap + 1 ) . ") AS subq";
 			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-			$count = $wpdb->get_var( $count_sql ); // nosemgrep: direct-db-query
+			$count = $this->preview_sql_safe( $count_sql ) ? $wpdb->get_var( $count_sql ) : null; // nosemgrep: direct-db-query
 			if ( null !== $count && empty( $wpdb->last_error ) ) {
 				$n = (int) $count;
 				$preview['affected_count'] = min( $n, $cap );
@@ -1399,7 +1454,7 @@ trait WPVibe_CLI_Security {
 				}
 				$sample_sql = "SELECT * FROM `{$table}` {$rest} LIMIT 5";
 				// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-				$sample = $wpdb->get_results( $sample_sql, ARRAY_A ); // nosemgrep: direct-db-query
+				$sample = $this->preview_sql_safe( $sample_sql ) ? $wpdb->get_results( $sample_sql, ARRAY_A ) : null; // nosemgrep: direct-db-query
 				if ( $sample && empty( $wpdb->last_error ) ) {
 					$preview['sample_rows'] = $this->trim_sample_rows( $sample );
 				}
@@ -1408,12 +1463,15 @@ trait WPVibe_CLI_Security {
 			}
 		}
 
-		if ( 'UPDATE' === $keyword && preg_match( '/^UPDATE\s+([`\w]+)\s+SET\s+.+?(\s+WHERE\s+.*)?$/is', trim( $sql ), $m ) ) {
-			$table = trim( $m[1], '`' );
-			$where = isset( $m[2] ) ? trim( rtrim( $m[2], '; ' ) ) : '';
+		// The WHERE is found on a copy with string contents blanked, so a ' WHERE ' typed inside
+		// a SET value is never spliced into preview SQL (security audit 10-20, #2.2 review).
+		$trimmed = trim( $sql );
+		if ( 'UPDATE' === $keyword && preg_match( '/^UPDATE\s+(`\w+`|\w+)\s+SET\s+.+?(\s+WHERE\s+.*)?$/is', $this->sql_mask_literals( $trimmed ), $m, PREG_OFFSET_CAPTURE ) ) {
+			$table = trim( substr( $trimmed, $m[1][1], strlen( $m[1][0] ) ), '`' );
+			$where = isset( $m[2] ) && -1 !== $m[2][1] ? trim( rtrim( substr( $trimmed, $m[2][1] ), '; ' ) ) : '';
 			$count_sql = "SELECT COUNT(*) FROM (SELECT 1 FROM `{$table}` {$where} LIMIT " . ( $cap + 1 ) . ") AS subq";
 			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-			$count = $wpdb->get_var( $count_sql ); // nosemgrep: direct-db-query
+			$count = $this->preview_sql_safe( $count_sql ) ? $wpdb->get_var( $count_sql ) : null; // nosemgrep: direct-db-query
 			if ( null !== $count && empty( $wpdb->last_error ) ) {
 				$n = (int) $count;
 				$preview['affected_count'] = min( $n, $cap );
@@ -1426,7 +1484,7 @@ trait WPVibe_CLI_Security {
 				// reviewable by content, not just by count — same as the DELETE branch.
 				$sample_sql = "SELECT * FROM `{$table}` {$where} LIMIT 5";
 				// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-				$sample = $wpdb->get_results( $sample_sql, ARRAY_A ); // nosemgrep: direct-db-query
+				$sample = $this->preview_sql_safe( $sample_sql ) ? $wpdb->get_results( $sample_sql, ARRAY_A ) : null; // nosemgrep: direct-db-query
 				if ( $sample && empty( $wpdb->last_error ) ) {
 					$preview['sample_rows'] = $this->trim_sample_rows( $sample );
 				}

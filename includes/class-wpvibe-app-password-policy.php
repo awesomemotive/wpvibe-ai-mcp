@@ -15,12 +15,17 @@ class WPVibe_App_Password_Policy {
 
 	private static $forced = false;
 
+	// True once allow() turned the site-level answer from false to true for this request:
+	// from then on every per-user and per-password answer is ours to check (#901).
+	private static $opened = false;
+
 	public static function init() {
 		if ( ! self::enabled() ) {
 			return;
 		}
 		add_filter( 'wp_is_application_passwords_available', array( __CLASS__, 'allow' ), PHP_INT_MAX );
 		add_filter( 'wp_is_application_passwords_available_for_user', array( __CLASS__, 'allow_for_user' ), PHP_INT_MAX, 2 );
+		add_action( 'wp_authenticate_application_password_errors', array( __CLASS__, 'refuse_other_passwords' ), PHP_INT_MAX, 3 );
 	}
 
 	public static function enabled() {
@@ -31,13 +36,22 @@ class WPVibe_App_Password_Policy {
 		if ( $available || ! self::enabled() ) {
 			return $available;
 		}
-		return is_ssl() && self::wpvibe_request() ? true : $available;
+		if ( is_ssl() && self::wpvibe_request() ) {
+			self::$opened = true;
+			return true;
+		}
+		return $available;
 	}
 
 	// The header alone is public; the account must also hold a password WPVibe minted, or be the one approving one on our authorize page.
 	public static function allow_for_user( $available, $user ) {
-		if ( $available || ! self::enabled() || ! is_ssl() || ! self::wpvibe_request() ) {
+		// When the site allowed it on its own, nothing here changes. When allow() opened it,
+		// core hands us `true` as the starting value, so it cannot short-circuit the checks below.
+		if ( $available && ! self::$opened ) {
 			return $available;
+		}
+		if ( ! self::enabled() || ! is_ssl() || ! self::wpvibe_request() ) {
+			return self::$opened ? false : $available;
 		}
 		if ( self::$forced || self::on_wpvibe_authorize_page() ) {
 			return true;
@@ -47,16 +61,28 @@ class WPVibe_App_Password_Policy {
 			return $available;
 		}
 		// The authorize link carries a fixed app_id the approver cannot edit; the name prefix covers passwords minted before it was recorded.
-		$app_id = class_exists( 'WPVibe_Authorize_Notice' ) ? WPVibe_Authorize_Notice::APP_ID : '';
 		foreach ( (array) WP_Application_Passwords::get_user_application_passwords( $user_id ) as $item ) {
-			if ( '' !== $app_id && isset( $item['app_id'] ) && $app_id === (string) $item['app_id'] ) {
-				return true;
-			}
-			if ( isset( $item['name'] ) && 0 === strpos( (string) $item['name'], 'WPVibe' ) ) {
+			if ( self::is_wpvibe_password( $item ) ) {
 				return true;
 			}
 		}
-		return $available;
+		return self::$opened ? false : $available;
+	}
+
+	// The account may hold other application passwords; only the WPVibe one gets through the site owner's block.
+	public static function refuse_other_passwords( $error, $user, $item ) {
+		if ( self::$opened && ! self::$forced && ! self::is_wpvibe_password( $item ) && $error instanceof WP_Error ) {
+			$error->add( 'wpvibe_app_password_not_wpvibe', __( 'Application passwords are turned off on this site except for WPVibe, and this is not a WPVibe password.', 'vibe-ai' ) );
+		}
+		return $error;
+	}
+
+	private static function is_wpvibe_password( $item ) {
+		$app_id = class_exists( 'WPVibe_Authorize_Notice' ) ? WPVibe_Authorize_Notice::APP_ID : '';
+		if ( '' !== $app_id && isset( $item['app_id'] ) && $app_id === (string) $item['app_id'] ) {
+			return true;
+		}
+		return isset( $item['name'] ) && 0 === strpos( (string) $item['name'], 'WPVibe' );
 	}
 
 	private static function on_wpvibe_authorize_page() {

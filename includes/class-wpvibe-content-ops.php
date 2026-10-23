@@ -135,7 +135,7 @@ class WPVibe_Content_Ops {
 	public function compute_replacement( $current, $old_content, $new_content, $replace_all = false, $whole_word = false, &$replaced = null ) {
 		$replaced = 0;
 		if ( ! is_string( $current ) ) {
-			return new WP_Error( 'not_text', __( 'Stored value is not editable as text (it is an array or object; content/edit only rewrites strings). For an option, change one key with run_wp_cli `option patch update <option> <key-path> <value>`, or replace the whole value with `option update <option> \'<json>\' --format=json`. For post meta, pass the whole structure as JSON so it is decoded and stored as an array: `post meta update <id> <key> \'<json>\'` (a flat scalar value would collapse the array; add --force for underscore-prefixed builder keys such as _elementor_data).', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 422 ) ) );
+			return new WP_Error( 'not_text', __( 'Stored value is not editable as text (it is an array or object; content/edit only rewrites strings). For an option, change one key with run_wp_cli `option patch update <option> <key-path> <value>`, or replace the whole value with `option update <option> \'<json>\' --format=json`. For post meta, pass the whole structure as JSON with --format=json so it is stored as an array: `post meta update <id> <key> \'<json>\' --format=json` (a flat scalar value would collapse the array; add --force for underscore-prefixed builder keys such as _elementor_data).', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 422 ) ) );
 		}
 
 		$old = self::desanitize( $old_content );
