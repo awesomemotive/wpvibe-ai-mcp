@@ -95,7 +95,8 @@ trait WPVibe_CLI_Parse {
 	}
 
 
-	private function tokenize( $input ) {
+	/** $closed (out): false when a quote never closed; the tokens then run to the end of the input as before. */
+	private function tokenize( $input, &$closed = null ) {
 		$tokens   = array();
 		$current  = '';
 		$in_quote = false;
@@ -137,6 +138,7 @@ trait WPVibe_CLI_Parse {
 		if ( '' !== $current || $quoted ) {
 			$tokens[] = $current;
 		}
+		$closed = ! $in_quote;
 		return $tokens;
 	}
 
@@ -192,8 +194,21 @@ trait WPVibe_CLI_Parse {
 			return new WP_Error( 'command_blocked', sprintf( __( '"%1$s" commands are blocked for security. Individually supported subcommands (if any) are listed by `help %2$s`; run `help` for the full catalog.', 'vibe-ai' ), $base, $base ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 403 ) ) );
 		}
 
+		// A known two-word group (`post term`, `user meta`) is named with its subcommand, plus the subcommands it has.
+		$group    = implode( ' ', array_slice( $positional, 0, 2 ) );
+		$siblings = array();
+		foreach ( count( $positional ) >= 2 ? array_keys( self::ALLOWLIST ) : array() as $key ) {
+			if ( 0 === strpos( $key, $group . ' ' ) && substr_count( $key, ' ' ) === 2 ) {
+				$siblings[] = substr( $key, strlen( $group ) + 1 );
+			}
+		}
+		$named   = ( $siblings && isset( $positional[2] ) ) ? $group . ' ' . $positional[2] : $group;
+		$options = $siblings
+			/* translators: 1: command group, 2: list of its subcommands */
+			? ' ' . sprintf( __( 'Supported "%1$s" subcommands: %2$s.', 'vibe-ai' ), $group, implode( ', ', $siblings ) )
+			: '';
 		/* translators: %s: command name */
-		return new WP_Error( 'command_not_allowed', sprintf( __( 'Command "%s" is not in the allowlist. Run `help` for the full supported-command catalog — the capability may exist under different syntax.', 'vibe-ai' ), implode( ' ', array_slice( $positional, 0, 2 ) ) ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 403 ) ) );
+		return new WP_Error( 'command_not_allowed', sprintf( __( 'Command "%s" is not in the allowlist.', 'vibe-ai' ), $named ) . $options . ' ' . __( 'Run `help` for the full supported-command catalog — the capability may exist under different syntax.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 403 ) ) );
 	}
 
 

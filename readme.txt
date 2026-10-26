@@ -4,7 +4,7 @@ Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.21.0
+Stable tag: 1.21.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -218,6 +218,14 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 
 == Changelog ==
 
+= 1.21.1 =
+* Security: The approval log on your site no longer keeps passwords and other secret values from the commands you approved, such as post passwords and the values in a database query. Before, only user passwords were hidden. Approved commands are now logged by their shape.
+* Feature: Your AI can read large plugin and theme files a section at a time, up to 1 MB. Before, any source file in wp-content over 64 KB was refused, even for a few lines. The whole file is still checked for secrets, and they are masked before any lines are returned.
+* Feature: Beaver Builder pages can be edited one part at a time. Your AI sends only the rows and modules it changed, so it no longer has to pass your whole layout, including form keys such as reCAPTCHA secrets, back through the chat.
+* Feature: Your AI can list a post's categories and tags (wp post term list), look up a single category or tag (wp term get), and read and change term meta (wp term meta).
+* Fix: Reading a page's HTML works on WordPress sites installed in a subfolder (for example example.com/blog). It used to fetch a "page not found" page instead and report success.
+* Fix: Beaver Builder saves refuse a module whose internal id does not match its key, which Beaver would otherwise drop or rename while reporting success.
+
 = 1.21.0 =
 * Security: Pending plugin, theme and WordPress updates can no longer be pointed at a different download through an option change. WordPress's update records are now read-only to your AI.
 * Security: The list of user roles is now protected on every site, including sites with a custom database table prefix and every multisite subsite.
@@ -353,21 +361,6 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 * Fix: editing a page whose saved template no longer exists (theme switched, builder canvas template with the builder off) failed with "Invalid page template" and a misleading crash hint. Content edits and post updates now leave the stored template alone.
 * Security: wp-content diagnostic reads redact the connection proof key and bare 64-character hex secrets that a failed database write can leave in debug.log.
 * Hardening: the Allow for WPVibe setting can no longer be changed through WP-CLI commands sent by an AI; only the button on the WPVibe page changes it.
-
-= 1.17.0 =
-* New: Four-step setup page. Add WPVibe to your AI, connect the site with one prompt, and confirm with a read. Steps turn green on their own as WordPress approves and your AI reads the site.
-* New: Check site connectivity tests the site from inside and out before you open your AI: HTTPS, Application Passwords, a staging password gate or REST-blocking plugin, a maintenance page answering the API, a host that strips the Authorization header, and WPVibe reaching the site. Failures name the cause and the fix; the report carries the exact Cloudflare rule when a firewall is challenging WPVibe.
-* New: Allow for WPVibe permits Application Passwords for WPVibe requests only when a security plugin turns them off site-wide.
-* New: A signed confirmation when your AI completes its first read, plus a copyable report for support.
-* New: Administrators can read wp-content files for diagnostics (read-only, secrets redacted, audited); wp-content writes remain blocked.
-* New: The dashboard widget shows the same connection status as the setup page, with a Check connection link.
-* New: The setup page says when the site address is http:// and WPVibe needs https://, and links to Security and the DPA in the footer.
-* Change: Sites already connected read as connected from their recent activity after updating. Nothing to redo.
-* Fix: The approval page explains when this WordPress account cannot create Application Passwords, or has them disabled, instead of a generic error.
-* Fix: Check site connectivity runs when wp-admin is open at a different address than the site URL, such as with or without www.
-* Fix: live reload polling is bounded with timeout and backoff and stops after repeated failures instead of polling forever.
-* Hardening: reconnecting keeps the existing Application Password until the replacement verifies; the browser-approved credential can seed the proof key only once.
-* Fix: proof key provisioning, reset and rotation work on SQLite-backed sites (WordPress Studio, Playground, the SQLite integration plugin).
 
 = Older versions =
 WP.org caps the changelog at 5,000 words. For the full release history back to 1.0.0, see https://wpvibe.ai/changelog/

@@ -64,6 +64,34 @@ class WPVibe_CLI {
 	private $non_transactional_tables = null;
 	/** --limit=N the model glued inside the closing quote of a read (`"SELECT ... --limit=5"`). */
 	private $db_query_glued_limit = null;
+	/** False when the command's quoting never closed (the tokenizer still ran it): its Approval Log entry is a placeholder. */
+	private $command_quotes_closed = null;
+
+	// Approval Log redaction (#1050), used by WPVibe_CLI_Helpers::redact_command_secrets (traits cannot hold constants on PHP 7.4).
+	const REDACTED_VALUE   = '<redacted>';
+	const UNPARSED_COMMAND = '<unparsed command redacted>';
+	const UNPARSED_SQL     = '<unparsed sql redacted>';
+	// Commands with a `<key> <value>` pair: the key's index among the positionals, command words included.
+	const KEY_VALUE_COMMANDS = array(
+		'option add'          => 2,
+		'option update'       => 2,
+		'config set'          => 2,
+		'transient set'       => 2,
+		'cache add'           => 2,
+		'cache set'           => 2,
+		'site option add'     => 3,
+		'site option update'  => 3,
+		'post meta add'       => 4,
+		'post meta update'    => 4,
+		'user meta add'       => 4,
+		'user meta update'    => 4,
+		'term meta add'       => 4,
+		'term meta update'    => 4,
+		'comment meta add'    => 4,
+		'comment meta update' => 4,
+		'network meta add'    => 4,
+		'network meta update' => 4,
+	);
 	/** Running out of band (WPVibe_Detached_Ops): no request deadline applies. */
 	private $detached = false;
 
@@ -91,6 +119,10 @@ class WPVibe_CLI {
 		'post meta list'   => array( 'tier' => 'read', 'cap' => 'edit_posts' ),
 		'taxonomy list'    => array( 'tier' => 'read', 'cap' => 'edit_posts' ),
 		'term list'        => array( 'tier' => 'read', 'cap' => 'manage_categories' ),
+		'term get'         => array( 'tier' => 'read', 'cap' => 'manage_categories' ),
+		'post term list'   => array( 'tier' => 'read', 'cap' => 'edit_posts' ),
+		'term meta get'    => array( 'tier' => 'read', 'cap' => 'manage_categories' ),
+		'term meta list'   => array( 'tier' => 'read', 'cap' => 'manage_categories' ),
 		'media list'       => array( 'tier' => 'read', 'cap' => 'upload_files' ),
 		'comment list'     => array( 'tier' => 'read', 'cap' => 'moderate_comments' ),
 		'comment count'    => array( 'tier' => 'read', 'cap' => 'moderate_comments' ),
@@ -207,6 +239,10 @@ class WPVibe_CLI {
 		// term delete is approval-gated via a dedicated classify_destructive
 		// branch (terms have no trash), so no generic destructive meta here.
 		'term delete'          => array( 'tier' => 'write', 'cap' => 'manage_categories' ),
+		'term meta update'     => array( 'tier' => 'write', 'cap' => 'manage_categories' ),
+		'term meta set'        => array( 'tier' => 'write', 'cap' => 'manage_categories' ),
+		'term meta add'        => array( 'tier' => 'write', 'cap' => 'manage_categories' ),
+		'term meta delete'     => array( 'tier' => 'write', 'cap' => 'manage_categories' ),
 		'menu item update'     => array( 'tier' => 'write', 'cap' => 'edit_theme_options' ),
 		// Deliberately ungated (2026-08 adversarial plan review) despite the
 		// permanent delete: one nav row, type-guarded to nav_menu_item in the
@@ -458,6 +494,10 @@ class WPVibe_CLI {
 		'post term remove'  => 'handle_post_term_remove',
 		'taxonomy list'     => 'handle_taxonomy_list',
 		'term list'         => 'handle_term_list',
+		'term get'          => 'handle_term_get',
+		'post term list'    => 'handle_post_term_list',
+		'term meta get'     => 'handle_term_meta_get',
+		'term meta list'    => 'handle_term_meta_list',
 		'media list'        => 'handle_media_list',
 		'comment list'      => 'handle_comment_list',
 		'comment count'     => 'handle_comment_count',
@@ -560,6 +600,10 @@ class WPVibe_CLI {
 		'term create'          => 'handle_term_create',
 		'term update'          => 'handle_term_update',
 		'term delete'          => 'handle_term_delete',
+		'term meta update'     => 'handle_term_meta_update',
+		'term meta set'        => 'handle_term_meta_update',
+		'term meta add'        => 'handle_term_meta_add',
+		'term meta delete'     => 'handle_term_meta_delete',
 		'menu item update'     => 'handle_menu_item_update',
 		'menu item delete'     => 'handle_menu_item_delete',
 		'theme mod set'        => 'handle_theme_mod_set',
@@ -612,6 +656,10 @@ class WPVibe_CLI {
 		'post term remove'        => 'post term remove <id> <taxonomy> <term>... [--by=slug|id] | --all',
 		'taxonomy list'           => 'taxonomy list [--public=<bool>]',
 		'term list'               => 'term list <taxonomy> [--number=<n>] [--search=<term>]',
+		'term get'                => 'term get <taxonomy> <term> [--by=id|slug] [--field=<field>] [--fields=<fields>]',
+		'post term list'          => 'post term list <id> <taxonomy>... [--field=<field>] [--fields=<fields>] [--format=json|ids|count]',
+		'term meta get'           => 'term meta get <term-id> [<key>] [--format=json] (without <key>: same as term meta list)',
+		'term meta list'          => 'term meta list <term-id> [--keys=<key,key>] [--fields=<fields>] [--format=json|count] [--unserialize]',
 		'media list'              => 'media list [--post_mime_type=<type>] [--posts_per_page=<n>]',
 		'comment list'            => 'comment list [--status=approve|hold|spam|trash|all] [--post_id=<id>] [--number=<n>] [--offset=<n>] [--orderby=comment_date_gmt|comment_ID] [--order=ASC|DESC] [--comment__in=<ids>] [--format=json|ids|count] [--fields=<list>] (max 100 rows per call; use comment count for totals)',
 		'comment count'           => 'comment count [<post-id>]',
@@ -717,6 +765,10 @@ class WPVibe_CLI {
 		'term create'             => 'term create <taxonomy> <term> [--slug=<slug>] [--description=<text>] [--parent=<term-id>] [--porcelain]',
 		'term update'             => 'term update <taxonomy> <term> [--by=<id|slug>] [--name=<name>] [--slug=<slug>] [--description=<text>] [--parent=<term-id>]',
 		'term delete'             => 'term delete <taxonomy> <term>... [--by=<id|slug>] (permanent, no trash; requires approval)',
+		'term meta update'        => 'term meta update <term-id> <key> <value> [--format=plaintext|json] [--force] (replaces all rows of the key; JSON objects/arrays are decoded)',
+		'term meta set'           => 'term meta set <term-id> <key> <value> [--format=plaintext|json] [--force] (alias of term meta update)',
+		'term meta add'           => 'term meta add <term-id> <key> <value> [--format=plaintext|json] [--force] (appends a row)',
+		'term meta delete'        => 'term meta delete <term-id> <key> [<value>] [--force] (with <value>: removes only the matching row)',
 		'menu item update'        => 'menu item update <db-id> [--title=<title>] [--link=<url>] [--description=<text>] [--target=<_blank>] [--classes=<classes>] [--parent-id=<id>] [--position=<n>]',
 		'menu item delete'        => 'menu item delete <db-id> [<db-id>...]',
 		'theme mod set'           => 'theme mod set <mod> <value> (scalar mods only: custom_logo, background_color, header_textcolor, background_image, header_image, custom_css_post_id; HTML/script mods must use the code_snippet tool; homepage settings are options, use `option update page_on_front <id>` etc.)',
@@ -909,7 +961,7 @@ class WPVibe_CLI {
 			return new WP_Error( 'shell_chars', sprintf( __( 'Command contains disallowed character: %s', 'vibe-ai' ), $blocked_char ) . $hint, WPVibe_Error_Contract::data( 'security_gate', false, array( 'status' => 400 ) ) );
 		}
 
-		$tokens = $this->tokenize( $command );
+		$tokens = $this->tokenize( $command, $this->command_quotes_closed );
 		if ( empty( $tokens ) ) {
 			return new WP_Error( 'empty_command', __( 'No command provided.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
 		}
@@ -996,18 +1048,22 @@ class WPVibe_CLI {
 		// would make an escalation attempt invisible. Failures are swallowed
 		// inside log_execution.
 		if ( $this->skip_destructive && $destructive && empty( $result['requires_confirmation'] ) ) {
+			// The log keeps the command's shape, never its secret values (#1050): flags, SQL literals, positional
+			// passwords; the dry run and the result are scrubbed of every value that was removed.
+			$secrets = array();
+			$logged  = $this->redact_command_secrets( $args, $secrets );
 			WPVibe_Audit_Log::log_execution( array(
 				'operation'      => $destructive['operation'],
 				'command'        => 'wp ' . $command_key,
-				'params'         => array( 'positional' => $this->redact_sensitive_flags( $args ), 'key_length' => $key_length ),
-				'dry_run'        => $destructive['dry_run'],
+				'params'         => array( 'positional' => $logged, 'key_length' => $key_length ),
+				'dry_run'        => self::redact_stored_value( $destructive['dry_run'], $secrets ),
 				// A failed run logs its error: the stdout of a failure is empty, which left the log blank exactly when someone
 				// came looking (#756).
-				'result_summary' => $refusal
+				'result_summary' => self::redact_stored_value( $refusal
 					? 'REFUSED: ' . mb_substr( (string) ( $result['stderr'] ?? '' ), 0, 480 )
 					: ( 0 !== (int) ( $result['exit_code'] ?? 0 ) && '' !== trim( (string) ( $result['stderr'] ?? '' ) )
 						? 'FAILED: ' . mb_substr( (string) $result['stderr'], 0, 480 )
-						: ( isset( $result['stdout'] ) ? mb_substr( (string) $result['stdout'], 0, 500 ) : '' ) ),
+						: ( isset( $result['stdout'] ) ? mb_substr( (string) $result['stdout'], 0, 500 ) : '' ) ), $secrets ),
 			) );
 		}
 

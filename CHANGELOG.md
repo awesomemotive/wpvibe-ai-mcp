@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.21.1] - 2026-10-26
+
+- Security: The approval log on your site no longer keeps passwords and other secret values from the commands you approved, such as post passwords and the values in a database query. Before, only user passwords were hidden. Approved commands are now logged by their shape.
+- Feature: Your AI can read large plugin and theme files a section at a time, up to 1 MB. Before, any source file in wp-content over 64 KB was refused, even for a few lines. The whole file is still checked for secrets, and they are masked before any lines are returned.
+- Feature: Beaver Builder pages can be edited one part at a time. Your AI sends only the rows and modules it changed, so it no longer has to pass your whole layout, including form keys such as reCAPTCHA secrets, back through the chat.
+- Feature: Your AI can list a post's categories and tags (wp post term list), look up a single category or tag (wp term get), and read and change term meta (wp term meta).
+- Fix: Reading a page's HTML works on WordPress sites installed in a subfolder (for example example.com/blog). It used to fetch a "page not found" page instead and report success.
+- Fix: Beaver Builder saves refuse a module whose internal id does not match its key, which Beaver would otherwise drop or rename while reporting success.
+
 ## [1.21.0] - 2026-10-23
 
 - Security: Pending plugin, theme and WordPress updates can no longer be pointed at a different download through an option change. WordPress's update records are now read-only to your AI.

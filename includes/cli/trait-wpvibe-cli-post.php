@@ -219,6 +219,326 @@ trait WPVibe_CLI_Post {
 		return $this->success_result( $this->filter_fields( $results, $flags ) );
 	}
 
+	private function handle_term_get( $positional, $flags ) {
+		$reject = $this->reject_unknown_flags( 'term get', $flags, array( 'by', 'field', 'fields', 'format' ) );
+		if ( $reject ) {
+			return $reject;
+		}
+		$format = isset( $flags['format'] ) ? strtolower( (string) $flags['format'] ) : '';
+		if ( '' !== $format && 'json' !== $format ) {
+			/* translators: %s: requested format */
+			return $this->error_result( sprintf( __( '`term get` returns JSON; --format=%s is not emulated. Use --field=<field> or --fields=<list> to narrow the output.', 'vibe-ai' ), $format ) );
+		}
+		$taxonomy = isset( $positional[0] ) ? (string) $positional[0] : '';
+		$ident    = isset( $positional[1] ) ? (string) $positional[1] : '';
+		if ( '' === $taxonomy || '' === $ident ) {
+			return $this->error_result( __( 'Usage: term get <taxonomy> <term> [--by=id|slug] [--field=<field>] [--fields=<fields>]', 'vibe-ai' ) );
+		}
+		$extra = $this->too_many_positionals( $positional, 2 );
+		if ( $extra ) {
+			return $extra;
+		}
+		if ( ! get_taxonomy( $taxonomy ) ) {
+			/* translators: %s: taxonomy slug */
+			return $this->error_result( sprintf( __( 'Taxonomy %s doesn\'t exist. Run `taxonomy list` to see registered taxonomies.', 'vibe-ai' ), $taxonomy ) );
+		}
+		$term = $this->resolve_term( $taxonomy, $ident, $flags );
+		if ( is_array( $term ) ) {
+			return $term;
+		}
+		if ( ! $term ) {
+			return $this->error_result( __( 'Term doesn\'t exist.', 'vibe-ai' ) );
+		}
+		$row        = $this->term_row( $term );
+		$link       = get_term_link( $term );
+		$row['url'] = is_wp_error( $link ) ? '' : (string) $link;
+		if ( isset( $flags['field'] ) ) {
+			$field = (string) $flags['field'];
+			if ( ! array_key_exists( $field, $row ) ) {
+				/* translators: 1: field name, 2: supported field list */
+				return $this->error_result( sprintf( __( 'Invalid field: %1$s. Supported fields: %2$s.', 'vibe-ai' ), $field, implode( ', ', array_keys( $row ) ) ) );
+			}
+			if ( 'json' === $format ) {
+				return $this->success_result( $row[ $field ] );
+			}
+			return array( 'exit_code' => 0, 'stdout' => (string) $row[ $field ], 'stderr' => '' );
+		}
+		return $this->success_result( $this->filter_fields( array( $row ), $flags )[0] );
+	}
+
+
+	private function handle_post_term_list( $positional, $flags ) {
+		$reject = $this->reject_unknown_flags( 'post term list', $flags, array( 'field', 'fields', 'format' ) );
+		if ( ! $reject ) {
+			$reject = $this->reject_unsupported_format( 'post term list', $flags );
+		}
+		if ( $reject ) {
+			return $reject;
+		}
+		if ( count( $positional ) < 2 ) {
+			return $this->error_result( __( 'Usage: post term list <id> <taxonomy>... [--field=<field>] [--fields=<fields>] [--format=json|ids|count]', 'vibe-ai' ) );
+		}
+		$post = get_post( (int) $positional[0] );
+		if ( ! $post ) {
+			/* translators: %s: post ID */
+			return $this->error_result( sprintf( __( 'Could not find the post with ID %s.', 'vibe-ai' ), $positional[0] ) );
+		}
+		$taxonomies = array_values( array_unique( array_map( 'strval', array_slice( $positional, 1 ) ) ) );
+		foreach ( $taxonomies as $taxonomy ) {
+			if ( ! is_object_in_taxonomy( $post->post_type, $taxonomy ) ) {
+				/* translators: 1: taxonomy slug, 2: post type */
+				return $this->error_result( sprintf( __( 'Invalid taxonomy %1$s. It is not registered for post type \'%2$s\'; run `taxonomy list` to see registered taxonomies.', 'vibe-ai' ), $taxonomy, $post->post_type ) );
+			}
+		}
+		$terms = wp_get_object_terms( (int) $post->ID, $taxonomies );
+		if ( is_wp_error( $terms ) ) {
+			return $this->error_result( $terms->get_error_message() );
+		}
+		$rows = array();
+		foreach ( (array) $terms as $term ) {
+			$rows[] = $this->term_row( $term );
+		}
+		$format = isset( $flags['format'] ) ? strtolower( (string) $flags['format'] ) : '';
+		if ( 'ids' === $format || 'count' === $format ) {
+			return $this->success_result( $this->format_rows( $rows, $flags, 'term_id' ) );
+		}
+		if ( isset( $flags['field'] ) ) {
+			$field  = (string) $flags['field'];
+			$fields = array_keys( $this->term_row( (object) array() ) );
+			if ( ! in_array( $field, $fields, true ) ) {
+				/* translators: 1: field name, 2: supported field list */
+				return $this->error_result( sprintf( __( 'Invalid field: %1$s. Supported fields: %2$s.', 'vibe-ai' ), $field, implode( ', ', $fields ) ) );
+			}
+			return $this->success_result( array_column( $rows, $field ) );
+		}
+		if ( empty( $flags['fields'] ) ) {
+			// Upstream's default columns; the rest are opt-in through --fields.
+			$flags['fields'] = 'term_id,name,slug,taxonomy';
+		}
+		return $this->success_result( $this->filter_fields( $rows, $flags ) );
+	}
+
+
+	/** WP_Term as a plain row, ints cast (core hands back numeric strings from some cache paths). */
+	private function term_row( $term ) {
+		return array(
+			'term_id'          => (int) ( $term->term_id ?? 0 ),
+			'name'             => (string) ( $term->name ?? '' ),
+			'slug'             => (string) ( $term->slug ?? '' ),
+			'term_group'       => (int) ( $term->term_group ?? 0 ),
+			'term_taxonomy_id' => (int) ( $term->term_taxonomy_id ?? 0 ),
+			'taxonomy'         => (string) ( $term->taxonomy ?? '' ),
+			'description'      => (string) ( $term->description ?? '' ),
+			'parent'           => (int) ( $term->parent ?? 0 ),
+			'count'            => (int) ( $term->count ?? 0 ),
+		);
+	}
+
+
+	/** Term meta is keyed by bare term ID (upstream check_object_id). Returns WP_Term, or an error_result array. */
+	private function term_meta_term( $ident ) {
+		$term = is_numeric( $ident ) ? get_term( (int) $ident ) : null;
+		if ( $term && ! is_wp_error( $term ) ) {
+			return $term;
+		}
+		/* translators: %s: term ID */
+		$message = sprintf( __( 'Could not find the term with ID %s.', 'vibe-ai' ), $ident );
+		if ( ! is_numeric( $ident ) ) {
+			$message .= ' ' . __( 'term meta takes a numeric term ID; look it up with `term get <taxonomy> <slug> --by=slug --field=term_id`.', 'vibe-ai' );
+		}
+		return $this->error_result( $message );
+	}
+
+
+	private function handle_term_meta_get( $positional, $flags ) {
+		if ( count( $positional ) < 2 ) {
+			return $this->handle_term_meta_list( $positional, $flags );
+		}
+		$reject = $this->reject_unknown_flags( 'term meta get', $flags, array( 'format' ) );
+		if ( $reject ) {
+			return $reject;
+		}
+		$format = isset( $flags['format'] ) ? strtolower( (string) $flags['format'] ) : '';
+		if ( '' !== $format && 'json' !== $format ) {
+			/* translators: %s: requested format */
+			return $this->error_result( sprintf( __( '`term meta get` prints a text value as text and an array as JSON; --format=%s is not emulated. Use --format=json for JSON of any value.', 'vibe-ai' ), $format ) );
+		}
+		$extra = $this->too_many_positionals( $positional, 2 );
+		if ( $extra ) {
+			return $extra;
+		}
+		$term = $this->term_meta_term( $positional[0] );
+		if ( is_array( $term ) ) {
+			return $term;
+		}
+		$key   = (string) $positional[1];
+		$value = get_term_meta( (int) $term->term_id, $key, true );
+		if ( '' === $value ) {
+			// Upstream exits 1 with no output; say why.
+			/* translators: 1: meta key, 2: term ID */
+			return $this->error_result( sprintf( __( 'No \'%1$s\' meta found for term %2$d.', 'vibe-ai' ), $key, (int) $term->term_id ) );
+		}
+		if ( 'json' === $format ) {
+			return array( 'exit_code' => 0, 'stdout' => wp_json_encode( $value ), 'stderr' => '' );
+		}
+		return array(
+			'exit_code' => 0,
+			'stdout'    => is_scalar( $value ) ? (string) $value : wp_json_encode( $value, JSON_PRETTY_PRINT ),
+			'stderr'    => '',
+		);
+	}
+
+
+	private function handle_term_meta_list( $positional, $flags ) {
+		$sorted = __( 'Rows come back in storage order; sort them yourself.', 'vibe-ai' );
+		$reject = $this->reject_unknown_flags( 'term meta list', $flags, array( 'keys', 'fields', 'format', 'unserialize' ), array(
+			'orderby' => $sorted,
+			'order'   => $sorted,
+		) );
+		if ( $reject ) {
+			return $reject;
+		}
+		$format = isset( $flags['format'] ) ? strtolower( (string) $flags['format'] ) : '';
+		if ( '' !== $format && 'json' !== $format && 'count' !== $format ) {
+			/* translators: %s: requested format */
+			return $this->error_result( sprintf( __( '`term meta list` supports --format=json|count; --format=%s is not emulated. Use --fields=<list> to narrow the columns instead.', 'vibe-ai' ), $format ) );
+		}
+		if ( ! isset( $positional[0] ) || '' === (string) $positional[0] ) {
+			return $this->error_result( __( 'Usage: term meta list <term-id> [--keys=<key,key>]', 'vibe-ai' ) );
+		}
+		$extra = $this->too_many_positionals( $positional, 1 );
+		if ( $extra ) {
+			return $extra;
+		}
+		$term = $this->term_meta_term( $positional[0] );
+		if ( is_array( $term ) ) {
+			return $term;
+		}
+		$term_id = (int) $term->term_id;
+		$only    = isset( $flags['keys'] ) ? array_filter( array_map( 'trim', explode( ',', (string) $flags['keys'] ) ) ) : array();
+		$rows    = array();
+		// One row per termmeta row, values raw like upstream unless --unserialize.
+		foreach ( (array) get_term_meta( $term_id ) as $key => $values ) {
+			if ( $only && ! in_array( (string) $key, $only, true ) ) {
+				continue;
+			}
+			foreach ( (array) $values as $value ) {
+				$rows[] = array(
+					'term_id'    => $term_id,
+					'meta_key'   => (string) $key,
+					'meta_value' => empty( $flags['unserialize'] ) ? $value : maybe_unserialize( (string) $value ),
+				);
+			}
+		}
+		if ( 'count' === $format ) {
+			return $this->success_result( count( $rows ) );
+		}
+		return $this->success_result( $this->filter_fields( $rows, $flags ) );
+	}
+
+
+	private function handle_term_meta_update( $positional, $flags ) {
+		return $this->term_meta_write( 'update', $positional, $flags );
+	}
+
+
+	private function handle_term_meta_add( $positional, $flags ) {
+		return $this->term_meta_write( 'add', $positional, $flags );
+	}
+
+
+	private function handle_term_meta_delete( $positional, $flags ) {
+		return $this->term_meta_write( 'delete', $positional, $flags );
+	}
+
+
+	/** Shared worker for term meta update/add/delete over the core term-meta functions, mirroring the post meta handlers. */
+	private function term_meta_write( $mode, $positional, $flags ) {
+		$known  = ( 'delete' === $mode ) ? array( 'force' ) : array( 'force', 'format' );
+		$reject = $this->reject_unknown_flags( 'term meta ' . $mode, $flags, $known, array(
+			'all' => __( 'Deleting every meta row of a term at once is not emulated. List the keys with `term meta list <term-id>` and delete them by name.', 'vibe-ai' ),
+		) );
+		if ( $reject ) {
+			return $reject;
+		}
+		if ( count( $positional ) < ( 'delete' === $mode ? 2 : 3 ) ) {
+			$usage = ( 'delete' === $mode )
+				? __( 'Usage: term meta delete <term-id> <key> [<value>]', 'vibe-ai' )
+				/* translators: %s: subcommand */
+				: sprintf( __( 'Usage: term meta %s <term-id> <key> <value>', 'vibe-ai' ), $mode );
+			return $this->error_result( $usage );
+		}
+		$extra = $this->too_many_positionals( $positional, 3 );
+		if ( $extra ) {
+			return $extra;
+		}
+		$term = $this->term_meta_term( $positional[0] );
+		if ( is_array( $term ) ) {
+			return $term;
+		}
+		$term_id = (int) $term->term_id;
+		$key     = (string) $positional[1];
+		if ( empty( $flags['force'] ) && is_protected_meta( $key, 'term' ) ) {
+			/* translators: %s: meta key */
+			return $this->error_result( sprintf( __( 'Meta key \'%s\' is a protected/internal key. Use --force to override.', 'vibe-ai' ), $key ) );
+		}
+		// edit_term maps to the term's own taxonomy edit cap, which core's REST term meta writes check too.
+		if ( ! current_user_can( 'edit_term', $term_id ) ) {
+			return new WP_Error( 'insufficient_cap', __( 'You do not have the required capability (edit_term) to change this term\'s meta.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'capability_role', false, array( 'status' => 403, 'capability' => 'edit_term' ) ) );
+		}
+
+		$notice = '';
+		if ( 'delete' === $mode ) {
+			// The optional value matches a row as given, like post meta delete.
+			$value = isset( $positional[2] ) ? (string) $positional[2] : '';
+			// delete_metadata() unslashes the value it matches on.
+			if ( ! delete_term_meta( $term_id, $key, wp_slash( $value ) ) ) {
+				/* translators: 1: meta key, 2: term ID */
+				return $this->error_result( sprintf( __( 'Failed to delete \'%1$s\' meta from term %2$d (key or value not found).', 'vibe-ai' ), $key, $term_id ) );
+			}
+			/* translators: 1: meta key, 2: term ID */
+			$message = sprintf( __( 'Deleted meta \'%1$s\' from term %2$d.', 'vibe-ai' ), $key, $term_id );
+		} else {
+			// Same value rules as post and user meta (#590): unflagged JSON follows the stored shape.
+			$stored = metadata_exists( 'term', $term_id, $key ) ? get_term_meta( $term_id, $key, true ) : null;
+			$parsed = $this->parse_meta_value( $positional[2], $flags, $key, $stored );
+			if ( isset( $parsed['error'] ) ) {
+				return $this->error_result( $parsed['error'] );
+			}
+			$value  = $parsed['value'];
+			$notice = $parsed['notice'] ?? '';
+			if ( 'update' === $mode && get_term_meta( $term_id, $key, true ) === $value ) {
+				// Core returns false for an unchanged value; upstream reports it as success with no write.
+				return $this->success_result( array(
+					/* translators: 1: meta key, 2: term ID */
+					'message' => sprintf( __( 'Value passed for \'%1$s\' on term %2$d is unchanged.', 'vibe-ai' ), $key, $term_id ),
+				) );
+			}
+			// update_metadata()/add_metadata() unslash on the way in.
+			$result = ( 'update' === $mode )
+				? update_term_meta( $term_id, $key, wp_slash( $value ) )
+				: add_term_meta( $term_id, $key, wp_slash( $value ) );
+			if ( is_wp_error( $result ) ) {
+				return $this->error_result( $result->get_error_message() );
+			}
+			if ( false === $result ) {
+				/* translators: 1: subcommand, 2: meta key, 3: term ID */
+				return $this->error_result( sprintf( __( 'Failed to %1$s \'%2$s\' meta on term %3$d.', 'vibe-ai' ), $mode, $key, $term_id ) );
+			}
+			$message = ( 'update' === $mode )
+				/* translators: 1: meta key, 2: term ID */
+				? sprintf( __( 'Updated meta \'%1$s\' on term %2$d.', 'vibe-ai' ), $key, $term_id )
+				/* translators: 1: meta key, 2: term ID */
+				: sprintf( __( 'Added meta \'%1$s\' on term %2$d.', 'vibe-ai' ), $key, $term_id );
+		}
+
+		WPVibe_Change_Tracker::mark( array(
+			'summary'      => "Term meta {$mode}: #{$term_id} → {$key}",
+			'action_label' => 'Refresh',
+		) );
+		return $this->success_result( array( 'message' => $message ), $notice );
+	}
+
 
 	private function handle_term_create( $positional, $flags ) {
 		$reject = $this->reject_unknown_flags( 'term create', $flags, array( 'slug', 'description', 'parent', 'porcelain' ) );

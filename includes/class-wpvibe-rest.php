@@ -1250,7 +1250,7 @@ class WPVibe_REST {
 	 * MCP to compare WPVIBE_VERSION strings — flags are forward-compatible.
 	 */
 	public static function feature_flags() {
-		return array( 'content_edit', 'content_search', 'code_snippet', 'code_snippet_dormant', 'beaver_save', 'breakdance_save', 'bricks_save', 'armor', 'authorize_mint', 'op_proof', 'op_proof_v2', 'detached_ops', 'connection_readiness', 'connection_status', 'svg_sanitize' );
+		return array( 'content_edit', 'content_search', 'code_snippet', 'code_snippet_dormant', 'beaver_save', 'breakdance_save', 'bricks_save', 'armor', 'authorize_mint', 'op_proof', 'op_proof_v2', 'detached_ops', 'connection_readiness', 'connection_status', 'svg_sanitize', 'content_read_range' );
 	}
 
 	public function get_site_info() {
@@ -1649,10 +1649,19 @@ class WPVibe_REST {
 	 * Polylang) use to rewrite the path into the REST request's language, so
 	 * a /de/ path could come back as the default-language page.
 	 *
+	 * The Worker sends the page URL's full pathname, which on a subdirectory
+	 * install (home https://x.test/blog) already starts with /blog; that
+	 * leading home path is dropped so it is not joined onto home twice. An
+	 * absolute URL is reduced to its path and query, so the fetch stays on home.
+	 *
 	 * @param string $path Path plus optional query string, as the Worker sent it.
 	 * @return string
 	 */
 	public static function loopback_url( $path ) {
+		$path = (string) $path;
+		if ( preg_match( '#^[a-z][a-z0-9+.-]*://[^/?\#]*(.*)$#i', $path, $m ) ) {
+			$path = $m[1];
+		}
 		$home = untrailingslashit( (string) get_option( 'home' ) );
 		if ( '' === $home ) {
 			return home_url( $path );
@@ -1660,7 +1669,14 @@ class WPVibe_REST {
 		if ( is_ssl() ) {
 			$home = set_url_scheme( $home, 'https' );
 		}
-		return $home . '/' . ltrim( (string) $path, '/' );
+		$home_path = untrailingslashit( (string) wp_parse_url( $home, PHP_URL_PATH ) );
+		if ( '' !== $home_path && 0 === strpos( $path, $home_path ) ) {
+			$next = substr( $path, strlen( $home_path ), 1 );
+			if ( false === $next || '' === $next || false !== strpos( '/?#', $next ) ) {
+				$path = (string) substr( $path, strlen( $home_path ) );
+			}
+		}
+		return $home . '/' . ltrim( $path, '/' );
 	}
 
 	public function get_rendered_html( $request ) {

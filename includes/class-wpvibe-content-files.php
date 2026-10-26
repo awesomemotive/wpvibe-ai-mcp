@@ -5,7 +5,12 @@ defined( 'ABSPATH' ) || exit;
 class WPVibe_Content_Files {
 
 	const EXTENSIONS = array( 'log', 'php', 'css', 'js', 'json', 'txt', 'html' );
+	// A log's bounded tail.
 	const MAX_BYTES = 65536;
+	// Most of a source file one read returns: with line numbers this stays under AI clients' tool-output limits (Claude Code's is 25k tokens).
+	const MAX_RANGE_BYTES = 49152;
+	// Largest source file read at all. It is redacted whole before a range is cut, so a range never loses a secret's opening context.
+	const MAX_SOURCE_BYTES = 1048576;
 	const MAX_ENTRIES = 5000;
 	const MAX_SECONDS = 2;
 
@@ -127,16 +132,15 @@ class WPVibe_Content_Files {
 				return $this->error( 'forbidden_path', 'Only regular files without hard links are supported.' );
 			}
 			$size = $stat['size'];
-			$truncated = $size > self::MAX_BYTES;
-			// Source is all-or-nothing so a range cannot lose preceding secret-key context.
-			if ( ! $is_log && $truncated ) {
-				return $this->error( 'file_too_large', 'This source file exceeds the 64 KiB wp-content read limit.', 413 );
+			$truncated = $is_log && $size > self::MAX_BYTES;
+			if ( ! $is_log && $size > self::MAX_SOURCE_BYTES ) {
+				return $this->error( 'file_too_large', sprintf( 'This source file is %d KiB, over the 1 MiB wp-content read limit, so it cannot be read, not even by line range.', (int) ceil( $size / 1024 ) ), 413 );
 			}
 			$offset = $is_log ? max( 0, $size - self::MAX_BYTES ) : 0;
 			if ( 0 !== fseek( $handle, $offset ) ) {
 				return $this->error( 'read_failed', 'The file could not be positioned for reading.', 500 );
 			}
-			$content = stream_get_contents( $handle, self::MAX_BYTES );
+			$content = stream_get_contents( $handle, $is_log ? self::MAX_BYTES : self::MAX_SOURCE_BYTES );
 			if ( false === $content ) {
 				return $this->error( 'read_failed', 'The file could not be read.', 500 );
 			}
@@ -154,29 +158,62 @@ class WPVibe_Content_Files {
 			return $this->error( 'redaction_failed', 'The file could not be safely redacted.', 500 );
 		}
 		$redacted = $content !== $clean;
-		$lines = explode( "\n", $clean );
+		$total = substr_count( $clean, "\n" ) + 1;
 		$start = null === $start_line ? 1 : (int) $start_line;
-		$end = null === $end_line ? count( $lines ) : (int) $end_line;
+		$end = null === $end_line ? $total : (int) $end_line;
 		if ( $start < 1 || $end < $start ) {
 			return $this->error( 'invalid_range', 'Use a positive start_line and an end_line at or after it.', 400 );
 		}
-		$clean = implode( "\n", array_slice( $lines, $start - 1, $end - $start + 1 ) );
+		// Walk to the range instead of exploding the file: a 1 MiB file of short lines would cost tens of MB as an array.
+		$pos = 0;
+		for ( $line = 1; $line < $start && false !== $pos; ++$line ) {
+			$pos = strpos( $clean, "\n", $pos );
+			$pos = false === $pos ? false : $pos + 1;
+		}
+		$slice = array();
+		$next_start = null;
+		$bytes = 0;
+		for ( $line = $start; false !== $pos && $line <= $end; ++$line ) {
+			$break = strpos( $clean, "\n", $pos );
+			$text = false === $break ? substr( $clean, $pos ) : substr( $clean, $pos, $break - $pos );
+			if ( ! $is_log ) {
+				// Source output stops at the last whole line that fits in MAX_RANGE_BYTES; the rest is a later range.
+				$bytes += strlen( $text ) + ( $slice ? 1 : 0 );
+				if ( $bytes > self::MAX_RANGE_BYTES ) {
+					if ( ! $slice ) {
+						return $this->error( 'file_too_large', sprintf( 'Line %d alone is %d KiB (minified or generated code), over the 48 KiB a read returns, and read_file cannot split a line. Start after it (start_line %d) or read a different file.', $start, (int) ceil( strlen( $text ) / 1024 ), $start + 1 ), 413 );
+					}
+					$next_start = $line;
+					break;
+				}
+			}
+			$slice[] = $text;
+			$pos = false === $break ? false : $break + 1;
+		}
+		$clean = implode( "\n", $slice );
+		$returned_end = $slice ? $start + count( $slice ) - 1 : min( $end, $total );
 		$recorded = WPVibe_Audit_Log::log_execution( array(
 			'operation' => 'content_file_read',
 			'command' => 'read_file',
 			'params' => array( 'scope' => 'wp-content', 'path' => $path, 'start_line' => $start_line, 'end_line' => $end_line ),
-			'result_summary' => sprintf( 'Read %d bytes; %s; redacted=%s', strlen( $clean ), $is_log ? 'log tail' : 'source', $redacted ? 'yes' : 'no' ),
+			'result_summary' => sprintf( 'Read %d bytes; %s; redacted=%s', strlen( $clean ), $is_log ? 'log tail' : sprintf( 'source lines %d-%d of %d', $start, $returned_end, $total ), $redacted ? 'yes' : 'no' ),
 		) );
 		if ( ! $recorded ) {
 			return $this->error( 'audit_failed', 'The read could not be recorded in the audit log. No file content was returned.', 500 );
 		}
+		$notice = null;
+		if ( $truncated && '' === $clean ) {
+			$notice = 'No complete timestamped log record was found in the bounded tail.';
+		} elseif ( null !== $next_start ) {
+			$notice = sprintf( 'One read returns at most 48 KiB: these are lines %d-%d of %d. To read on, call read_file again with start_line %d (and an end_line, or none for as much as fits).', $start, $returned_end, $total, $next_start );
+		}
 		return rest_ensure_response( array(
 			'path' => $path, 'scope' => 'wp-content', 'editable' => false, 'content' => $clean,
 			'redacted' => $redacted, 'truncated' => $truncated, 'tail' => $is_log,
-			'file_bytes' => $size, 'max_bytes' => self::MAX_BYTES,
-			'notice' => $truncated && '' === $clean ? 'No complete timestamped log record was found in the bounded tail.' : null,
-			'start_line' => $start, 'end_line' => min( $end, count( $lines ) ),
-			'total_lines' => count( $lines ), 'line_basis' => $is_log ? 'returned_tail' : 'redacted_file',
+			'file_bytes' => $size, 'max_bytes' => $is_log ? self::MAX_BYTES : self::MAX_RANGE_BYTES, 'max_file_bytes' => $is_log ? null : self::MAX_SOURCE_BYTES,
+			'notice' => $notice, 'next_start_line' => $next_start,
+			'start_line' => $start, 'end_line' => $returned_end,
+			'total_lines' => $total, 'line_basis' => $is_log ? 'returned_tail' : 'redacted_file',
 		) );
 	}
 

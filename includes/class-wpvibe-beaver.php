@@ -27,6 +27,8 @@ class WPVibe_Beaver {
 
 	private $created_id = 0;
 
+	private $merging = false;
+
 	public static function instance() {
 		if ( null === self::$instance ) {
 			self::$instance = new self();
@@ -54,6 +56,20 @@ class WPVibe_Beaver {
 				'theme_layout_type'    => array( 'type' => 'string',  'required' => false, 'sanitize_callback' => 'sanitize_key' ),
 				'theme_layout_locations' => array( 'type' => 'array', 'required' => false ),
 				'theme_layout_settings' => array( 'type' => 'object', 'required' => false ),
+			),
+		) );
+
+		// Its own route, so a plugin that predates it answers 404 instead of saving a partial tree as the whole layout.
+		register_rest_route( $ns, '/beaver/merge-page', array(
+			'methods'             => 'POST',
+			'callback'            => array( $this, 'merge_page' ),
+			'permission_callback' => array( $this, 'can_edit_posts' ),
+			'args'                => array(
+				'id'     => array( 'type' => 'integer', 'required' => true, 'sanitize_callback' => 'absint' ),
+				'title'  => array( 'type' => 'string',  'required' => false, 'sanitize_callback' => 'sanitize_text_field' ),
+				'status' => array( 'type' => 'string',  'required' => false, 'sanitize_callback' => 'sanitize_key' ),
+				'data'   => array( 'type' => 'object',  'default'  => array() ),
+				'delete' => array( 'type' => 'array',   'default'  => array(), 'items' => array( 'type' => 'string' ) ),
 			),
 		) );
 
@@ -101,6 +117,15 @@ class WPVibe_Beaver {
 		}
 	}
 
+	public function merge_page( WP_REST_Request $request ) {
+		$this->merging = true;
+		try {
+			return $this->save_page( $request );
+		} finally {
+			$this->merging = false;
+		}
+	}
+
 	private function error_detail( \Throwable $e ) {
 		$where = WPVibe_Error_Contract::php_error_location( $e->getMessage(), $e->getFile(), $e->getLine(), $e->getTrace() );
 		return '' !== $where ? $where : __( 'details are shown to administrators only', 'vibe-ai' );
@@ -121,8 +146,21 @@ class WPVibe_Beaver {
 		$status    = $request->get_param( 'status' );
 		$id        = $request->get_param( 'id' );
 		$data      = $request->get_param( 'data' );
+		$merge     = $this->merging;
+		$delete    = $merge ? array_values( array_unique( array_map( 'strval', (array) $request->get_param( 'delete' ) ) ) ) : array();
 
-		if ( empty( $data ) || ! is_array( $data ) ) {
+		if ( ! $merge && ( (bool) $request->get_param( 'merge' ) || ! empty( $request->get_param( 'delete' ) ) ) ) {
+			return new WP_Error( 'invalid_input', __( 'save-page replaces the whole layout and takes no `merge` or `delete`. To change only some nodes, send them to POST /wpvibe/v1/beaver/merge-page (WPVibe plugin 1.21.1 or later). Nothing was saved.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
+		}
+		if ( $merge ) {
+			$post = $id ? get_post( $id ) : null;
+			if ( ! $post ) {
+				return new WP_Error( 'invalid_input', __( 'merge-page edits an existing page: send the `id` of a page that has a Beaver Builder layout.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
+			}
+			$post_type = $post->post_type;
+			$status    = $status ? $status : ( 'publish' === $post->post_status ? 'publish' : 'draft' );
+		}
+		if ( ! is_array( $data ) || ( empty( $data ) && ! $delete ) ) {
 			return new WP_Error( 'invalid_input', __( 'The `data` node map is required and must be an object.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
 		}
 		$code_post = WPVibe_Code_Snippet::code_post_write_error( $post_type, (int) $id );
@@ -176,11 +214,17 @@ class WPVibe_Beaver {
 			return new WP_Error( 'invalid_input', __( 'The `data` node map is not valid JSON.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
 		}
 		foreach ( $draft as $key => $node ) {
-			if ( is_array( $node ) ) {
-				$obj           = (object) $node;
-				$obj->settings = (object) ( is_array( $node['settings'] ?? null ) ? $node['settings'] : array() );
-				$draft[ $key ] = $obj;
+			// A null, false or string node replaces the stored one and Beaver then drops it, with its children.
+			if ( ! is_array( $node ) ) {
+				return new WP_Error( 'invalid_input', sprintf(
+					/* translators: %s: node id */
+					__( 'Node %s in `data` must be an object of node keys (for an edit, only the keys that change). To remove a node, list its id in `delete`. Nothing was saved.', 'vibe-ai' ),
+					$key
+				), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
 			}
+			$obj           = (object) $node;
+			$obj->settings = (object) ( is_array( $node['settings'] ?? null ) ? $node['settings'] : array() );
+			$draft[ $key ] = $obj;
 		}
 		$warnings = array();
 
@@ -191,9 +235,20 @@ class WPVibe_Beaver {
 			$this->strip_code_fields( $draft, $warnings );
 		}
 
+		$deleted = array();
+		$sent    = null;
+		$added   = array();
+		if ( $merge ) {
+			$sent  = array_map( 'strval', array_keys( $draft ) );
+			$draft = $this->merge_layout( (int) $id, $draft, $delete, $deleted, $post_type, $added );
+			if ( is_wp_error( $draft ) ) {
+				return $draft;
+			}
+		}
+
 		// A typo'd module slug or dangling parent id saves cleanly through BB's
 		// pipeline and then renders as silent blank space — fail loudly instead.
-		$valid = $this->validate_tree( $draft, $warnings );
+		$valid = $this->validate_tree( $draft, $warnings, $post_type, $sent, $added );
 		if ( is_wp_error( $valid ) ) {
 			return $valid;
 		}
@@ -224,12 +279,99 @@ class WPVibe_Beaver {
 			$this->apply_theme_layout_meta( $id, $request, $warnings );
 		}
 
-		return rest_ensure_response( array(
+		$response = array(
 			'id'       => $id,
 			'url'      => get_permalink( $id ),
 			'edit_url' => admin_url( 'post.php?post=' . $id . '&action=edit' ),
 			'warnings' => $warnings,
-		) );
+		);
+		if ( $merge ) {
+			$response['merged']  = true;
+			$response['deleted'] = $deleted;
+		}
+		return rest_ensure_response( $response );
+	}
+
+	/** The saved layout with the sent nodes laid over it (settings merge by key) and `delete` removed with descendants. */
+	private function merge_layout( $id, array $draft, array $delete, array &$deleted, $post_type, array &$added ) {
+		$base = FLBuilderModel::get_layout_data( 'published', $id );
+		if ( empty( $base ) || ! is_array( $base ) ) {
+			return new WP_Error( 'invalid_input', sprintf(
+				/* translators: %d: post id */
+				__( 'Page %d has no saved Beaver Builder layout to merge into. Send the whole layout to POST /wpvibe/v1/beaver/save-page.', 'vibe-ai' ),
+				$id
+			), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
+		}
+		// Beaver clones each node but shares the cached settings object, so both are copied.
+		$merged = array();
+		foreach ( $base as $node_id => $node ) {
+			if ( is_object( $node ) ) {
+				$node           = clone $node;
+				$node->settings = isset( $node->settings ) && is_object( $node->settings ) ? clone $node->settings : new stdClass();
+			}
+			$merged[ (string) $node_id ] = $node;
+		}
+
+		foreach ( $delete as $node_id ) {
+			if ( ! isset( $merged[ $node_id ] ) ) {
+				return new WP_Error( 'invalid_input', sprintf(
+					/* translators: %s: node id */
+					__( 'Node %s is not in this page\'s layout, so it cannot be deleted. Nothing was saved.', 'vibe-ai' ),
+					$node_id
+				), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
+			}
+		}
+		$removed = array_fill_keys( $delete, true );
+		do {
+			$found = false;
+			foreach ( $merged as $node_id => $node ) {
+				// A sent parent wins, so a node moved out of a deleted subtree stays.
+				$sent   = $draft[ $node_id ] ?? null;
+				$from   = is_object( $sent ) && property_exists( $sent, 'parent' ) ? $sent : $node;
+				$parent = is_object( $from ) ? (string) ( $from->parent ?? '' ) : '';
+				if ( ! isset( $removed[ $node_id ] ) && '' !== $parent && isset( $removed[ $parent ] ) ) {
+					$removed[ $node_id ] = true;
+					$found               = true;
+				}
+			}
+		} while ( $found );
+		foreach ( array_keys( $draft ) as $node_id ) {
+			if ( isset( $removed[ (string) $node_id ] ) ) {
+				return new WP_Error( 'invalid_input', sprintf(
+					/* translators: %s: node id */
+					__( 'Node %s is in `data` and is also deleted (itself or through a parent in `delete`). Send it in one of the two. Nothing was saved.', 'vibe-ai' ),
+					$node_id
+				), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
+			}
+		}
+		$merged  = array_diff_key( $merged, $removed );
+		$deleted = array_map( 'strval', array_keys( $removed ) );
+
+		foreach ( $draft as $node_id => $node ) {
+			$into = $merged[ (string) $node_id ] ?? null;
+			if ( ! is_object( $into ) || ! is_object( $node ) ) {
+				$merged[ (string) $node_id ] = $node;
+				$added[]                     = (string) $node_id;
+				continue;
+			}
+			$was_placed = ! in_array( $into->parent ?? null, array( null, '' ), true );
+			foreach ( get_object_vars( $node ) as $key => $value ) {
+				if ( 'settings' !== $key ) {
+					$into->$key = $value;
+				}
+			}
+			foreach ( get_object_vars( $node->settings ) as $key => $value ) {
+				$into->settings->$key = $value;
+			}
+			if ( $was_placed && in_array( $into->parent ?? null, array( null, '' ), true ) && ! $this->can_be_root( $into, $post_type ) ) {
+				return new WP_Error( 'invalid_input', sprintf(
+					/* translators: %s: node id */
+					__( 'Node %s cannot sit at the top level of the layout: only rows and container modules (such as Box) can. To move it, send another parent id; to remove it, list it in `delete`. Nothing was saved.', 'vibe-ai' ),
+					$node_id
+				), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
+			}
+		}
+		return $merged;
 	}
 
 	/**
@@ -299,31 +441,87 @@ class WPVibe_Beaver {
 		if ( $stripped ) {
 			$warnings[] = sprintf(
 				/* translators: %s: comma-separated node ids */
-				__( 'Executable code fields (custom JS/CSS) were removed from node(s) %s because the connected account lacks the capability to save code.', 'vibe-ai' ),
+				__( 'Executable code fields (custom JS/CSS) sent for node(s) %s were not saved because the connected account lacks the capability to save code.', 'vibe-ai' ),
 				implode( ', ', array_unique( $stripped ) )
 			);
 		}
+	}
+
+	/** A module that holds other modules (Beaver's accepts_children, e.g. Box). */
+	private function is_container( $node ) {
+		$module = 'module' === ( $node->type ?? '' ) ? ( FLBuilderModel::$modules[ (string) ( $node->settings->type ?? '' ) ] ?? null ) : null;
+		return is_object( $module ) && method_exists( $module, 'accepts_children' ) && $module->accepts_children();
+	}
+
+	/** Beaver's own rule (FLBuilderModule::can_be_top_level); a saved template keeps its root node at the top. */
+	private function can_be_root( $node, $post_type ) {
+		if ( 'fl-builder-template' === $post_type || 'row' === ( $node->type ?? '' ) ) {
+			return true;
+		}
+		if ( 'module' !== ( $node->type ?? '' ) ) {
+			return false;
+		}
+		$module = FLBuilderModel::$modules[ (string) ( $node->settings->type ?? '' ) ] ?? null;
+		return is_object( $module ) && method_exists( $module, 'can_be_top_level' ) && $module->can_be_top_level();
 	}
 
 	/**
 	 * Reject nodes BB's pipeline would accept and then silently never render:
 	 * dangling parent ids and unregistered module slugs. Non-column module
 	 * parents render blank too, but BB tolerates some nesting, so only warn.
+	 * $sent is null on save-page (every node was sent); on merge-page only sent and added nodes are judged.
 	 */
-	private function validate_tree( array $draft, array &$warnings ) {
+	private function validate_tree( array $draft, array &$warnings, $post_type, $sent = null, array $added = array() ) {
 		FLBuilderModel::load_modules();
+		foreach ( null === $sent ? array_keys( $draft ) : $sent as $start ) {
+			$seen = array();
+			for ( $at = (string) $start; isset( $draft[ $at ] ) && is_object( $draft[ $at ] ); $at = (string) $draft[ $at ]->parent ) {
+				if ( isset( $seen[ $at ] ) ) {
+					return new WP_Error( 'invalid_input', sprintf(
+						/* translators: %s: node id */
+						__( 'Node %s is its own ancestor through its `parent` chain, so Beaver Builder cannot render it. Fix the parent ids. Nothing was saved.', 'vibe-ai' ),
+						$start
+					), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
+				}
+				$seen[ $at ] = true;
+				if ( in_array( $draft[ $at ]->parent ?? null, array( null, '' ), true ) ) {
+					break;
+				}
+			}
+		}
 		foreach ( $draft as $node_id => $node ) {
 			if ( ! is_object( $node ) ) {
 				continue;
+			}
+			// Beaver keys its layout by each node's `node` and drops a node without one.
+			if ( ! isset( $node->node ) || (string) $node->node !== (string) $node_id ) {
+				return new WP_Error( 'invalid_input', sprintf(
+					/* translators: %s: node id */
+					__( 'Node %s needs a `node` key equal to its id in `data`; Beaver Builder drops or renames a node without it. Nothing was saved.', 'vibe-ai' ),
+					$node_id
+				), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
 			}
 			$parent = $node->parent ?? null;
 			if ( null !== $parent && '' !== $parent && ! isset( $draft[ $parent ] ) ) {
 				return new WP_Error( 'invalid_input', sprintf(
 					/* translators: 1: node id 2: missing parent id */
-					__( 'Node %1$s references parent "%2$s", which is not in `data` — Beaver Builder would drop it from the layout silently. Fix the parent id or add the missing node.', 'vibe-ai' ),
+					__( 'Node %1$s references parent "%2$s", which is not in the layout being saved — Beaver Builder would drop it from the layout silently. Fix the parent id or add the missing node.', 'vibe-ai' ),
 					$node_id,
 					$parent
 				), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
+			}
+			if ( in_array( $parent, array( null, '' ), true ) && ! $this->can_be_root( $node, $post_type ) ) {
+				$text = sprintf(
+					/* translators: 1: node id 2: node type */
+					__( 'Node %1$s (a %2$s) has no parent; Beaver Builder renders only rows and container modules (such as Box) at the top level. Set `parent` to the right row, column group or column.', 'vibe-ai' ),
+					$node_id,
+					(string) ( $node->type ?? 'node' )
+				);
+				if ( null === $sent ) {
+					$warnings[] = $text;
+				} elseif ( in_array( (string) $node_id, $added, true ) ) {
+					return new WP_Error( 'invalid_input', $text . ' ' . __( 'Nothing was saved.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
+				}
 			}
 			if ( 'module' === ( $node->type ?? '' ) ) {
 				$slug = isset( $node->settings->type ) ? (string) $node->settings->type : '';
@@ -335,7 +533,7 @@ class WPVibe_Beaver {
 						$slug
 					), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
 				}
-				if ( null !== $parent && isset( $draft[ $parent ] ) && 'column' !== ( $draft[ $parent ]->type ?? '' ) ) {
+				if ( null !== $parent && isset( $draft[ $parent ] ) && 'column' !== ( $draft[ $parent ]->type ?? '' ) && ! $this->is_container( $draft[ $parent ] ) ) {
 					$warnings[] = sprintf(
 						/* translators: 1: module node id 2: parent node type */
 						__( 'Module %1$s is parented to a %2$s node; Beaver Builder only renders modules inside columns.', 'vibe-ai' ),
