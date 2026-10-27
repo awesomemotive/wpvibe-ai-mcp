@@ -347,6 +347,12 @@ trait WPVibe_CLI_Db {
 			return $this->error_result( __( 'File-access SQL (INTO OUTFILE / DUMPFILE, LOAD_FILE) is not allowed.', 'vibe-ai' ) );
 		}
 
+		// Multisite: manage_options is per site, but users, usermeta and the network tables are shared and every site's tables sit in one schema.
+		$foreign = $this->sql_foreign_site_table( $sql );
+		if ( null !== $foreign ) {
+			return $this->foreign_site_table_refusal( $foreign );
+		}
+
 		list( $kind, $keyword ) = $this->sql_verdict( $sql );
 
 		// classify_destructive holds writes and slow reads for approval; this is
@@ -980,6 +986,65 @@ trait WPVibe_CLI_Db {
 		return 'wpvibe_audit_log' === $key ? 'audit_log' : $key;
 	}
 
+	/** Letters, digits, _, $ and non-ASCII bytes only: every table WordPress or a plugin creates. */
+	private function is_plain_table_name( $name ) {
+		return is_string( $name ) && '' !== $name && ! preg_match( '/[^A-Za-z0-9_$\x80-\xff]/', $name );
+	}
+
+	/**
+	 * On multisite, for a caller without network scope: whether $name is a
+	 * network-global table or another site's table. Always false on single site.
+	 */
+	private function table_outside_current_site( $name ) {
+		global $wpdb;
+		if ( $this->has_network_scope() ) {
+			return false;
+		}
+		$name = (string) $name;
+		if ( in_array( $this->protected_table_key( $name ), array( 'users', 'usermeta', 'sitemeta', 'site', 'blogs' ), true ) ) {
+			return true;
+		}
+		$base = isset( $wpdb->base_prefix ) ? (string) $wpdb->base_prefix : (string) $wpdb->prefix;
+		if ( preg_match( '/^' . preg_quote( $base, '/' ) . '(?:(blogmeta|signups|registration_log|blog_versions)$|(\d+)_)/i', $name, $m ) ) {
+			return '' !== $m[1] || (int) $m[2] !== (int) get_current_blog_id();
+		}
+		// The main site's prefix is the base prefix; any other site owns only its numbered prefix.
+		return 0 !== stripos( $name, (string) $wpdb->prefix );
+	}
+
+	/** The first table the statement names that table_outside_current_site() refuses, else null. */
+	private function sql_foreign_site_table( $sql ) {
+		global $wpdb;
+		if ( $this->has_network_scope() ) {
+			return null;
+		}
+		$sql    = str_replace( '{prefix}', (string) $wpdb->prefix, (string) $sql );
+		$tables = $wpdb->get_col( 'SHOW TABLES' );
+		$tables = array_fill_keys( array_map( 'strtolower', is_array( $tables ) ? $tables : array() ), true );
+		foreach ( array( true, false ) as $backslash ) {
+			foreach ( $this->sql_identifier_tokens( $sql, $backslash ) as $token ) {
+				if ( 'p' === $token[0] ) {
+					continue;
+				}
+				$network = in_array( $this->protected_table_key( $token[1] ), array( 'users', 'usermeta', 'sitemeta', 'site', 'blogs' ), true );
+				if ( $network || ( isset( $tables[ strtolower( $token[1] ) ] ) && $this->table_outside_current_site( $token[1] ) ) ) {
+					return $token[1];
+				}
+			}
+		}
+		return null;
+	}
+
+	private function foreign_site_table_refusal( $table ) {
+		global $wpdb;
+		return $this->error_result( sprintf(
+			/* translators: 1: table name, 2: this site's table prefix */
+			__( 'Refused: this SQL names %1$s, which the whole network shares or another site on it owns. On a multisite network, db query from a site administrator account only reaches this site\'s own tables (%2$s*). For this site\'s users use `user list` or `user get`. A Super Admin account can run it.', 'vibe-ai' ),
+			$table,
+			$wpdb->prefix
+		) );
+	}
+
 	/**
 	 * Tokens MySQL would see, as [type, text]: w bare word, q `backticked`
 	 * name (`` unescaped), d double-quoted literal, p parenthesis; string
@@ -1315,18 +1380,32 @@ trait WPVibe_CLI_Db {
 
 		// Identity tables are never rewritten; the options table stays in scope
 		// with its protected rows filtered out per row (search_replace_row_guard).
+		// A name that is not a plain identifier can only be planted, and the
+		// anchored protected-table match would not recognise it, so it goes too.
 		$protected = array();
-		$tables    = array_values( array_filter( $tables, function ( $t ) use ( &$protected ) {
+		$foreign   = array();
+		$tables    = array_values( array_filter( $tables, function ( $t ) use ( &$protected, &$foreign ) {
 			$key = $this->protected_table_key( $t );
-			if ( null === $key || 'options' === $key ) {
-				return true;
+			if ( ! $this->is_plain_table_name( $t ) || ( null !== $key && 'options' !== $key ) ) {
+				$protected[] = $t;
+				return false;
 			}
-			$protected[] = $t;
-			return false;
+			if ( $this->table_outside_current_site( $t ) ) {
+				$foreign[] = $t;
+				return false;
+			}
+			return true;
 		} ) );
-		$this->sr_protected_tables = $protected;
+		$this->sr_protected_tables = array_merge( $protected, $foreign );
 
 		if ( empty( $tables ) ) {
+			if ( ! empty( $foreign ) && empty( $protected ) ) {
+				return new WP_Error( 'foreign_tables', sprintf(
+					/* translators: %s: table names */
+					__( 'Refused: %s belong to the network or to another site on it. From a site administrator account, search-replace only rewrites this site\'s own tables. Nothing was changed.', 'vibe-ai' ),
+					implode( ', ', $foreign )
+				), WPVibe_Error_Contract::data( 'not_allowed', false ) );
+			}
 			if ( ! empty( $protected ) ) {
 				return new WP_Error( 'protected_tables', sprintf(
 					/* translators: %s: table names */
@@ -1479,12 +1558,9 @@ trait WPVibe_CLI_Db {
 					$count++;
 					continue;
 				}
-				$update_where = array();
-				foreach ( (array) $keys as $k => $v ) {
-					$update_where[ $k ] = $v;
-				}
-				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-				$ok = $wpdb->update( $table, array( $col => $replaced ), $update_where );
+				// Not wpdb::update(): it backticks the table, column and key names without escaping them.
+				// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+				$ok = $wpdb->query( "UPDATE {$table_sql} SET {$col_sql} = " . $this->esc_sql_value( $replaced ) . " WHERE {$where_row}" ); // nosemgrep: direct-db-query
 				if ( false !== $ok ) {
 					$count++;
 				}

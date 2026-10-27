@@ -97,6 +97,7 @@ class WPVibe_Classic_Theme {
 			$cleanup->delete_directory_public( $draft_dir );
 			return $valid;
 		}
+		WPVibe_Draft_Theme::mark_draft( $draft_dir );
 
 		// Set as the active draft, so file-editing tools target this draft.
 		$registered = WPVibe_Draft_Lock::register( $draft_slug, $slug );

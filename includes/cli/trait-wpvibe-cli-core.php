@@ -22,15 +22,20 @@ trait WPVibe_CLI_Core {
 			return array( 'exit_code' => 0, 'stdout' => $wpdb->prefix, 'stderr' => '' );
 		}
 
-		// Blocklist runs before the existence check so responses never leak
-		// whether a secret is configured.
-		$blocked_exact = array( 'DB_PASSWORD', 'DB_USER', 'DB_HOST' );
-		if ( in_array( strtoupper( $name ), $blocked_exact, true ) || preg_match( '/KEY|SALT|SECRET|PASSWORD|TOKEN/i', $name ) ) {
+		// A listed name, or an unlisted switch or number (a bool, int, float or
+		// null cannot carry a credential). An unlisted string gets the same
+		// refusal whether or not it is defined, so nothing leaks either way.
+		$listed = in_array( strtoupper( $name ), self::CONFIG_GET_READABLE, true );
+		if ( $listed ) {
+			$name = strtoupper( $name );
+		}
+		$defined = defined( $name );
+		if ( ! $listed && ! ( $defined && $this->config_value_is_non_string( constant( $name ) ) ) ) {
 			/* translators: %s: constant name */
-			return $this->error_result( sprintf( __( 'Constant \'%s\' is blocked for security. Credentials, keys, salts, and secrets are never exposed to AI tools.', 'vibe-ai' ), $name ) );
+			return $this->error_result( sprintf( __( 'Constant \'%s\' is not on the readable list. config get returns diagnostic constants (debug, paths, URLs, cookies, cache, cron, memory, environment and multisite settings, plus table_prefix) and any switch or number; other text constants, credentials, keys and salts included, are never exposed to AI tools.', 'vibe-ai' ), $name ) );
 		}
 
-		if ( ! defined( $name ) ) {
+		if ( ! $defined ) {
 			/* translators: %s: constant name */
 			return $this->error_result( sprintf( __( 'The constant \'%s\' is not defined on this site.', 'vibe-ai' ), $name ) );
 		}
@@ -41,6 +46,10 @@ trait WPVibe_CLI_Core {
 			'value' => $value,
 			'type'  => strtolower( gettype( $value ) ),
 		) );
+	}
+
+	private function config_value_is_non_string( $value ) {
+		return null === $value || is_bool( $value ) || is_int( $value ) || is_float( $value );
 	}
 
 

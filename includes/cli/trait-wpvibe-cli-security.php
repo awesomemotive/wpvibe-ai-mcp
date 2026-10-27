@@ -268,6 +268,17 @@ trait WPVibe_CLI_Security {
 			if ( 'read' === $kind && ! $this->skip_destructive ) {
 				return null;
 			}
+			// Refused before any preview SQL runs: the preview's row count is itself a read of that table.
+			$foreign = $this->sql_foreign_site_table( $sql );
+			if ( null !== $foreign ) {
+				$refusal = $this->foreign_site_table_refusal( $foreign );
+				return array(
+					'operation' => 'db_query_' . strtolower( $keyword ),
+					'reason'    => (string) $refusal['stderr'],
+					'dry_run'   => null,
+					'refuse'    => $refusal,
+				);
+			}
 			if ( 'slow' === $kind ) {
 				return array(
 					'operation' => 'db_query_side_effect',
@@ -921,9 +932,7 @@ trait WPVibe_CLI_Security {
 					'post_id' => (int) $comment->comment_post_ID,
 				);
 			case 'user':
-				$user = is_numeric( $t )
-					? get_user_by( 'id', (int) $t )
-					: ( is_email( $t ) ? get_user_by( 'email', $t ) : get_user_by( 'login', $t ) );
+				$user = $this->resolve_user( $t );
 				return $user
 					? array( 'target' => $user->user_login, 'id' => (int) $user->ID, 'email' => $user->user_email, 'roles' => $user->roles, 'authored_posts' => (int) count_user_posts( $user->ID ) )
 					: array( 'target' => $t, 'note' => __( 'not found', 'vibe-ai' ) );

@@ -462,7 +462,7 @@ trait WPVibe_CLI_Roles {
 		if ( is_numeric( $ident ) ) {
 			$by_id    = get_user_by( 'id', (int) $ident );
 			$by_login = get_user_by( 'login', (string) $ident );
-			if ( $by_id && $by_login && (int) $by_id->ID !== (int) $by_login->ID ) {
+			if ( $by_id && $by_login && $this->user_in_scope( $by_id ) && $this->user_in_scope( $by_login ) && (int) $by_id->ID !== (int) $by_login->ID ) {
 				/* translators: %s: identifier */
 				return new WP_Error( 'ambiguous_user', sprintf( __( 'Ambiguous user \'%s\': it matches both a user ID and a different account whose login is that number. Re-run with the login, or confirm the numeric ID with `user get` first.', 'vibe-ai' ), $ident ) );
 			}

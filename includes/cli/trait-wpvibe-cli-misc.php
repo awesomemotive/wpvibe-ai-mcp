@@ -736,9 +736,7 @@ trait WPVibe_CLI_Misc {
 			return $this->error_result( __( 'User identifier required. Usage: user get <id|login|email>', 'vibe-ai' ) );
 		}
 		$ident = $positional[0];
-		$user  = is_numeric( $ident )
-			? get_user_by( 'id', (int) $ident )
-			: ( is_email( $ident ) ? get_user_by( 'email', $ident ) : get_user_by( 'login', $ident ) );
+		$user  = $this->resolve_user( $ident );
 		if ( ! $user ) {
 			/* translators: %s: user identifier */
 			return $this->error_result( sprintf( __( 'User \'%s\' not found.', 'vibe-ai' ), $ident ) );
@@ -998,9 +996,18 @@ trait WPVibe_CLI_Misc {
 
 
 	private function resolve_user( $ident ) {
-		return is_numeric( $ident )
+		$user = is_numeric( $ident )
 			? get_user_by( 'id', (int) $ident )
 			: ( is_email( $ident ) ? get_user_by( 'email', $ident ) : get_user_by( 'login', $ident ) );
+		return $user && $this->user_in_scope( $user ) ? $user : false;
+	}
+
+	/** Multisite accounts are network-wide but list_users is per site: without network scope only this site's members resolve. */
+	private function user_in_scope( $user ) {
+		if ( $this->has_network_scope() || current_user_can( 'manage_network_users' ) ) {
+			return true;
+		}
+		return is_user_member_of_blog( (int) $user->ID, get_current_blog_id() );
 	}
 
 

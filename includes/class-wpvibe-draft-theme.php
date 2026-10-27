@@ -37,6 +37,36 @@ class WPVibe_Draft_Theme {
 		}, $posts );
 	}
 
+	// Written into every draft WPVibe makes, so a lost record is taken back only for a folder WPVibe made (#1085). Publish removes it.
+	const DRAFT_MARKER = '.wpvibe-draft';
+
+	public static function mark_draft( $dir ) {
+		// A failed write only loses the marker; the Theme Name suffix create writes still proves the folder.
+		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+		@file_put_contents( $dir . '/' . self::DRAFT_MARKER, "WPVibe draft working copy. Publishing the draft removes this file.\n" );
+	}
+
+	private static function unmark_draft( $dir ) {
+		$marker = $dir . '/' . self::DRAFT_MARKER;
+		if ( is_file( $marker ) || is_link( $marker ) ) {
+			wp_delete_file( $marker );
+		}
+	}
+
+	/** A folder WPVibe made as a draft: the marker, or for drafts from older versions the Theme Name suffix create writes. */
+	public static function is_wpvibe_draft( $dir ) {
+		$marker = $dir . '/' . self::DRAFT_MARKER;
+		if ( is_file( $marker ) && ! is_link( $marker ) ) {
+			return true;
+		}
+		$style = $dir . '/style.css';
+		if ( ! is_file( $style ) || is_link( $style ) ) {
+			return false;
+		}
+		$header = get_file_data( $style, array( 'Name' => 'Theme Name' ) );
+		return 1 === preg_match( '/\((?:WPVibe )?Draft\)$/', trim( (string) ( $header['Name'] ?? '' ) ) );
+	}
+
 	public static function set_aside_slug( $slug ) {
 		return $slug . '-wpvibe-set-aside';
 	}
@@ -224,6 +254,7 @@ class WPVibe_Draft_Theme {
 				$fs->put_contents( $style_path, $style, FS_CHMOD_FILE );
 			}
 		}
+		self::mark_draft( $dest );
 
 		// Store the draft theme slug and original theme for rollback.
 		$registered = WPVibe_Draft_Lock::register( $draft_slug, $active_slug );
@@ -298,13 +329,14 @@ class WPVibe_Draft_Theme {
 		return $slug;
 	}
 
-	/** The source record proves the folder is ours; it is taken back only when it is exactly what create would have made. */
+	/** Taken back only when the folder is exactly what create would have made and carries create's proof; the source record is AI-writable. */
 	private static function adoptable( $slug ) {
 		$root   = get_theme_root();
 		$source = (string) get_option( 'wpvibe_draft_source' );
 		return $source === get_option( 'stylesheet' )
 			&& is_dir( $root . '/' . $source ) && ! is_link( $root . '/' . $source )
-			&& is_file( $root . '/' . $slug . '/style.css' ) && ! is_link( $root . '/' . $slug . '/style.css' );
+			&& is_file( $root . '/' . $slug . '/style.css' ) && ! is_link( $root . '/' . $slug . '/style.css' )
+			&& self::is_wpvibe_draft( $root . '/' . $slug );
 	}
 
 	private function adopt( $slug ) {
@@ -333,7 +365,7 @@ class WPVibe_Draft_Theme {
 			$slug,
 			$source
 		);
-		if ( $source !== get_option( 'stylesheet' ) && is_file( get_theme_root() . '/' . $slug . '/style.css' ) ) {
+		if ( $source !== get_option( 'stylesheet' ) && is_file( get_theme_root() . '/' . $slug . '/style.css' ) && self::is_wpvibe_draft( get_theme_root() . '/' . $slug ) ) {
 			$message .= ' ' . sprintf(
 				/* translators: %s: theme directory name */
 				__( 'To keep editing it instead, \'%s\' must be the active theme when create_draft_theme runs; it then re-registers the folder as the draft.', 'vibe-ai' ),
@@ -488,6 +520,9 @@ class WPVibe_Draft_Theme {
 		$draft_back = @rename( $live_dir, $draft_dir ) || ! is_wp_error( $this->copy_directory( $live_dir, $draft_dir ) );
 		if ( $draft_back && is_dir( $live_dir ) ) {
 			$this->delete_directory( $live_dir );
+		}
+		if ( $draft_back ) {
+			self::mark_draft( $draft_dir );
 		}
 		if ( ! $had_live ) {
 			// A brand-new theme had no live copy to back up: the source slug's
@@ -688,6 +723,7 @@ class WPVibe_Draft_Theme {
 			}
 			return $result;
 		}
+		self::unmark_draft( $live_dir );
 
 		// Restore the original theme name in style.css.
 		$style_path = $live_dir . '/style.css';

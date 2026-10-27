@@ -4,7 +4,7 @@ Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.21.1
+Stable tag: 1.21.2
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -217,6 +217,13 @@ Yes. Connected sites are unlimited on every plan, including the free plan. Conne
 No. WPVibe lets you manage your WordPress site entirely through conversation with your AI assistant. No coding required for content management. Theme editing is also conversational, your AI writes the code for your WordPress theme.
 
 == Changelog ==
+
+= 1.21.2 =
+* Security: The one-time sign-in WPVibe uses to save a SeedProd page in the builder now only reaches that page's builder. It can no longer open other admin screens, upload plugins or themes, add users or change settings, it ends after 10 minutes instead of 2 days, and any request outside the builder signs it out.
+* Security: On multisite, a site administrator who is not a Super Admin now only reads their own site: database reads, user lookups and network transients stay on that site, and search and replace skips network and other sites' tables.
+* Security: Search and replace now escapes table and column names when it writes, and skips any table whose name is not a plain identifier.
+* Hardening: Reading wp-config constants now uses an allowlist of diagnostic settings (paths, debug, cache, memory, multisite), so a credential stored under an unusual name is never returned.
+* Hardening: WPVibe only takes back a draft theme folder it created itself. A folder that merely ends in -wpvibe-draft is left alone, including on uninstall.
 
 = 1.21.1 =
 * Security: The approval log on your site no longer keeps passwords and other secret values from the commands you approved, such as post passwords and the values in a database query. Before, only user passwords were hidden. Approved commands are now logged by their shape.

@@ -822,10 +822,26 @@ trait WPVibe_CLI_Option {
 
 
 	private function handle_transient_get( $positional, $flags ) {
+		// --format is accepted and ignored, as option get does: arrays and objects already come back as JSON.
+		$reject = $this->reject_unknown_flags( 'transient get', $flags, array( 'network', 'format' ) );
+		if ( $reject ) {
+			return $reject;
+		}
 		if ( empty( $positional[0] ) ) {
 			return $this->error_result( __( 'Transient key required. Usage: transient get <key> [--network]', 'vibe-ai' ) );
 		}
-		$value = ! empty( $flags['network'] ) ? get_site_transient( $positional[0] ) : get_transient( $positional[0] );
+		$network = ! empty( $flags['network'] );
+		// On multisite a site transient lives in the network-wide sitemeta table, not this site's options.
+		if ( $network && ! $this->has_network_scope() ) {
+			return $this->error_result( __( 'Refused: on a multisite network, --network reads the network\'s own transients, which a site administrator account cannot read. Drop --network to read this site\'s transient, or use a Super Admin account.', 'vibe-ai' ) );
+		}
+		$name     = ( $network ? '_site_transient_' : '_transient_' ) . $positional[0];
+		$readable = null !== self::match_option_name( $name, self::READABLE_BLOCKED_OPTIONS );
+		if ( ! $readable && null !== self::match_option_name( $name, self::BLOCKED_OPTIONS ) ) {
+			/* translators: %s: transient key */
+			return $this->error_result( sprintf( __( 'Transient \'%s\' is blocked for security.', 'vibe-ai' ), $positional[0] ) );
+		}
+		$value = $network ? get_site_transient( $positional[0] ) : get_transient( $positional[0] );
 		if ( false === $value ) {
 			/* translators: %s: transient key */
 			return $this->error_result( sprintf( __( 'Transient \'%s\' is not set (or has expired).', 'vibe-ai' ), $positional[0] ) );

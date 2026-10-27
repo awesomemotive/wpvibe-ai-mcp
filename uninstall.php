@@ -66,6 +66,11 @@ if ( function_exists( 'get_theme_root' ) && ! is_multisite() ) {
 	// A draft or backup someone made the active theme (or its parent) is the live site now, not a leftover.
 	$wpvibe_in_use = array( (string) get_option( 'stylesheet' ), (string) get_option( 'template' ) );
 
+	// A '-wpvibe-draft' folder without WPVibe's marker or draft name is someone else's (#1085).
+	if ( ! class_exists( 'WPVibe_Draft_Theme' ) ) {
+		require_once __DIR__ . '/includes/class-wpvibe-draft-theme.php';
+	}
+
 	if ( is_dir( $theme_root ) ) {
 		$entries = @scandir( $theme_root );
 		if ( is_array( $entries ) ) {
@@ -76,7 +81,7 @@ if ( function_exists( 'get_theme_root' ) && ! is_multisite() ) {
 				foreach ( $suffixes as $suffix ) {
 					if ( substr( $entry, -strlen( $suffix ) ) === $suffix ) {
 						$path = $theme_root . '/' . $entry;
-						if ( is_dir( $path ) ) {
+						if ( is_dir( $path ) && ( '-wpvibe-draft' !== $suffix || WPVibe_Draft_Theme::is_wpvibe_draft( $path ) ) ) {
 							// Defensive: ensure we never step outside get_theme_root().
 							$real_root = realpath( $theme_root );
 							$real_path = realpath( $path );

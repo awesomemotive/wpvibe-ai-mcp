@@ -471,6 +471,12 @@ trait WPVibe_CLI_Helpers {
 	}
 
 
+	/** Whether the caller may reach network-wide data and other sites' data: always on single site, Super Admins on multisite. */
+	private function has_network_scope() {
+		return ! is_multisite() || is_super_admin();
+	}
+
+
 	private function reject_unknown_flags( $command, $flags, $known, $unsupported = array() ) {
 		foreach ( array_keys( $flags ) as $flag ) {
 			if ( in_array( $flag, $known, true ) ) {

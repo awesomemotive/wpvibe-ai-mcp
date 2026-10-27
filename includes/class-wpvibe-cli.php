@@ -464,6 +464,28 @@ class WPVibe_CLI {
 		'et_divi_builder_global_presets_d5',
 	);
 
+	/**
+	 * Text constants `config get` returns: diagnostics only (debug, paths,
+	 * URLs, cookies, cache, cron, memory, environment, multisite). Any other
+	 * text constant, including a secret under a name nobody anticipated, is
+	 * refused by default; unlisted switches and numbers are returned.
+	 */
+	const CONFIG_GET_READABLE = array(
+		'ABSPATH', 'WP_CONTENT_DIR', 'WP_CONTENT_URL', 'WP_PLUGIN_DIR', 'WP_PLUGIN_URL', 'WPMU_PLUGIN_DIR', 'WPMU_PLUGIN_URL',
+		'WP_LANG_DIR', 'UPLOADS', 'WP_TEMP_DIR', 'WP_HOME', 'WP_SITEURL', 'WP_DEFAULT_THEME',
+		'WP_DEBUG', 'WP_DEBUG_LOG', 'WP_DEBUG_DISPLAY', 'SCRIPT_DEBUG', 'SAVEQUERIES', 'WP_DISABLE_FATAL_ERROR_HANDLER',
+		'WP_ENVIRONMENT_TYPE', 'WP_DEVELOPMENT_MODE', 'WP_CACHE', 'CONCATENATE_SCRIPTS', 'COMPRESS_SCRIPTS', 'COMPRESS_CSS', 'ENFORCE_GZIP',
+		'DISABLE_WP_CRON', 'ALTERNATE_WP_CRON', 'WP_CRON_LOCK_TIMEOUT', 'WP_MEMORY_LIMIT', 'WP_MAX_MEMORY_LIMIT',
+		'WP_POST_REVISIONS', 'AUTOSAVE_INTERVAL', 'EMPTY_TRASH_DAYS', 'MEDIA_TRASH', 'IMAGE_EDIT_OVERWRITE',
+		'WP_AUTO_UPDATE_CORE', 'AUTOMATIC_UPDATER_DISABLED', 'DISALLOW_FILE_EDIT', 'DISALLOW_FILE_MODS', 'FS_METHOD',
+		'FORCE_SSL_ADMIN', 'WP_HTTP_BLOCK_EXTERNAL',
+		'WP_ALLOW_MULTISITE', 'MULTISITE', 'SUBDOMAIN_INSTALL', 'DOMAIN_CURRENT_SITE', 'PATH_CURRENT_SITE', 'SITE_ID_CURRENT_SITE', 'BLOG_ID_CURRENT_SITE',
+		'COOKIE_DOMAIN', 'COOKIEPATH', 'SITECOOKIEPATH', 'ADMIN_COOKIE_PATH', 'PLUGINS_COOKIE_PATH',
+		'WPCACHEHOME', 'WP_ACCESSIBLE_HOSTS', 'WPLANG', 'DISALLOW_UNFILTERED_HTML', 'PHP_VERSION',
+		// SELECT DATABASE() returns it ungated.
+		'DB_NAME', 'DB_CHARSET', 'DB_COLLATE',
+	);
+
 	const BLOCKED_FLAGS = array( '--require', '--exec', '--ssh', '--http', '--url', '--path', '--skip-plugins', '--skip-themes' );
 	const SHELL_CHARS   = array( ';', '&&', '||', '|', '`', '$(', '>', '<', "\n", "\r" );
 
@@ -696,7 +718,7 @@ class WPVibe_CLI {
 		'role list'               => 'role list',
 		'maintenance-mode status' => 'maintenance-mode status',
 		'media image-size'        => 'media image-size',
-		'transient get'           => 'transient get <key>',
+		'transient get'           => 'transient get <key> [--network] (--network reads a site transient; on multisite that needs a Super Admin account)',
 		'menu item list'          => 'menu item list <menu>',
 		'user get'                => 'user get <id|login|email> [--fields=<fields>]',
 		'theme get'               => 'theme get <slug> [--fields=<fields>]',
@@ -731,7 +753,7 @@ class WPVibe_CLI {
 		'super-cache flush'       => 'super-cache flush (alias of cache purge, scoped to WP Super Cache)',
 		'w3-total-cache flush'    => 'w3-total-cache flush [all] (alias of cache purge, scoped to W3 Total Cache)',
 		'breeze purge'            => 'breeze purge (alias of cache purge, scoped to Breeze)',
-		'config get'              => 'config get <constant> (credentials/keys/salts are blocked; table_prefix supported)',
+		'config get'              => 'config get <constant> (diagnostic constants: debug, paths, URLs, cookies, cache, cron, memory, environment, multisite, plus any switch or number; other text constants are refused; table_prefix supported)',
 		'option patch'            => 'option patch <insert|update|delete> <option> <key-path>... [<value>] [--format=json|plaintext]',
 		'rewrite flush'           => 'rewrite flush',
 		'cron event run'          => 'cron event run <hook> [<hook>...]',
