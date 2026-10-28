@@ -791,13 +791,13 @@ trait WPVibe_CLI_Misc {
 		// Real `wp maintenance-mode status` only checks the core .maintenance
 		// file. Plugin-based maintenance is the kind users actually have, and
 		// the drop-in decides what visitors see — so this reports all three.
-		$core    = $this->core_maintenance_state( ABSPATH . '.maintenance' );
+		$core    = self::core_maintenance_state( ABSPATH . '.maintenance' );
 		$drop_in = array(
 			'present' => file_exists( WP_CONTENT_DIR . '/maintenance.php' ),
 			'path'    => 'wp-content/maintenance.php',
 			'note'    => __( 'Custom maintenance page, served whenever core maintenance mode is active.', 'vibe-ai' ),
 		);
-		$plugins = $this->detect_maintenance_plugins();
+		$plugins = self::detect_maintenance_plugins();
 
 		$plugin_enabled = array();
 		foreach ( $plugins as $p ) {
@@ -830,7 +830,7 @@ trait WPVibe_CLI_Misc {
 	 * Effective state of the core .maintenance file. Core ignores the file once
 	 * $upgrading is more than 10 minutes old, so presence alone is not "active".
 	 */
-	private function core_maintenance_state( $path ) {
+	public static function core_maintenance_state( $path ) {
 		$state = array( 'present' => file_exists( $path ), 'active' => false );
 		if ( ! $state['present'] ) {
 			return $state;
@@ -854,7 +854,7 @@ trait WPVibe_CLI_Misc {
 	 * Known maintenance/coming-soon plugins with their enable state where the
 	 * option schema is known; enabled=null means "active but state unreadable".
 	 */
-	private function detect_maintenance_plugins() {
+	public static function detect_maintenance_plugins() {
 		if ( ! function_exists( 'is_plugin_active' ) ) {
 			require_once ABSPATH . 'wp-admin/includes/plugin.php';
 		}
@@ -901,12 +901,18 @@ trait WPVibe_CLI_Misc {
 		}
 
 		if ( is_plugin_active( 'maintenance/maintenance.php' ) ) {
-			$found[] = array(
+			// Maintenance 4.x keeps its switch in mtnc-options['options']['status'] ('1' = on).
+			$options = get_option( 'mtnc-options' );
+			$status  = is_array( $options ) && isset( $options['options'] ) && is_array( $options['options'] ) && isset( $options['options']['status'] ) ? (string) $options['options']['status'] : null;
+			$entry   = array(
 				'plugin'  => 'maintenance/maintenance.php',
 				'name'    => 'Maintenance',
-				'enabled' => null,
-				'note'    => __( 'Plugin is active; enable state is not readable from options — check its settings page.', 'vibe-ai' ),
+				'enabled' => null === $status ? null : '1' === $status,
 			);
+			if ( null === $status ) {
+				$entry['note'] = __( 'Plugin is active; enable state is not readable from options — check its settings page.', 'vibe-ai' );
+			}
+			$found[] = $entry;
 		}
 
 		return $found;

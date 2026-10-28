@@ -784,7 +784,8 @@ class WPVibe_Draft_Theme {
 
 		// A valid-but-fatal functions.php passes php -l and white-screens the
 		// site; render once and put everything back if it does (#78).
-		$health = WPVibe_PHP_Guard::render_health_check();
+		$health_note = null;
+		$health      = WPVibe_PHP_Guard::render_health_check( $health_note );
 		if ( is_wp_error( $health ) ) {
 			$unmoved = $this->unsettle();
 			$rolled  = $this->rollback_publish( $live_dir, $backup_dir, $draft_dir, $swapped_by_rename, $source_slug, $had_live, $previous_active );
@@ -792,14 +793,22 @@ class WPVibe_Draft_Theme {
 				/* translators: %s: post IDs */
 				$rolled .= ' ' . sprintf( __( 'WPVibe could not put back these saved Site Editor rows: %s.', 'vibe-ai' ), '#' . implode( ', #', $unmoved ) );
 			}
+			$health_data = $health->get_error_data();
 			return new WP_Error(
 				'publish_rolled_back',
-				sprintf(
-					/* translators: 1: what the front page returned, 2: rollback outcome */
-					__( 'Published, then the site failed to render (%1$s), so the publish was rolled back: %2$s Fix the draft (a runtime fatal in functions.php is the usual cause: an undefined function, or a function or class declared twice) and publish again.', 'vibe-ai' ),
-					$health->get_error_message(),
-					$rolled
-				),
+				! empty( $health_data['wp_fatal'] )
+					? sprintf(
+						/* translators: 1: what the front page returned, 2: rollback outcome */
+						__( 'Published, then the site failed to render (%1$s), so the publish was rolled back: %2$s Fix the draft (a runtime fatal in functions.php is the usual cause: an undefined function, or a function or class declared twice) and publish again.', 'vibe-ai' ),
+						$health->get_error_message(),
+						$rolled
+					)
+					: sprintf(
+						/* translators: 1: what the front page returned, 2: rollback outcome */
+						__( 'Published, then the site failed to render (%1$s), so the publish was rolled back: %2$s The front page did not return a WordPress error page, so the cause may be outside the theme: a firewall, a host error page, or a maintenance or coming-soon page answering logged-out visitors. Open the homepage in a private window to see what visitors get. If it is blank or a server error, check the PHP error log for a fatal from the draft. Then publish again.', 'vibe-ai' ),
+						$health->get_error_message(),
+						$rolled
+					),
 				WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 422, 'render' => $health->get_error_message() ) )
 			);
 		}
@@ -852,6 +861,9 @@ class WPVibe_Draft_Theme {
 		if ( $update_warning ) {
 			$message .= ' ' . $update_warning;
 		}
+		if ( $health_note ) {
+			$message .= ' ' . $health_note;
+		}
 		$seedprod_note = class_exists( 'WPVibe_Preview' ) ? WPVibe_Preview::seedprod_theme_note( true ) : '';
 		if ( '' !== $seedprod_note ) {
 			$message .= ' ' . $seedprod_note;
@@ -863,6 +875,7 @@ class WPVibe_Draft_Theme {
 			'saved_customizations' => array_filter( $settled ),
 			'update_warning'       => $update_warning,
 			'seedprod_theme_note'  => $seedprod_note,
+			'render_check'         => $health_note,
 		) ) );
 	}
 

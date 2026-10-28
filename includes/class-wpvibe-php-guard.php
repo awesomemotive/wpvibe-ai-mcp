@@ -161,22 +161,86 @@ class WPVibe_PHP_Guard {
 		);
 	}
 
+	/** A WordPress or PHP fatal error page. */
+	const FATAL_TEXT = '/There has been a critical error on this website|<b>Fatal error<\/b>|PHP Fatal error:|Uncaught (?:Error|Exception)/i';
+
 	/** Pure: does a front-page fetch look like the site is fataling? */
 	public static function render_looks_fatal( $status, $body ) {
 		$status = (int) $status;
 		if ( $status >= 500 && $status < 600 ) {
 			return true;
 		}
+		return self::body_is_fatal( $body );
+	}
+
+	/** Pure: does the body carry a WordPress or PHP fatal error signature? */
+	public static function body_is_fatal( $body ) {
+		return (bool) preg_match( self::FATAL_TEXT, substr( (string) $body, 0, 20000 ) );
+	}
+
+	/**
+	 * Pure: is this response WordPress's own fatal error page? The fatal text,
+	 * or a 500 wp_die() page (the critical-error page on a translated site).
+	 * Only then does the rollback point at the theme's PHP.
+	 */
+	public static function is_wp_fatal( $status, $body ) {
+		return self::body_is_fatal( $body ) || ( 500 === (int) $status && false !== strpos( substr( (string) $body, 0, 20000 ), 'id="error-page"' ) );
+	}
+
+	/**
+	 * Pure (#769): is this front-page response a maintenance page rather than
+	 * a broken render? Only a complete page (it ends with </html>, then only
+	 * whitespace or HTML comments such as a cache plugin's stamp) answered with
+	 * 503 and Retry-After while a known maintenance plugin is on ($source names
+	 * it). The plugins send exactly that; WordPress's fatal handler sends a 500
+	 * and never Retry-After. A fatal after the plugin sent its headers (a
+	 * theme's wp_head hook on its page) cuts the page short, so a page that
+	 * does not end with </html> is not maintenance, even if an earlier script,
+	 * comment or srcdoc printed one. Fatal text or a firewall's block page in the
+	 * body never is, whatever the headers say.
+	 */
+	public static function render_is_maintenance( $status, $body, $retry_after, $source ) {
+		if ( 503 !== (int) $status || '' === trim( (string) $retry_after ) || '' === (string) $source ) {
+			return false;
+		}
 		$body = (string) $body;
-		return (bool) preg_match( '/There has been a critical error on this website|<b>Fatal error<\/b>|PHP Fatal error:|Uncaught (?:Error|Exception)/i', substr( $body, 0, 20000 ) );
+		if ( ! preg_match( '~</html\s*>(?:\s|<!--.*?-->)*$~is', $body ) ) {
+			return false;
+		}
+		return ! preg_match( '/critical error|Fatal error|Uncaught|limited by the site owner|wordfence|sucuri website firewall|cf-error-details/i', substr( $body, 0, 20000 ) );
+	}
+
+	/**
+	 * The known maintenance/coming-soon plugin that is on right now, by name,
+	 * or '' when none. A plugin whose state cannot be read counts as off.
+	 * Core's .maintenance does not count, and while it is active no plugin
+	 * counts either: wp_maintenance() exits before the theme loads, so even a
+	 * functions.php fatal would look like maintenance.
+	 */
+	public static function active_maintenance() {
+		if ( ! class_exists( 'WPVibe_CLI' ) ) {
+			return '';
+		}
+		$core = WPVibe_CLI::core_maintenance_state( ABSPATH . '.maintenance' );
+		if ( ! empty( $core['active'] ) ) {
+			return '';
+		}
+		foreach ( WPVibe_CLI::detect_maintenance_plugins() as $plugin ) {
+			if ( true === $plugin['enabled'] ) {
+				return $plugin['name'];
+			}
+		}
+		return '';
 	}
 
 	/**
 	 * Fetch the front page after a publish. Returns true (healthy), a
-	 * WP_Error (fatal seen), or null when the site could not be reached at
-	 * all (loopback blocked), which is not evidence either way.
+	 * WP_Error (fatal seen), or null when the check could not see the theme,
+	 * which is not evidence either way: the site could not be reached at all
+	 * (loopback blocked), or a maintenance page answered (then $note says so).
 	 */
-	public static function render_health_check() {
+	public static function render_health_check( &$note = null ) {
+		$note = null;
 		if ( function_exists( 'opcache_get_status' ) ) {
 			sleep( 2 ); // opcache.revalidate_freq masks a just-broken file for ~2s.
 		}
@@ -195,12 +259,25 @@ class WPVibe_PHP_Guard {
 		if ( ! self::render_looks_fatal( $status, $body ) ) {
 			return true;
 		}
+		if ( 503 === $status ) {
+			$retry_after = wp_remote_retrieve_header( $response, 'retry-after' );
+			$retry_after = is_array( $retry_after ) ? implode( ',', $retry_after ) : (string) $retry_after;
+			$source      = '' !== trim( $retry_after ) ? self::active_maintenance() : '';
+			if ( self::render_is_maintenance( $status, $body, $retry_after, $source ) ) {
+				$note = sprintf(
+					/* translators: %s: maintenance mode or plugin name */
+					__( 'The after-publish render check could not see the theme: %s is on, so logged-out visitors get its maintenance page (HTTP 503). The publish was kept and the theme loaded, but nothing confirmed that its templates and front-end hooks (template_redirect, wp_head, wp_footer) run without errors. View the site while logged in to check it before turning maintenance mode off.', 'vibe-ai' ),
+					$source
+				);
+				return null;
+			}
+		}
 		$excerpt = trim( preg_replace( '/\s+/', ' ', wp_strip_all_tags( substr( $body, 0, 4000 ) ) ) );
 		if ( preg_match( '/(Fatal error:.{0,240}|Uncaught (?:Error|Exception).{0,240})/i', $excerpt, $m ) ) {
 			$excerpt = $m[1];
 		} else {
 			$excerpt = substr( $excerpt, 0, 240 );
 		}
-		return new WP_Error( 'render_fatal', sprintf( 'HTTP %d: %s', $status, $excerpt ), array( 'status' => $status ) );
+		return new WP_Error( 'render_fatal', sprintf( 'HTTP %d: %s', $status, $excerpt ), array( 'status' => $status, 'wp_fatal' => self::is_wp_fatal( $status, $body ) ) );
 	}
 }

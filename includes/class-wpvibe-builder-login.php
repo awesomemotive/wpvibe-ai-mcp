@@ -10,8 +10,9 @@
  * for one specific page. Each URL signs in once, within two minutes. The
  * session it opens lasts ten minutes and is confined to that page's builder:
  * any other wp-admin screen, admin-post or admin-ajax call outside the
- * builder's own, REST request, or front-end write (a comment, a form post)
- * signs it out and is refused (#1084).
+ * builder's own (or carrying a field the builder does not send), REST request,
+ * or front-end write (a comment, a form post) signs it out and is refused
+ * (#1084). Front-end reads run signed out.
  *
  * @package WPVibe
  */
@@ -37,78 +38,119 @@ class WPVibe_Builder_Login {
 	/**
 	 * admin-ajax actions a builder session may call, after the seedprod_pro_ or
 	 * seedprod_lite_ prefix: the Save the compile step clicks, and the read and
-	 * render calls the builder's Vue app makes while it draws the page (SeedProd
-	 * 6.20.10, public/{pro,lite}/vue-backend/js/index.js). Every other action the
-	 * builder can call writes something besides this page (settings, add-ons,
-	 * templates, media, license) or spends AI credits; the compile step never
-	 * reaches those.
+	 * render calls the builder's Vue app makes while it draws the page. Every other
+	 * action the builder can call writes something besides this page (settings,
+	 * add-ons, templates, media, license) or spends AI credits; the compile step
+	 * never reaches those.
+	 *
+	 * Each entry lists the exact fields the builder sends (SeedProd 6.20.10, Pro and
+	 * Lite: public/{pro,lite}/vue-backend/js/index.js, and the nonce URLs in
+	 * resources/views/builder.php). The query always carries action and _wpnonce.
+	 * A field outside the list refuses the request: other plugins' init, admin_init
+	 * and wp_loaded handlers read $_POST and $_GET too.
+	 *
+	 * - get / post: the query and body field names beyond action and _wpnonce. A
+	 *   body is form-encoded (qs.stringify), so nested settings arrive as one
+	 *   top-level field.
+	 * - text_in_query: the bundle pastes block text (a divider, a button label, a
+	 *   link) into the query unencoded, so an & in that text makes stray keys.
+	 *   Unlisted query keys are dropped for these calls instead of refused.
+	 * - json_body: the body is a JSON string the handler reads from php://input
+	 *   (only key: options). Form fields PHP parsed out of it are dropped.
 	 */
 	const BUILDER_AJAX = array(
-		'save_lpage',
-		'get_revisions',
-		'get_utc_offset',
-		'get_namespaced_custom_css',
-		'get_domain_mapping_domain',
-		'get_site_logo',
-		'get_template_part',
-		'get_template_parts_list',
-		'get_template_parts_result',
-		'get_nested_navmenu',
-		'render_shortcode',
-		'render_templatetag',
-		'render_postinfo_templatetags',
-		'render_posts_block_preview',
-		'render_wc_template_tags',
-		'render_edd_template_tags',
-		'render_gallery_shortcode',
-		'render_basic_gallery_shortcode',
-		'render_business_review_shortcode',
-		'render_shortcode_wc_cart',
-		'render_shortcode_wc_checkout',
-		'render_shortcode_wc_custom_products_grid',
-		'render_shortcode_edd_cart',
-		'render_shortcode_edd_checkout',
-		'render_shortcode_edd_downloads_grid',
-		'render_shortcode_edd_buy_now_button',
-		'edd_checkout_purchase_form',
-		'get_wpform',
-		'get_wpforms',
-		'get_widget_wpforms',
-		'get_widget_wpresults',
-		'get_rafflepress',
-		'get_rafflepress_code',
-		'get_mypaykit',
-		'get_mypaykit_code',
-		'get_envira_galleries',
-		'get_woocommerce_products',
-		'get_woocommerce_product_taxonomy',
-		'get_woocommerce_product_attributes',
-		'get_woocommerce_product_attribute_terms',
-		'get_edd_downloads',
-		'get_edd_download_taxonomy',
-		'get_all_post_types',
-		'get_all_post_categories',
-		'get_all_post_tags',
-		'get_all_post_authors',
-		'get_post_custom_keys_array',
+		'save_lpage'                               => array( 'post' => array( 'save_type', 'lpage_id', 'lpage_name', 'lpage_slug', 'lpage_html', 'lpage_post_status', 'settings', 'personalization_preferences' ) ),
+		'get_revisions'                            => array( 'post' => array( 'lpage_id' ) ),
+		'get_utc_offset'                           => array( 'post' => array( 'ends', 'ends_time', 'timezone' ) ),
+		'get_namespaced_custom_css'                => array( 'post' => array( 'css' ) ),
+		'get_domain_mapping_domain'                => array( 'post' => array( 'lpage_id' ) ),
+		'get_site_logo'                            => array(),
+		'get_template_part'                        => array( 'post' => array( 'type' ) ),
+		'get_template_parts_list'                  => array(),
+		'get_template_parts_result'                => array( 'get' => array( 'parts_id' ) ),
+		'get_nested_navmenu'                       => array(
+			'get'           => array( 'navmenu_name', 'divider', 'layout' ),
+			'text_in_query' => true,
+		),
+		'render_shortcode'                         => array( 'post' => array( 'shortcode' ) ),
+		'render_templatetag'                       => array( 'post' => array( 'templatetag', 'renderscripts' ) ),
+		'render_postinfo_templatetags'             => array( 'post' => array( 'items', 'spaceBetween', 'divider', 'showIcons' ) ),
+		'render_posts_block_preview'               => array(
+			'get'           => array( 'query_type', 'query_by_post_type', 'post_type', 'order', 'orderby', 'query_by_category', 'cat', 'query_by_tags', 'tags', 'query_by_authors', 'authors', 'manual_query', 'posts_per_page', 'show_featured_image', 'show_title', 'title_html_tag', 'show_meta_options', 'show_author_meta', 'show_date_meta', 'show_date_modified_meta', 'show_time_meta', 'show_comment_count_meta', 'meta_separator', 'show_excerpt', 'excerpt_length', 'show_read_more', 'read_more_text', 'columns', 'skin', 'skinlayout', 'imageposition', 'avatar', 'badge', 'badgetaxonomy', 'pagination', 'slidetoshow', 'autoplay', 'speed' ),
+			'text_in_query' => true,
+		),
+		'render_wc_template_tags'                  => array( 'post' => array( 'wc_template_tag', 'divider' ) ),
+		'render_edd_template_tags'                 => array( 'post' => array( 'edd_template_tag' ) ),
+		'render_gallery_shortcode'                 => array(
+			'get'           => array( 'galleryType', 'galleryLayout', 'galleryimgid', 'galleryLink', 'colSpacing', 'customurl' ),
+			'post'          => array( 'items', 'settings' ),
+			'text_in_query' => true,
+		),
+		'render_basic_gallery_shortcode'           => array(
+			'get'  => array( 'lightboxEffect' ),
+			'post' => array( 'items', 'settings' ),
+		),
+		'render_business_review_shortcode'         => array( 'post' => array( 'settings' ) ),
+		'render_shortcode_wc_cart'                 => array(),
+		'render_shortcode_wc_checkout'             => array(),
+		'render_shortcode_wc_custom_products_grid' => array(
+			'get'           => array( 'cols', 'paginate', 'limit', 'orderby', 'order', 'ids', 'skus', 'category', 'tag', 'cat_operator', 'tag_operator', 'attribute', 'terms', 'terms_operator', 'visibility', 'product_group', 'source' ),
+			'text_in_query' => true,
+		),
+		'render_shortcode_edd_cart'                => array(),
+		'render_shortcode_edd_checkout'            => array(),
+		'render_shortcode_edd_downloads_grid'      => array( 'get' => array( 'category', 'exclude_category', 'tags', 'exclude_tags', 'relation', 'number', 'price', 'excerpt', 'full_content', 'buy_button', 'columns', 'thumbnails', 'order_by', 'order', 'ids', 'pagination' ) ),
+		'render_shortcode_edd_buy_now_button'      => array(
+			'get'           => array( 'product_id', 'direct_to_checkout', 'show_price', 'btn_txt', 'before_icon', 'after_icon' ),
+			'text_in_query' => true,
+		),
+		'edd_checkout_purchase_form'               => array(),
+		'get_wpform'                               => array( 'get' => array( 'form_id', 'form_title', 'form_description' ) ),
+		'get_wpforms'                              => array(),
+		'get_widget_wpforms'                       => array(
+			'get'       => array( 'block_type', 'base_id' ),
+			'json_body' => true,
+		),
+		'get_widget_wpresults'                     => array(
+			'get'       => array( 'block_type' ),
+			'json_body' => true,
+		),
+		'get_rafflepress'                          => array(),
+		'get_rafflepress_code'                     => array( 'get' => array( 'form_id', 'form_title', 'form_description' ) ),
+		'get_mypaykit'                             => array(),
+		'get_mypaykit_code'                        => array( 'get' => array( 'form_id' ) ),
+		'get_envira_galleries'                     => array( 'get' => array( 'type' ) ),
+		'get_woocommerce_products'                 => array(),
+		'get_woocommerce_product_taxonomy'         => array( 'get' => array( 'taxonomy' ) ),
+		'get_woocommerce_product_attributes'       => array(),
+		'get_woocommerce_product_attribute_terms'  => array( 'get' => array( 'attribute' ) ),
+		'get_edd_downloads'                        => array(),
+		'get_edd_download_taxonomy'                => array( 'get' => array( 'taxonomy' ) ),
+		'get_all_post_types'                       => array(),
+		'get_all_post_categories'                  => array(),
+		'get_all_post_tags'                        => array(),
+		'get_all_post_authors'                     => array(),
+		'get_post_custom_keys_array'               => array( 'post' => array( 'id' ) ),
 	);
+
+	/** The heartbeat wp-auth-check sends with an empty queue (wp-includes/js/heartbeat.js, ajaxData); no data field. */
+	const HEARTBEAT_FIELDS = array( 'action', '_nonce', 'interval', 'screen_id', 'has_focus' );
 
 	/**
 	 * Builder calls that name the page being edited, and the field that carries it.
 	 * When present it must be the page the link was minted for; Save requires it.
-	 * The render previews carry no page id (they take a shortcode, tag or query).
 	 */
 	const PAGE_PARAMS = array(
 		'save_lpage'                 => 'lpage_id',
 		'get_revisions'              => 'lpage_id',
 		'get_domain_mapping_domain'  => 'lpage_id',
-		'get_template_part'          => 'post_id',
 		'get_post_custom_keys_array' => 'id',
 	);
 
 	/**
-	 * Taken from a builder session for the rest of an allowed request. unfiltered_html
-	 * stays: SeedProd's Save refuses without it (app/lpage.php, save_lpage).
+	 * Taken from a builder session for the rest of an allowed wp-admin request, through
+	 * map_meta_cap (which binds a multisite Super Admin too) and user_has_cap.
+	 * unfiltered_html stays: SeedProd's Save refuses without it (app/lpage.php, save_lpage).
 	 */
 	const STRIPPED_CAPS = array(
 		'unfiltered_upload',
@@ -130,7 +172,32 @@ class WPVibe_Builder_Login {
 		'promote_users',
 		'edit_users',
 		'delete_users',
+		'install_languages',
+		'update_languages',
+		'resume_plugins',
+		'resume_themes',
+		// What only a Super Admin holds.
+		'manage_network',
+		'manage_sites',
+		'manage_network_users',
+		'manage_network_plugins',
+		'manage_network_themes',
+		'manage_network_options',
+		'upgrade_network',
+		'setup_network',
+		'create_sites',
+		'delete_sites',
 	);
+
+	/**
+	 * Also taken for an allowed admin-ajax call: no SeedProd builder handler checks them
+	 * (each checks edit_others_posts, unfiltered_html for Save, or nothing). The builder
+	 * screen keeps them: it is the session's first wp-admin request, where SeedProd's own
+	 * admin_init upgrade step can migrate a license key behind manage_options
+	 * (app/bootstrap.php seedprod_pro_upgrade, app/backwards/backwards_compatibility.php),
+	 * and where a site's own "keep non-admins out of wp-admin" code would bounce the builder.
+	 */
+	const AJAX_STRIPPED_CAPS = array( 'manage_options', 'edit_theme_options' );
 
 	/** Every cookie a session can sign in with; wp-admin reads auth/secure_auth, REST and nonces read logged_in. */
 	const COOKIE_SCHEMES = array( 'auth', 'secure_auth', 'logged_in' );
@@ -147,6 +214,9 @@ class WPVibe_Builder_Login {
 
 	/** The builder session's user while an allowed request runs; its caps are trimmed. */
 	private $confined_user_id = 0;
+
+	/** The caps taken from that user for this request. */
+	private $stripped_caps = array();
 
 	public static function instance() {
 		if ( null === self::$instance ) {
@@ -386,9 +456,11 @@ class WPVibe_Builder_Login {
 	/**
 	 * What a builder session may load in wp-admin: the builder screen for the page
 	 * the link was minted for, exactly as the compile step opens it, and the
-	 * builder's own admin-ajax calls (Save only for that page).
+	 * builder's own admin-ajax calls with the fields the builder sends (Save only
+	 * for that page). $body is the raw request body, read for a json_body call and
+	 * for a POST that PHP parsed no form fields from.
 	 */
-	public static function admin_request_allowed( $pagenow, $method, $get, $post, $page_id ) {
+	public static function admin_request_allowed( $pagenow, $method, $get, $post, $page_id, $body = '' ) {
 		if ( $page_id <= 0 ) {
 			return false;
 		}
@@ -396,7 +468,7 @@ class WPVibe_Builder_Login {
 			$slug = self::builder_page_slug();
 			return in_array( $method, array( 'GET', 'HEAD' ), true )
 				&& null !== $slug
-				&& array() === array_diff( array_keys( $get ), array( 'page', 'id' ) )
+				&& self::only_fields( $get, array( 'page', 'id' ) )
 				&& isset( $get['page'], $get['id'] )
 				&& $slug === $get['page']
 				&& (string) $page_id === $get['id'];
@@ -404,54 +476,155 @@ class WPVibe_Builder_Login {
 		if ( 'admin-ajax.php' !== $pagenow ) {
 			return false;
 		}
-		// Core reads $_REQUEST, which WordPress rebuilds as GET overlaid by POST.
-		$action = isset( $post['action'] ) ? $post['action'] : ( isset( $get['action'] ) ? $get['action'] : '' );
-		if ( ! is_string( $action ) ) {
-			return false;
-		}
 		// wp-auth-check, which SeedProd keeps on the builder screen, polls heartbeat with no
 		// payload (core answers it on heartbeat_send). A payload drives other handlers:
 		// post nonces, autosaves, locks. confine_heartbeat() strips the rest.
-		if ( 'heartbeat' === $action ) {
-			return empty( $post['data'] );
+		if ( 'heartbeat' === self::ajax_action( $get, $post ) ) {
+			return array() === $get && self::only_fields( $post, self::HEARTBEAT_FIELDS );
 		}
-		if ( ! preg_match( '/^seedprod_(?:pro|lite)_([a-z_]+)$/', $action, $m ) || ! in_array( $m[1], self::BUILDER_AJAX, true ) ) {
+		// The builder names its call in the query only. A body action would decide what the
+		// check sees while core dispatches whatever $_REQUEST says after the fields are dropped.
+		if ( isset( $post['action'] ) ) {
 			return false;
 		}
-		if ( ! isset( self::PAGE_PARAMS[ $m[1] ] ) ) {
+		$call = self::builder_call( $get );
+		if ( null === $call ) {
+			return false;
+		}
+		$spec = self::BUILDER_AJAX[ $call ];
+		// The builder puts action and _wpnonce in the query, never in the body.
+		if ( empty( $spec['text_in_query'] ) && ! self::only_fields( $get, self::query_fields( $call ) ) ) {
+			return false;
+		}
+		if ( ! empty( $spec['json_body'] ) ) {
+			if ( ! self::json_body_ok( $body, $post ) ) {
+				return false;
+			}
+		} elseif ( ! self::only_fields( $post, isset( $spec['post'] ) ? $spec['post'] : array() ) ) {
+			return false;
+		} elseif ( array() === $post && '' !== $body ) {
+			// A JSON or other non-form body: no field check could see what it carries.
+			return false;
+		}
+		if ( ! isset( self::PAGE_PARAMS[ $call ] ) ) {
 			return true;
 		}
-		$field = self::PAGE_PARAMS[ $m[1] ];
+		$field = self::PAGE_PARAMS[ $call ];
 		$sent  = isset( $post[ $field ] ) ? $post[ $field ] : ( isset( $get[ $field ] ) ? $get[ $field ] : null );
 		if ( null === $sent ) {
-			return 'save_lpage' !== $m[1];
+			return 'save_lpage' !== $call;
 		}
 		return (string) $page_id === $sent;
 	}
 
+	/** Core reads $_REQUEST, which WordPress rebuilds as GET overlaid by POST. */
+	private static function ajax_action( $get, $post ) {
+		return isset( $post['action'] ) ? $post['action'] : ( isset( $get['action'] ) ? $get['action'] : '' );
+	}
+
+	/** The BUILDER_AJAX entry the query's action names (after seedprod_pro_ or seedprod_lite_), or null. */
+	private static function builder_call( $get ) {
+		$action = isset( $get['action'] ) ? $get['action'] : '';
+		if ( is_string( $action ) && preg_match( '/^seedprod_(?:pro|lite)_([a-z_]+)$/', $action, $m ) && isset( self::BUILDER_AJAX[ $m[1] ] ) ) {
+			return $m[1];
+		}
+		return null;
+	}
+
+	private static function query_fields( $call ) {
+		$spec = self::BUILDER_AJAX[ $call ];
+		return array_merge( array( 'action', '_wpnonce' ), isset( $spec['get'] ) ? $spec['get'] : array() );
+	}
+
+	/** True when every top-level field name is on the list. */
+	private static function only_fields( $fields, $allowed ) {
+		return is_array( $fields ) && array() === array_diff( array_map( 'strval', array_keys( $fields ) ), $allowed );
+	}
+
 	/**
-	 * init: a builder session reaches nothing in wp-admin beyond the builder, and on
-	 * the front end only reads (GET/HEAD: the sign-in link, previews). A front-end
-	 * write (wp-comments-post.php, any plugin's form handler) signs it out.
+	 * The widget calls' body: a JSON object whose only key is options, with no & in it,
+	 * so PHP parsed it into one junk form field and nothing else (filter_input(INPUT_POST)
+	 * included). An empty raw body must come with no form fields: a multipart body
+	 * leaves php://input empty while PHP still parses its fields.
+	 */
+	private static function json_body_ok( $body, $post ) {
+		if ( '' === $body ) {
+			return array() === $post;
+		}
+		if ( false !== strpos( $body, '&' ) ) {
+			return false;
+		}
+		$data = json_decode( $body, true );
+		return is_array( $data ) && self::only_fields( $data, array( 'options' ) );
+	}
+
+	/**
+	 * For an allowed call the builder can send stray fields with, take them out before
+	 * other plugins' init and wp_loaded handlers read them: the unlisted query keys of a
+	 * text_in_query call, and every form field PHP parsed out of a json_body call's JSON
+	 * (the handler reads php://input and its query through filter_input).
+	 */
+	private static function drop_unsent_fields( $call ) {
+		$spec = self::BUILDER_AJAX[ $call ];
+		if ( empty( $spec['text_in_query'] ) && empty( $spec['json_body'] ) ) {
+			return;
+		}
+		// phpcs:disable WordPress.Security.NonceVerification -- Removes fields; the builder's handlers verify their nonces.
+		if ( ! empty( $spec['text_in_query'] ) ) {
+			$_GET = array_intersect_key( $_GET, array_flip( self::query_fields( $call ) ) );
+		}
+		if ( ! empty( $spec['json_body'] ) ) {
+			$_POST = array();
+		}
+		$_REQUEST = array_merge( $_GET, $_POST );
+		// phpcs:enable WordPress.Security.NonceVerification
+	}
+
+	/**
+	 * init: a builder session reaches nothing in wp-admin beyond the builder. On the
+	 * front end it reads as a signed-out visitor (GET/HEAD: no drafts, private posts or
+	 * nonce-checked links), and a front-end write (wp-comments-post.php, any plugin's
+	 * form handler) signs it out.
 	 */
 	public function confine_request() {
-		$session = self::builder_session();
+		$this->confined_user_id = 0;
+		$this->stripped_caps    = array();
+		$session                = self::builder_session();
 		if ( null === $session ) {
 			return;
 		}
 		global $pagenow;
 		$method = isset( $_SERVER['REQUEST_METHOD'] ) ? strtoupper( (string) $_SERVER['REQUEST_METHOD'] ) : 'GET'; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
-		if ( is_admin() ) {
-			$page_id = isset( $session[ self::SESSION_PAGE ] ) ? (int) $session[ self::SESSION_PAGE ] : 0;
-			// phpcs:ignore WordPress.Security.NonceVerification -- Read-only allowlist check; the builder's own handlers verify their nonces.
-			$allowed = self::admin_request_allowed( (string) $pagenow, $method, wp_unslash( $_GET ), wp_unslash( $_POST ), $page_id );
+		if ( ! is_admin() ) {
+			// The compile step's only front-end request is the sign-in link, which carries no
+			// session cookie yet. Anything else (a preview's iframe or image) needs no account.
+			if ( in_array( $method, array( 'GET', 'HEAD' ), true ) ) {
+				wp_set_current_user( 0 );
+				return;
+			}
 		} else {
-			$allowed = in_array( $method, array( 'GET', 'HEAD' ), true );
-		}
-		if ( $allowed ) {
-			$this->confined_user_id = get_current_user_id();
-			add_filter( 'user_has_cap', array( $this, 'limit_caps' ), 10, 4 );
-			return;
+			$page_id = isset( $session[ self::SESSION_PAGE ] ) ? (int) $session[ self::SESSION_PAGE ] : 0;
+			$get     = wp_unslash( $_GET ); // phpcs:ignore WordPress.Security.NonceVerification -- Read-only allowlist check; the builder's own handlers verify their nonces.
+			$post    = wp_unslash( $_POST ); // phpcs:ignore WordPress.Security.NonceVerification
+			$ajax    = 'admin-ajax.php' === (string) $pagenow;
+			$call    = $ajax ? self::builder_call( $get ) : null;
+			// The raw body only where the form fields can't tell what was sent: the widget
+			// calls' JSON, and a POST PHP parsed no fields from (a JSON or other non-form body).
+			$read    = null !== $call && ( ! empty( self::BUILDER_AJAX[ $call ]['json_body'] ) || ( array() === $post && ! in_array( $method, array( 'GET', 'HEAD' ), true ) ) );
+			$body    = $read ? (string) file_get_contents( 'php://input' ) : ''; // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
+			// No builder call uploads a file, and the compile opens the site's own wp-admin only.
+			$elsewhere = ! empty( $_FILES ) || is_network_admin() || is_user_admin(); // phpcs:ignore WordPress.Security.NonceVerification
+			if ( ! $elsewhere && self::admin_request_allowed( (string) $pagenow, $method, $get, $post, $page_id, $body ) ) {
+				if ( null !== $call ) {
+					self::drop_unsent_fields( $call );
+				}
+				$this->confined_user_id = get_current_user_id();
+				$this->stripped_caps    = $ajax ? array_merge( self::STRIPPED_CAPS, self::AJAX_STRIPPED_CAPS ) : self::STRIPPED_CAPS;
+				// map_meta_cap binds a multisite Super Admin, whose has_cap() returns before user_has_cap.
+				add_filter( 'map_meta_cap', array( $this, 'map_caps' ), PHP_INT_MAX, 4 );
+				add_filter( 'user_has_cap', array( $this, 'limit_caps' ), 10, 4 );
+				return;
+			}
 		}
 		// The action or page in the log tells a refused builder call from a probe.
 		$what = isset( $_REQUEST['action'] ) ? $_REQUEST['action'] : ( isset( $_GET['page'] ) ? $_GET['page'] : '' ); // phpcs:ignore WordPress.Security.NonceVerification, WordPress.Security.ValidatedSanitizedInput
@@ -465,10 +638,23 @@ class WPVibe_Builder_Login {
 		}
 	}
 
+	/**
+	 * map_meta_cap, last, added only for an allowed builder request: a stripped cap, or a
+	 * meta cap that maps to one (upload_plugins, customize, another user's edit_user), becomes
+	 * do_not_allow. WP_User::has_cap() refuses do_not_allow even for a Super Admin.
+	 */
+	public function map_caps( $caps, $cap, $user_id, $args ) {
+		if ( $this->confined_user_id > 0 && (int) $user_id === $this->confined_user_id
+			&& array() !== array_intersect( array_merge( array( (string) $cap ), (array) $caps ), $this->stripped_caps ) ) {
+			return array( 'do_not_allow' );
+		}
+		return $caps;
+	}
+
 	/** user_has_cap, added only for an allowed builder request: no code, plugin, theme or user caps. */
 	public function limit_caps( $allcaps, $caps, $args, $user ) {
 		if ( $this->confined_user_id > 0 && is_object( $user ) && isset( $user->ID ) && (int) $user->ID === $this->confined_user_id ) {
-			foreach ( self::STRIPPED_CAPS as $cap ) {
+			foreach ( $this->stripped_caps as $cap ) {
 				$allcaps[ $cap ] = false;
 			}
 		}

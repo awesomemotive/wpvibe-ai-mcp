@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.21.3] - 2026-10-28
+
+- Feature: WPVibe now finds and runs abilities that a plugin offers to AI agents only (marked for MCP but hidden from the REST API), such as those in Fluent Forms, Meta Box, Premium Addons for Elementor and PixelYourSite. Each ability's own permission check still decides who can run it.
+- Fix: Publishing a draft theme no longer rolls back when a maintenance or coming-soon page is on (SeedProd, LightStart, CMP or Maintenance). The publish is kept, and WPVibe tells you to view the site logged in before you turn maintenance off. A real error page still rolls back as before.
+- Security: The SeedProd builder sign-in now also limits Super Admins on multisite, accepts only the exact fields the builder sends on each call, refuses file uploads, and views the front end signed out.
+
 ## [1.21.2] - 2026-10-27
 
 - Security: The one-time sign-in WPVibe uses to save a SeedProd page in the builder now only reaches that page's builder. It can no longer open other admin screens, upload plugins or themes, add users or change settings, it ends after 10 minutes instead of 2 days, and any request outside the builder signs it out.
