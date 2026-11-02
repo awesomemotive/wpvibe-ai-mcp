@@ -11,8 +11,11 @@
  * session it opens lasts ten minutes and is confined to that page's builder:
  * any other wp-admin screen, admin-post or admin-ajax call outside the
  * builder's own (or carrying a field the builder does not send), REST request,
- * or front-end write (a comment, a form post) signs it out and is refused
- * (#1084). Front-end reads run signed out.
+ * or front-end write (a comment, a form post) is refused and runs signed out
+ * (#1084). The session itself stays: other plugins send background calls under
+ * whoever is signed in (Action Scheduler's queue runner, a heartbeat with their
+ * data), and ending it on one of those left the compile's Save signed out (#1247).
+ * Front-end reads run signed out.
  *
  * @package WPVibe
  */
@@ -584,7 +587,7 @@ class WPVibe_Builder_Login {
 	 * init: a builder session reaches nothing in wp-admin beyond the builder. On the
 	 * front end it reads as a signed-out visitor (GET/HEAD: no drafts, private posts or
 	 * nonce-checked links), and a front-end write (wp-comments-post.php, any plugin's
-	 * form handler) signs it out.
+	 * form handler) is refused.
 	 */
 	public function confine_request() {
 		$this->confined_user_id = 0;
@@ -662,9 +665,9 @@ class WPVibe_Builder_Login {
 	}
 
 	private static function refuse( $where ) {
-		self::end_session( $where );
+		self::refused( $where );
 		wp_die(
-			esc_html__( 'This WPVibe builder session can only open the SeedProd builder, so it has been signed out.', 'vibe-ai' ),
+			esc_html__( 'This WPVibe builder session can only open the SeedProd builder.', 'vibe-ai' ),
 			'',
 			array( 'response' => 403 )
 		);
@@ -681,10 +684,10 @@ class WPVibe_Builder_Login {
 		if ( null === self::builder_session() ) {
 			return $result;
 		}
-		self::end_session( 'rest' );
+		self::refused( 'rest' );
 		return new WP_Error(
 			'wpvibe_builder_session',
-			__( 'This WPVibe builder session can only open the SeedProd builder, so it has been signed out.', 'vibe-ai' ),
+			__( 'This WPVibe builder session can only open the SeedProd builder.', 'vibe-ai' ),
 			array( 'status' => 403 )
 		);
 	}
@@ -701,22 +704,21 @@ class WPVibe_Builder_Login {
 		add_filter( 'heartbeat_send', 'wp_auth_check' );
 	}
 
-	/** Destroy the builder session's tokens so a refused request also ends it. */
-	private static function end_session( $where ) {
+	/**
+	 * Log a refused request and run the rest of it signed out. The session stays: each
+	 * request is checked on its own, and a background call another plugin sends under it
+	 * must not stop the compile's Save (#1247).
+	 */
+	private static function refused( $where ) {
 		if ( class_exists( 'WPVibe_Audit_Log' ) ) {
 			WPVibe_Audit_Log::log_execution(
 				array(
 					'operation'      => 'builder_session_refused',
 					'command'        => $where,
-					'result_summary' => 'builder session signed out',
+					'result_summary' => 'request refused, session kept',
 				)
 			);
 		}
-
-		foreach ( self::builder_sessions() as $found ) {
-			WP_Session_Tokens::get_instance( $found['user_id'] )->destroy( $found['token'] );
-		}
-		wp_clear_auth_cookie();
 		wp_set_current_user( 0 );
 	}
 

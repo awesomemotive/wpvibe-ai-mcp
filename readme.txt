@@ -4,7 +4,7 @@ Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.21.3
+Stable tag: 1.21.4
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -116,15 +116,20 @@ This plugin connects to the WPVibe service at [wpvibe.ai](https://wpvibe.ai) to 
 
 No data is collected, tracked, or shared with third parties beyond what is necessary to relay your AI assistant's MCP requests to your WordPress REST API. Your content stays on your WordPress server.
 
+Requests from WPVibe to your site may pass through relay servers that WPVibe operates on DigitalOcean, so that they arrive from fixed IP addresses your host's firewall can allow. Each request, including the application password that authenticates it, passes through the relay in transit over HTTPS. The relays do not store requests, responses or credentials, and log only the site's hostname.
+
 On WPVibe's own authorization page (the Approve screen an authorize link opens), if your site's REST API answers the approval request with a firewall page or no response, the plugin reports that outcome to the WPVibe service (the HTTP status, whether the answer was a page or JSON, and the security vendor if recognised; never page content) so support can see what blocked the connection. Nothing is reported on a successful approval.
 
 * [Privacy Policy](https://wpvibe.ai/privacy/)
 
+To report a security issue, email security@wpvibe.ai.
+
 = Third-Party Libraries =
 
-WPVibe bundles two third-party libraries:
+WPVibe bundles three third-party libraries:
 
 * **Alpine.js** v3.15.12, MIT License, [https://alpinejs.dev/](https://alpinejs.dev/), included at `starter-themes/classic/assets/js/alpine.min.js`. Used as the interactivity layer (modals, dropdowns, tabs, accordions, sliders) for AI-generated classic themes. Not loaded outside scaffolded themes.
+* **Tailwind CSS browser build** (@tailwindcss/browser) v4.3.3 by Tailwind Labs, MIT License, [https://github.com/tailwindlabs/tailwindcss](https://github.com/tailwindlabs/tailwindcss), included at `assets/js/tailwindcss-browser.min.js`. Styles the draft theme preview while you build a Tailwind theme. Loaded only on draft previews of WPVibe Tailwind themes; published themes use compiled CSS instead.
 * **svg-sanitize** (enshrined/svg-sanitize) v1.0.0 by Daryll Doyle, GPL-2.0-or-later, [https://github.com/darylldoyle/svg-sanitizer](https://github.com/darylldoyle/svg-sanitizer), included at `third-party/svg-sanitize/` with its PHP namespace prefixed so it cannot clash with other plugins that bundle it, such as Safe SVG. Used to clean SVG files before WPVibe writes them to a draft theme or adds them to the Media Library.
 
 = Built by SeedProd =
@@ -217,6 +222,12 @@ Yes. Connected sites are unlimited on every plan, including the free plan. Conne
 No. WPVibe lets you manage your WordPress site entirely through conversation with your AI assistant. No coding required for content management. Theme editing is also conversational, your AI writes the code for your WordPress theme.
 
 == Changelog ==
+
+= 1.21.4 =
+* Fix: SeedProd pages your AI saves compile again on sites where other plugins run background tasks, such as Action Scheduler, while the page is saved. The builder sign-in now refuses those requests instead of signing itself out, so the save goes through.
+* Fix: WPVibe's update notices show in wp-admin even when WPVibe is hidden from admins.
+* Hardening: The draft theme preview loads Tailwind from the plugin instead of a CDN.
+* Security: The readme now explains that requests to your site may pass through WPVibe's relay servers, and how to report a security issue (security@wpvibe.ai).
 
 = 1.21.3 =
 * Feature: WPVibe now finds and runs abilities that a plugin offers to AI agents only (marked for MCP but hidden from the REST API), such as those in Fluent Forms, Meta Box, Premium Addons for Elementor and PixelYourSite. Each ability's own permission check still decides who can run it.
@@ -364,15 +375,6 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 * Fix: publishing a new classic theme keeps its name and accurately reports whether a previous theme was backed up. Apostrophes in new theme names no longer break generated PHP.
 * Hardening: draft creation, editing, publishing and deletion coordinate their file changes. Unsafe paths and drafts manually activated as the live theme are refused.
 * Hardening: authenticated safety checks let WPVibe verify draft-preservation support before enabling new classic-theme creation.
-
-= 1.17.1 =
-* Fix: saving Elementor data into an existing draft page or template no longer publishes it. The post keeps its status unless you ask for a change.
-* Fix: Allow for WPVibe now applies to the Approve click itself. Sites where a security plugin turns off Application Passwords passed the connectivity check but still refused the approval; both now agree.
-* Fix: WP-CLI commands that spell an apostrophe inside a single-quoted value the POSIX way (closing quote, backslash apostrophe, reopening quote) now reach the handler byte for byte, and post meta values keep their backslashes. Shortcode values written that way lost their quotes. Two backslashes outside quotes now collapse to one, as in a shell.
-* Security: the background-run and self-update hand-off records can no longer be written with option add, option update, option patch, or raw SQL sent by an AI, so a seeded record cannot start a run through the public loopback route. Reading them for status still works.
-* Fix: editing a page whose saved template no longer exists (theme switched, builder canvas template with the builder off) failed with "Invalid page template" and a misleading crash hint. Content edits and post updates now leave the stored template alone.
-* Security: wp-content diagnostic reads redact the connection proof key and bare 64-character hex secrets that a failed database write can leave in debug.log.
-* Hardening: the Allow for WPVibe setting can no longer be changed through WP-CLI commands sent by an AI; only the button on the WPVibe page changes it.
 
 = Older versions =
 WP.org caps the changelog at 5,000 words. For the full release history back to 1.0.0, see https://wpvibe.ai/changelog/

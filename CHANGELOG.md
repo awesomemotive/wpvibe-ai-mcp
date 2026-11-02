@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.21.4] - 2026-11-02
+
+- Fix: SeedProd pages your AI saves compile again on sites where other plugins run background tasks, such as Action Scheduler, while the page is saved. The builder sign-in now refuses those requests instead of signing itself out, so the save goes through.
+- Fix: WPVibe's update notices show in wp-admin even when WPVibe is hidden from admins.
+- Hardening: The draft theme preview loads Tailwind from the plugin instead of a CDN.
+- Security: The readme now explains that requests to your site may pass through WPVibe's relay servers, and how to report a security issue (security@wpvibe.ai).
+
 ## [1.21.3] - 2026-10-28
 
 - Feature: WPVibe now finds and runs abilities that a plugin offers to AI agents only (marked for MCP but hidden from the REST API), such as those in Fluent Forms, Meta Box, Premium Addons for Elementor and PixelYourSite. Each ability's own permission check still decides who can run it.

@@ -396,10 +396,10 @@ class WPVibe_Preview {
 			WPVIBE_VERSION
 		);
 		wp_enqueue_script(
-			'wpvibe-tailwind-cdn',
-			'https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4',
+			'wpvibe-tailwind',
+			WPVIBE_PLUGIN_URL . 'assets/js/tailwindcss-browser.min.js',
 			array(),
-			'4',
+			'4.3.3',
 			array( 'strategy' => 'defer' )
 		);
 	}

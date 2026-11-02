@@ -4,9 +4,10 @@
  *
  * When the wpvibe_hide_from_admins option is truthy, every WPVibe surface
  * in wp-admin is suppressed for every user: admin menu, dashboard widget,
- * Plugins-row entry, post-edit sidebar, update listing, and Site Health
- * plugin entries. The site keeps working through the MCP connection; the
- * agency manages it via AI.
+ * Plugins-row entry, post-edit sidebar, and Site Health plugin entries.
+ * Update notices stay visible: WordPress.org forbids hiding them. The
+ * site keeps working through the MCP connection; the agency manages it
+ * via AI.
  *
  * Rails: enabling requires an active WPVibe connection, the plugin enrolls
  * itself in core auto-updates while hidden (there is no visible Plugins row
@@ -34,7 +35,6 @@ class WPVibe_White_Label {
 
 	private function __construct() {
 		add_filter( 'all_plugins', array( $this, 'filter_plugins_list' ) );
-		add_filter( 'site_transient_update_plugins', array( $this, 'filter_update_listing' ) );
 		add_filter( 'debug_information', array( $this, 'filter_site_health' ) );
 		add_action( 'admin_init', array( $this, 'maybe_auto_unhide' ), 5 );
 		add_action( 'add_option_' . self::OPTION, array( $this, 'on_option_added' ), 10, 2 );
@@ -96,29 +96,6 @@ class WPVibe_White_Label {
 			unset( $plugins[ WPVIBE_PLUGIN_BASENAME ] );
 		}
 		return $plugins;
-	}
-
-	/**
-	 * Strip WPVibe from admin-screen update listings (update-core.php, the
-	 * update count bubble). Cron is deliberately untouched — the auto-updater
-	 * must still see the update or hidden sites go stale.
-	 *
-	 * @param mixed $value
-	 * @return mixed
-	 */
-	public function filter_update_listing( $value ) {
-		if ( ! is_object( $value ) || ! defined( 'WPVIBE_PLUGIN_BASENAME' ) ) {
-			return $value;
-		}
-		if ( ! is_admin() || wp_doing_cron() || ! self::is_hidden() ) {
-			return $value;
-		}
-		foreach ( array( 'response', 'no_update' ) as $bucket ) {
-			if ( isset( $value->{$bucket}[ WPVIBE_PLUGIN_BASENAME ] ) ) {
-				unset( $value->{$bucket}[ WPVIBE_PLUGIN_BASENAME ] );
-			}
-		}
-		return $value;
 	}
 
 	/**
