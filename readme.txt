@@ -4,7 +4,7 @@ Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.21.4
+Stable tag: 1.21.5
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -223,6 +223,11 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 
 == Changelog ==
 
+= 1.21.5 =
+* Fix: Approve now connects on sites whose REST API address answers "not found". It retries through the ?rest_route= address, which those sites still answer, and the help notice names the address it tried.
+* Fix: The connection check no longer fails on sites running LiteSpeed Cache, which could serve an earlier check's answer. WPVibe now tells LiteSpeed Cache not to cache it.
+* Hardening: A search-replace that runs without an approval showing that exact change, such as a fleet run, now leaves WPCode and Elementor code snippets unchanged and says so. A search-replace you approved still changes them.
+
 = 1.21.4 =
 * Fix: SeedProd pages your AI saves compile again on sites where other plugins run background tasks, such as Action Scheduler, while the page is saved. The builder sign-in now refuses those requests instead of signing itself out, so the save goes through.
 * Fix: WPVibe's update notices show in wp-admin even when WPVibe is hidden from admins.
@@ -367,14 +372,6 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 * Fix: saving through Bricks, Breakdance, Elementor and Beaver Builder keeps a page template the active theme no longer offers instead of resetting it to default.
 * Fix: a draft theme copy that fails partway is cleaned up, and a leftover draft directory that is an unmodified partial copy is removed automatically; anything else is named so it can be removed by hand.
 * Hardening: search-replace refuses to rename an option into or out of a protected name, or to a non-ASCII name. Background operation records are signed and any record not written by WPVibe on this site never runs.
-
-= 1.17.2 =
-* Fix: Signed operation approvals recover from stale per-site proof keys after updating, without reconnecting the site.
-* Fix: creating a classic theme preserves existing unpublished drafts and refuses conflicting files instead of replacing them.
-* Fix: interrupted draft creation cannot overwrite leftover draft files on retry. Failed deletion retains the draft record for recovery.
-* Fix: publishing a new classic theme keeps its name and accurately reports whether a previous theme was backed up. Apostrophes in new theme names no longer break generated PHP.
-* Hardening: draft creation, editing, publishing and deletion coordinate their file changes. Unsafe paths and drafts manually activated as the live theme are refused.
-* Hardening: authenticated safety checks let WPVibe verify draft-preservation support before enabling new classic-theme creation.
 
 = Older versions =
 WP.org caps the changelog at 5,000 words. For the full release history back to 1.0.0, see https://wpvibe.ai/changelog/

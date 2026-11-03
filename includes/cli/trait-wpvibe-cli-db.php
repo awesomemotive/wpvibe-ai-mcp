@@ -18,6 +18,10 @@ trait WPVibe_CLI_Db {
 	private static $sr_address_options = array( 'siteurl', 'home' );
 	/** Identity tables resolve_search_replace_tables dropped from scope. */
 	private $sr_protected_tables = array();
+	/** A live search-replace no human approval named: a session approval, which never covers code-snippet rows. */
+	private $sr_session = false;
+	/** Whether a session run left out a code-snippet row the search text was in. */
+	private $sr_snippets_skipped = false;
 
 
 
@@ -1225,6 +1229,13 @@ trait WPVibe_CLI_Db {
 
 		$this->sr_skipped_serialized = 0;
 		$this->sr_timed_out          = false;
+		// A human approval's snapshot names this exact operation (the approval page showed it) and no grant; anything
+		// else is a session approval (the Worker marks those `grant`), and code-snippet rows stay out of it as they do
+		// for remembered SQL (#795). A dry run is unchanged, so the preview a human approves still counts snippet matches.
+		$state                     = is_array( $this->approved_state ) ? $this->approved_state : array();
+		$named                     = isset( $state['operation'] ) && 'search_replace:' . $old . '=>' . $new === (string) $state['operation'];
+		$this->sr_session          = ! $dry_run && ( ! $named || ! empty( $state['grant'] ) );
+		$this->sr_snippets_skipped = false;
 		$report    = array();
 		$total     = 0;
 		$completed = array();
@@ -1244,6 +1255,7 @@ trait WPVibe_CLI_Db {
 				$completed[] = $table;
 				continue;
 			}
+			$searched = array();
 			foreach ( $text_columns as $col ) {
 				if ( in_array( $col, $skip_columns, true ) || in_array( "$table.$col", $skip_columns, true ) ) {
 					continue;
@@ -1251,7 +1263,8 @@ trait WPVibe_CLI_Db {
 				if ( ! empty( $include_columns ) && ! in_array( $col, $include_columns, true ) && ! in_array( "$table.$col", $include_columns, true ) ) {
 					continue;
 				}
-				$count = $this->search_replace_column( $table, $col, $primary_keys, $old, $new, $dry_run, $deadline );
+				$searched[] = $col;
+				$count      = $this->search_replace_column( $table, $col, $primary_keys, $old, $new, $dry_run, $deadline );
 				if ( $count > 0 ) {
 					$report[] = array( 'table' => $table, 'column' => $col, 'count' => $count );
 				}
@@ -1259,6 +1272,9 @@ trait WPVibe_CLI_Db {
 				if ( $this->sr_timed_out ) {
 					break;
 				}
+			}
+			if ( ! $this->sr_snippets_skipped && ! $this->sr_timed_out && $this->search_replace_snippet_rows_skipped( $table, $searched, $old ) ) {
+				$this->sr_snippets_skipped = true;
 			}
 			if ( $this->sr_timed_out ) {
 				$remaining = array_slice( $tables, $i );
@@ -1301,6 +1317,9 @@ trait WPVibe_CLI_Db {
 		}
 		if ( ! empty( $this->sr_protected_tables ) ) {
 			$data['protected_tables_skipped'] = $this->sr_protected_tables;
+		}
+		if ( $this->sr_snippets_skipped ) {
+			$data['snippet_note'] = __( 'Code-snippet rows (WPCode and Elementor custom code: their posts, post meta and WPCode terms, and any row the change would have made one) that contain the search text were left out, because only an approval that showed this exact search-replace covers code. If they need the change, edit them with code_snippet.', 'vibe-ai' );
 		}
 		if ( $guid_skipped ) {
 			$data['guid_note'] = __( 'The guid column was skipped (WordPress best practice). Pass --include-guids to replace inside GUIDs too.', 'vibe-ai' );
@@ -1449,6 +1468,84 @@ trait WPVibe_CLI_Db {
 		return ' AND ' . implode( ' AND ', $parts );
 	}
 
+	/**
+	 * Which code-snippet table $table is, as [ kind, its site's prefix ]: kind is posts, postmeta, terms or
+	 * term_taxonomy. Every site's on multisite (a network-scope caller reaches wp_2_posts too); null otherwise.
+	 */
+	private function search_replace_snippet_table( $table ) {
+		global $wpdb;
+		$base   = isset( $wpdb->base_prefix ) ? (string) $wpdb->base_prefix : (string) $wpdb->prefix;
+		$prefix = is_multisite() ? preg_quote( $base, '/' ) . '(?:\d+_)?' : preg_quote( (string) $wpdb->prefix, '/' );
+		if ( ! preg_match( '/^(' . $prefix . ')(posts|postmeta|terms|term_taxonomy)$/i', (string) $table, $m ) ) {
+			return null;
+		}
+		return array( strtolower( $m[2] ), $m[1] );
+	}
+
+	/**
+	 * SQL appended to a row match so a session-approved search-replace never
+	 * rewrites WPCode or Elementor custom code: their posts, those posts' meta,
+	 * and WPCode's terms, on whichever site the table belongs to. '' for other
+	 * tables, and for a human-approved run.
+	 */
+	private function search_replace_snippet_guard( $table ) {
+		$snippet = $this->sr_session ? $this->search_replace_snippet_table( $table ) : null;
+		if ( null === $snippet ) {
+			return '';
+		}
+		list( $kind, $prefix ) = $snippet;
+		$types = "'wpcode','elementor_snippet'";
+		switch ( $kind ) {
+			case 'posts':
+				return " AND `post_type` NOT IN ({$types})";
+			case 'postmeta':
+				return ' AND `post_id` NOT IN (SELECT `ID` FROM ' . $this->esc_sql_ident( $prefix . 'posts' ) . " WHERE `post_type` IN ({$types}))";
+			case 'term_taxonomy':
+				return " AND `taxonomy` NOT LIKE 'wpcode%'";
+		}
+		return ' AND `term_id` NOT IN (SELECT `term_id` FROM ' . $this->esc_sql_ident( $prefix . 'term_taxonomy' ) . " WHERE `taxonomy` LIKE 'wpcode%')";
+	}
+
+	/** Whether, in a session run, rewriting $col to $replaced would turn a post or a term into a code snippet. */
+	private function search_replace_makes_snippet( $table, $col, $replaced ) {
+		$snippet = $this->sr_session && is_string( $replaced ) ? $this->search_replace_snippet_table( $table ) : null;
+		if ( null === $snippet ) {
+			return false;
+		}
+		// MySQL compares these columns case-insensitively and ignoring trailing spaces, so WPCode would still find the row.
+		$value = strtolower( rtrim( $replaced, ' ' ) );
+		if ( 'posts' === $snippet[0] && 'post_type' === strtolower( $col ) ) {
+			return in_array( $value, array( 'wpcode', 'elementor_snippet' ), true );
+		}
+		return 'term_taxonomy' === $snippet[0] && 'taxonomy' === strtolower( $col ) && 0 === strpos( $value, 'wpcode' );
+	}
+
+	/** Whether the snippet guard left out a row of $table holding the search text in a column the run searched. */
+	private function search_replace_snippet_rows_skipped( $table, $columns, $old ) {
+		global $wpdb;
+		$guard = $this->search_replace_snippet_guard( $table );
+		if ( '' === $guard || empty( $columns ) ) {
+			return false;
+		}
+		$old_json = $this->json_encode_strip_quotes( $old );
+		$matches  = array();
+		foreach ( $columns as $col ) {
+			$matches[] = $this->search_replace_match( $this->esc_sql_ident( $col ), $old, $old_json );
+		}
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		return (bool) $wpdb->get_var( 'SELECT 1 FROM ' . $this->esc_sql_ident( $table ) . ' WHERE ( ' . implode( ' OR ', $matches ) . ' ) AND NOT (1' . $guard . ') LIMIT 1' ); // nosemgrep: direct-db-query
+	}
+
+	/** The row match for $old in one column: the literal, or its JSON-escaped form. */
+	private function search_replace_match( $col_sql, $old, $old_json ) {
+		global $wpdb;
+		$match = $col_sql . $wpdb->prepare( ' LIKE BINARY %s', '%' . $wpdb->esc_like( $old ) . '%' );
+		if ( $old_json !== $old ) {
+			$match = '( ' . $match . ' OR ' . $col_sql . $wpdb->prepare( ' LIKE BINARY %s', '%' . $wpdb->esc_like( $old_json ) . '%' ) . ' )';
+		}
+		return $match;
+	}
+
 	/** Protected option rows in scope whose value contains the needle: skipped, and named in the result so the change is not silently partial. */
 	private function search_replace_protected_rows_matching( $tables, $old ) {
 		global $wpdb;
@@ -1506,10 +1603,7 @@ trait WPVibe_CLI_Db {
 		$old_json  = $this->json_encode_strip_quotes( $old );
 		$new_json  = $this->json_encode_strip_quotes( $new );
 
-		$match = $col_sql . $wpdb->prepare( ' LIKE BINARY %s', '%' . $wpdb->esc_like( $old ) . '%' );
-		if ( $old_json !== $old ) {
-			$match = '( ' . $match . ' OR ' . $col_sql . $wpdb->prepare( ' LIKE BINARY %s', '%' . $wpdb->esc_like( $old_json ) . '%' ) . ' )';
-		}
+		$match = $this->search_replace_match( $col_sql, $old, $old_json );
 
 		$single_pk = ( 1 === count( $primary_keys ) );
 		$pk_sql    = implode( ', ', array_map( array( $this, 'esc_sql_ident' ), $primary_keys ) );
@@ -1522,7 +1616,7 @@ trait WPVibe_CLI_Db {
 				$this->sr_timed_out = true;
 				break;
 			}
-			$where = 'WHERE ' . $match . $this->search_replace_row_guard( $table );
+			$where = 'WHERE ' . $match . $this->search_replace_row_guard( $table ) . $this->search_replace_snippet_guard( $table );
 			if ( $single_pk && null !== $last_key ) {
 				$where .= ' AND ' . $pk_sql . ' > ' . $this->esc_sql_value( $last_key );
 			}
@@ -1552,6 +1646,10 @@ trait WPVibe_CLI_Db {
 					continue;
 				}
 				if ( $replaced === $value || gettype( $replaced ) !== gettype( $value ) ) {
+					continue;
+				}
+				if ( $this->search_replace_makes_snippet( $table, $col, $replaced ) ) {
+					$this->sr_snippets_skipped = true;
 					continue;
 				}
 				if ( $dry_run ) {

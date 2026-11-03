@@ -70,6 +70,8 @@ class WPVibe_Authorize_Notice {
 			// Approve mints here instead of /wp/v2/users/me/application-passwords (#58).
 			'mintPath'     => '/wpvibe/v1/authorize',
 			'preflightPath' => '/wpvibe/v1/authorize/preflight',
+			// Tried when the advertised REST root 404s; how the Worker reaches the plugin.
+			'restRouteRoot' => home_url( '/', 'rest' ) . '?rest_route=',
 			'i18n'         => array(
 				'title'     => __( 'Approve could not reach this site\'s REST API', 'vibe-ai' ),
 				/* translators: %s: what the request returned (e.g. "an HTML page (status 403)"). */
@@ -79,7 +81,8 @@ class WPVibe_Authorize_Notice {
 				/* translators: %s: vendor or plugin name detected in the response. */
 				'marker'    => __( 'The response looks like it came from %s.', 'vibe-ai' ),
 				'step1'     => __( 'Open this link in a private (incognito) window with browser extensions off, log in as an administrator, and click Approve once.', 'vibe-ai' ),
-				'step2'     => __( 'If it fails again, ask your host to inspect the blocked request to /wp-json/wpvibe/v1/authorize and permit authenticated REST requests to that route.', 'vibe-ai' ),
+				/* translators: %s: the address Approve sends its request to. */
+				'step2'     => __( 'If it fails again, ask your host to inspect the blocked request to %s and permit authenticated REST requests to that route.', 'vibe-ai' ),
 				'docs'      => __( 'Connection guide', 'vibe-ai' ),
 				/* translators: %s: support email address. */
 				'support'   => __( 'Still stuck? Email %s with the text of this notice.', 'vibe-ai' ),

@@ -29,6 +29,8 @@ class WPVibe_Connection_Check {
 	}
 
 	public static function challenge_response() {
+		// LiteSpeed Cache ignores Cache-Control on REST responses and would serve an older run's challenge.
+		do_action( 'litespeed_control_set_nocache', 'wpvibe connection check' );
 		$active = get_transient( self::CHALLENGE );
 		if ( ! is_array( $active ) || empty( $active['expires'] ) || $active['expires'] <= time() ) {
 			return new WP_Error( 'rest_no_route', 'No connection check is running.', array( 'status' => 404 ) );

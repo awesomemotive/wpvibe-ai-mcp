@@ -366,10 +366,10 @@ class WPVibe_Preview {
 	}
 
 	/**
-	 * Enqueue the Tailwind browser CDN + plugin-served presets.css only while a
-	 * Tailwind draft is the active stylesheet. The CDN runtime lets the AI
+	 * Enqueue the bundled Tailwind browser build + presets.css only while a
+	 * Tailwind draft is the active stylesheet. The browser build lets the AI
 	 * iterate on a WPVibe theme without a build step; presets.css fills in the
-	 * typography + form resets the CDN doesn't ship. The live theme enqueues
+	 * typography + form resets the browser build doesn't ship. The live theme enqueues
 	 * its compiled dist/styles.css itself, so neither asset loads outside
 	 * draft mode.
 	 *

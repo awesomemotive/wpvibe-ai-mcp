@@ -79,6 +79,16 @@
 	var cfg = root.wpvibeAuthorize, authApp = root.authApp, wp = root.wp, $ = root.jQuery;
 	if ( ! cfg || ! authApp || ! wp || ! wp.apiRequest || ! wp.hooks || ! $ ) return;
 
+	// Set once the advertised REST root 404s and ?rest_route= answers the preflight.
+	var restRouteRoot = '';
+
+	function viaRestRoute( base, options ) {
+		var o = $.extend( {}, options );
+		o.url = base + String( o.path || '' ).replace( '?', '&' );
+		delete o.path;
+		return o;
+	}
+
 	// Route the Approve mint through the plugin: host firewalls block
 	// /wp/v2/users* as user enumeration and the one-click connect dies with
 	// a blank red bar (#58). Same request, same session, same success redirect;
@@ -91,6 +101,7 @@
 				var q = options.path.indexOf( '?' );
 				// dataType: a site serving REST as text/html otherwise hands core a string and it redirects with password=undefined (#689).
 				options = $.extend( {}, options, { path: cfg.mintPath + ( q >= 0 ? options.path.slice( q ) : '' ), dataType: 'json' } );
+				if ( restRouteRoot ) options = viaRestRoute( restRouteRoot, options );
 			}
 			return origApiRequest.call( this, options );
 		};
@@ -128,6 +139,11 @@
 		return what;
 	}
 
+	function mintAddress() {
+		var mint = cfg.mintPath || '/wpvibe/v1/authorize';
+		return restRouteRoot ? restRouteRoot + mint : String( ( root.wpApiSettings && root.wpApiSettings.root ) || '' ) + mint.replace( /^\//, '' );
+	}
+
 	/** DOM-built notice: every string goes through textContent. */
 	function buildNotice( verdict, level, lead ) {
 		var div = document.createElement( 'div' );
@@ -143,7 +159,7 @@
 		if ( verdict.kind === 'cannot_create' || verdict.kind === 'unavailable_for_user' ) p1.textContent = t[ verdict.kind ] || '';
 		div.appendChild( p1 );
 		var ol = document.createElement( 'ol' );
-		[ t.step1, t.step2 ].forEach( function ( s ) { var li = document.createElement( 'li' ); li.textContent = s || ''; ol.appendChild( li ); } );
+		[ t.step1, fmt( t.step2, mintAddress() ) ].forEach( function ( s ) { var li = document.createElement( 'li' ); li.textContent = s || ''; ol.appendChild( li ); } );
 		div.appendChild( ol );
 		var p2 = document.createElement( 'p' );
 		var a = document.createElement( 'a' );
@@ -181,26 +197,54 @@
 		} catch ( e ) { /* advisory only */ }
 	} );
 
+	function classifyXhr( jqXHR ) {
+		return classify( jqXHR && jqXHR.status, jqXHR && jqXHR.getResponseHeader && jqXHR.getResponseHeader( 'content-type' ), jqXHR && jqXHR.responseText, jqXHR && jqXHR.getResponseHeader && jqXHR.getResponseHeader( 'server' ) );
+	}
+
+	/** JSON 404 rest_no_route: WordPress REST answered but without the wpvibe/v1 routes. */
+	function noRoute( jqXHR, v ) {
+		if ( v.kind !== 'json' || v.status !== 404 ) return false;
+		try { return JSON.parse( String( jqXHR.responseText ).replace( /^﻿/, '' ).trim() ).code === 'rest_no_route'; } catch ( e ) { return false; }
+	}
+
 	// 2. Warn-only pre-flight of the same route, same headers auth-app.js will use.
 	$( function () {
 		try {
-			var preflight = wp.apiRequest( { path: ( cfg.preflightPath || '/wpvibe/v1/authorize/preflight' ) + '?_locale=user', method: 'GET', timeout: 8000 } );
-			if ( preflight.done ) preflight.done( function ( facts ) {
+			var options = { path: ( cfg.preflightPath || '/wpvibe/v1/authorize/preflight' ) + '?_locale=user', method: 'GET', timeout: 8000 };
+			var onFacts = function ( facts ) {
 				if ( facts && ( facts.reason === 'cannot_create' || facts.reason === 'unavailable_for_user' ) ) {
 					var verdict = { kind: facts.reason, status: 200, marker: null };
 					if ( ! document.querySelector( '.wpvibe-authorize-notice' ) ) place( buildNotice( verdict, 'warning', t.preflight || '' ) );
 					beacon( 'preflight', verdict );
 				}
-			} );
+			};
+			var warn = function ( v ) {
+				if ( ! document.querySelector( '.wpvibe-authorize-notice' ) ) place( buildNotice( v, 'warning', t.preflight || '' ) );
+				beacon( 'preflight', v );
+			};
+			var preflight = wp.apiRequest( options );
+			if ( preflight.done ) preflight.done( onFacts );
 			preflight
 				.fail( function ( jqXHR, textStatus ) {
 					try {
 						// A slow host (8s cap) or the user clicking Approve mid-flight is not a block.
 						if ( textStatus === 'timeout' || textStatus === 'abort' ) return;
-						var v = classify( jqXHR && jqXHR.status, jqXHR && jqXHR.getResponseHeader && jqXHR.getResponseHeader( 'content-type' ), jqXHR && jqXHR.responseText, jqXHR && jqXHR.getResponseHeader && jqXHR.getResponseHeader( 'server' ) );
+						var v = classifyXhr( jqXHR );
+						var missing = noRoute( jqXHR, v );
+						if ( cfg.restRouteRoot && ( missing || v.kind === 'html' || v.kind === 'empty' ) ) {
+							var retry = wp.apiRequest( viaRestRoute( cfg.restRouteRoot, options ) );
+							retry.done( function ( facts ) { restRouteRoot = cfg.restRouteRoot; onFacts( facts ); } );
+							retry.fail( function ( retryXHR ) {
+								try {
+									var rv = classifyXhr( retryXHR );
+									if ( rv.kind === 'json' && ! noRoute( retryXHR, rv ) ) { restRouteRoot = cfg.restRouteRoot; return; }
+									if ( v.kind !== 'json' ) warn( v );
+								} catch ( e ) { /* advisory only */ }
+							} );
+							return;
+						}
 						if ( v.kind === 'json' ) return; // 401 / 403 JSON is a healthy REST answer
-						if ( ! document.querySelector( '.wpvibe-authorize-notice' ) ) place( buildNotice( v, 'warning', t.preflight || '' ) );
-						beacon( 'preflight', v );
+						warn( v );
 					} catch ( e ) { /* advisory only */ }
 				} );
 		} catch ( e ) { /* advisory only */ }

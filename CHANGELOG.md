@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.21.5] - 2026-11-03
+
+- Fix: Approve now connects on sites whose REST API address answers "not found". It retries through the ?rest_route= address, which those sites still answer, and the help notice names the address it tried.
+- Fix: The connection check no longer fails on sites running LiteSpeed Cache, which could serve an earlier check's answer. WPVibe now tells LiteSpeed Cache not to cache it.
+- Hardening: A search-replace that runs without an approval showing that exact change, such as a fleet run, now leaves WPCode and Elementor code snippets unchanged and says so. A search-replace you approved still changes them.
+
 ## [1.21.4] - 2026-11-02
 
 - Fix: SeedProd pages your AI saves compile again on sites where other plugins run background tasks, such as Action Scheduler, while the page is saved. The builder sign-in now refuses those requests instead of signing itself out, so the save goes through.
