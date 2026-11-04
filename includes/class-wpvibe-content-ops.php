@@ -417,6 +417,10 @@ class WPVibe_Content_Ops {
 				? __( 'The text sits inside a JSON value, so it was JSON-escaped (quotes, backslashes, newlines) before writing; the stored JSON still parses and decodes to the text you sent.', 'vibe-ai' )
 				: __( 'The text sits inside block-comment attributes, so it was escaped the way WordPress serializes block attributes (\\u0022 for quotes, \\u002d\\u002d for --) before writing; the block still parses and its attribute decodes to the text you sent.', 'vibe-ai' ) );
 		}
+		$revisions_off = 'option' === $type ? '' : WPVibe_Revision_Guard::revisions_off_note( array( (int) ( $args['post_id'] ?? 0 ) ) );
+		if ( '' !== $revisions_off ) {
+			$response['revisions_off'] = $revisions_off;
+		}
 		if ( false === $verbatim ) {
 			$response['stored_verbatim'] = false;
 			$response['message']         = __( 'Content updated, but the site modified the saved value (a filter such as kses or a security plugin altered it). Your copy of this value is now stale; re-read it with content/search before making further edits.', 'vibe-ai' );

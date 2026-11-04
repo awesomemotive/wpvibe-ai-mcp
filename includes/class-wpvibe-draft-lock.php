@@ -151,16 +151,30 @@ class WPVibe_Draft_Lock {
 		return new WP_Error( 'draft_conflict', __( 'Existing draft state was preserved. Continue editing the current draft. To start a different theme, first save a separate backup and explicitly choose whether to publish or discard the current draft. Missing draft files or an untracked draft directory require recovery before creating another draft.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, $data ) );
 	}
 
+	/** A draft_conflict that names its cause (#1059): the same code and 409, plus a reason the Worker can tell apart. */
+	public static function conflict_because( $reason, $message, $cause = 'invalid_input', $extra = array() ) {
+		$data = array( 'status' => 409, 'draft_slug' => get_option( 'wpvibe_draft_theme' ), 'source_slug' => get_option( 'wpvibe_draft_source' ), 'reason' => $reason ) + $extra;
+		return new WP_Error( 'draft_conflict', $message, WPVibe_Error_Contract::data( $cause, false, $data ) );
+	}
+
 	/** Register source first; a failed write leaves a conflict, never an editable partial draft. */
 	public static function register( $draft, $source ) {
 		update_option( 'wpvibe_draft_source', $source );
 		if ( get_option( 'wpvibe_draft_source' ) !== $source ) {
-			return self::conflict();
+			return self::record_write_failed();
 		}
 		update_option( 'wpvibe_draft_theme', $draft );
 		if ( get_option( 'wpvibe_draft_theme' ) !== $draft ) {
-			return self::conflict();
+			return self::record_write_failed();
 		}
 		return true;
+	}
+
+	private static function record_write_failed() {
+		return self::conflict_because(
+			'draft_record_write_failed',
+			__( 'WordPress did not keep WPVibe\'s draft record: the options table refused the write, or another request changed it at the same moment. Retry the same call once; if it fails again, the host needs to check the site\'s options table (database writes, or an object cache that will not update).', 'vibe-ai' ),
+			'host_environment'
+		);
 	}
 }

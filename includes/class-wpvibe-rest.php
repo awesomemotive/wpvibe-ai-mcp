@@ -1071,8 +1071,19 @@ class WPVibe_REST {
 			return new WP_Error( 'wpvibe_authorize_login_required', __( 'Log in to WordPress in this browser to approve the connection.', 'vibe-ai' ), array( 'status' => 401 ) );
 		}
 		$auth_header = is_object( $request ) && method_exists( $request, 'get_header' ) ? (string) $request->get_header( 'authorization' ) : '';
-		if ( '' !== $auth_header || ! empty( $_SERVER['PHP_AUTH_USER'] ) || ! empty( $_SERVER['HTTP_X_WPVIBE_AUTHORIZATION'] ) || $request->get_header( 'x_wpvibe_authorization' ) || ( function_exists( 'rest_get_authenticated_app_password' ) && null !== rest_get_authenticated_app_password() ) ) {
-			return new WP_Error( 'wpvibe_authorize_session_only', __( 'This route accepts the logged-in browser session only.', 'vibe-ai' ), array( 'status' => 403 ) );
+		// Same refusal as ever; it now names which signal tripped and how to get past it (#733).
+		$signal = '';
+		if ( function_exists( 'rest_get_authenticated_app_password' ) && null !== rest_get_authenticated_app_password() ) {
+			$signal = 'app_password';
+		} elseif ( ! empty( $_SERVER['HTTP_X_WPVIBE_AUTHORIZATION'] ) || $request->get_header( 'x_wpvibe_authorization' ) ) {
+			$signal = 'x_wpvibe_authorization';
+		} elseif ( '' !== $auth_header ) {
+			$signal = 'authorization_header';
+		} elseif ( ! empty( $_SERVER['PHP_AUTH_USER'] ) ) {
+			$signal = 'php_auth_user';
+		}
+		if ( '' !== $signal ) {
+			return new WP_Error( 'wpvibe_authorize_session_only', self::session_only_message( $signal ), array( 'status' => 403, 'signal' => $signal ) );
 		}
 		$nonce = $request->get_header( 'x_wp_nonce' );
 		if ( ! $nonce ) {
@@ -1082,6 +1093,17 @@ class WPVibe_REST {
 			return new WP_Error( 'wpvibe_authorize_nonce', __( 'Refresh this browser page and approve the connection again.', 'vibe-ai' ), array( 'status' => 403 ) );
 		}
 		return true;
+	}
+
+	/** What tripped the session-only check, and the way past it. */
+	private static function session_only_message( $signal ) {
+		if ( 'app_password' === $signal ) {
+			return __( 'This request signed in with an Application Password, not your browser session, so WPVibe will not create another password from it. Open the authorization link in a normal browser window where you are logged in to wp-admin, and click Approve there.', 'vibe-ai' );
+		}
+		if ( 'x_wpvibe_authorization' === $signal ) {
+			return __( 'This request carries an X-WPVibe-Authorization header, which a browser session never sends, so WPVibe will not create a password from it. Open the authorization link in a normal browser window where you are logged in to wp-admin, with extensions off. If this keeps appearing, ask your host whether a proxy or security layer adds that header.', 'vibe-ai' );
+		}
+		return __( 'This request carries a server login (HTTP Basic Auth: the extra username and password some hosts put in front of the site), sent by your browser or added by the server, so WPVibe cannot tell it apart from a stored password and will not create one. Turn the server password off for the site while you click Approve, or quit the browser completely so it stops sending a saved login, then open the authorization link again and click Approve. If it still appears, ask your host whether the server adds that login.', 'vibe-ai' );
 	}
 
 	public function authorize_preflight( $request ) {
@@ -1164,6 +1186,12 @@ class WPVibe_REST {
 			return current_user_can( 'manage_options' ) ? true : $this->missing_capability_error( 'manage_options' );
 		}
 		$post_id = (int) $request->get_param( 'post_id' );
+		// Core maps edit_post on a missing ID to do_not_allow, which read as a capability problem with reconnect advice
+		// (#814). An account that can edit posts at all learns the ID is wrong; anyone else still gets the capability error.
+		if ( $post_id > 0 && ! get_post( $post_id ) && current_user_can( 'edit_posts' ) ) {
+			/* translators: %d: post ID */
+			return new WP_Error( 'not_found', sprintf( __( 'Post #%d does not exist on this site. Check the ID (search or list the posts first); the connection and its permissions are fine.', 'vibe-ai' ), $post_id ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
+		}
 		if ( $post_id > 0 ) {
 			// manage_options fallback: CPT capability mappings (WPForms, LMS
 			// plugins) fail edit_post even for admins. Post types with an

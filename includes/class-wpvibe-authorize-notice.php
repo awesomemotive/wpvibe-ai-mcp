@@ -33,6 +33,37 @@ class WPVibe_Authorize_Notice {
 
 	public static function register() {
 		add_action( 'admin_enqueue_scripts', array( __CLASS__, 'enqueue' ) );
+		add_filter( 'wp_redirect', array( __CLASS__, 'mark_nojs_mint' ) );
+	}
+
+	/** wp_redirect filter: core's no-JS Approve redirect names its mint path for the Worker (#689). */
+	public static function mark_nojs_mint( $location ) {
+		// phpcs:ignore WordPress.Security.NonceVerification.Missing -- core checked this form's nonce before minting; this only reads which form it was.
+		return self::mint_marker_redirect( $location, isset( $GLOBALS['pagenow'] ) ? (string) $GLOBALS['pagenow'] : '', $_POST );
+	}
+
+	/**
+	 * Pure: the redirect with wpvibe_mint=nojs when it is core's no-JS Approve of our app, carrying a password to an
+	 * allowlisted Worker host; anything else unchanged. The password stays exactly as core put it.
+	 *
+	 * @param mixed  $location Redirect target.
+	 * @param string $pagenow  The admin page.
+	 * @param array  $post     $_POST snapshot.
+	 * @return mixed
+	 */
+	public static function mint_marker_redirect( $location, $pagenow, $post ) {
+		if ( ! is_string( $location ) || 'authorize-application.php' !== $pagenow || ! is_array( $post ) ) {
+			return $location;
+		}
+		if ( 'authorize_application_password' !== ( $post['action'] ?? '' ) || ! isset( $post['approve'] ) || self::APP_ID !== ( $post['app_id'] ?? '' ) ) {
+			return $location;
+		}
+		$host = strtolower( (string) wp_parse_url( $location, PHP_URL_HOST ) );
+		$hosts = self::normalize_hosts( apply_filters( 'wpvibe_authorize_beacon_hosts', self::BEACON_HOSTS ) );
+		if ( ! in_array( $host, $hosts, true ) || false === strpos( $location, 'password=' ) || false !== strpos( $location, 'wpvibe_mint=' ) ) {
+			return $location;
+		}
+		return add_query_arg( 'wpvibe_mint', 'nojs', $location );
 	}
 
 	/**

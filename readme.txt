@@ -4,7 +4,7 @@ Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.21.5
+Stable tag: 1.21.6
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -223,6 +223,15 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 
 == Changelog ==
 
+= 1.21.6 =
+* Fix: wp-admin no longer offers Activate or Live Preview on a WPVibe draft theme, which locked every draft change once active. A switch to a draft from anywhere else puts the site straight back on its theme and says how to preview or publish the draft instead.
+* Fix: Asking your AI to search or edit a post that does not exist now says the post does not exist, instead of reporting a missing permission and asking you to reconnect.
+* Fix: When Approve is refused because the request is not a plain browser login, the message now names the cause (an Application Password, a server password such as HTTP Basic Auth, or an extra header) and how to get past it.
+* Fix: On white-labelled sites with "Dangerously bypass approvals" on, the warning banner now turns it off in place. Your AI can turn the setting off for you too, but never on.
+* Fix: When your AI cannot make a draft copy of your theme, it now says why and what to do: a theme the host links in from elsewhere (as on WordPress.com), a link inside the theme, a themes folder WordPress cannot write to, or a draft record the database did not keep. It used to say only that the existing draft was preserved.
+* Fix: Connecting a site now tells WPVibe which way WordPress created the connection's password, to help trace connections that fail.
+* Hardening: Before WPVibe first changes a post's title or content, WordPress keeps a revision of the original, so the first AI edit can be undone. When revisions are off for that post, your AI is told the change cannot be undone.
+
 = 1.21.5 =
 * Fix: Approve now connects on sites whose REST API address answers "not found". It retries through the ?rest_route= address, which those sites still answer, and the help notice names the address it tried.
 * Fix: The connection check no longer fails on sites running LiteSpeed Cache, which could serve an earlier check's answer. WPVibe now tells LiteSpeed Cache not to cache it.
@@ -364,14 +373,6 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 * Fix: the site information request no longer fails with a server error on sites where WordPress has not loaded its plugin helpers for REST requests (seen on WordPress 6.4). Approvals on those sites could not complete because WPVibe could not read the plugin version.
 * Fix: when a draft theme has been activated as the live theme, the draft conflict message now says so, names both themes, and explains how to recover, instead of telling you to continue editing a draft that WPVibe will not touch.
 * Improvement: the connection check message for a password gate in front of WordPress (staging protection or HTTP Basic Auth) now tells you to let the WPVibe relay IP address through the gate and links to where that address is listed.
-
-= 1.17.3 =
-* Fix: Administrator accounts can read and edit protected (underscore-prefixed) meta through content edit and content search, matching what the CLI already allowed. Keys a plugin guards with its own auth callback stay refused, with a message that names the owning plugin's path.
-* Fix: updating WPVibe from within WPVibe no longer fails with an undefined function on sites where the automatic updater runs outside wp-admin.
-* Fix: a staging or cloned site no longer displays the production site's verified connection status; saved connection observations are tied to the site address.
-* Fix: saving through Bricks, Breakdance, Elementor and Beaver Builder keeps a page template the active theme no longer offers instead of resetting it to default.
-* Fix: a draft theme copy that fails partway is cleaned up, and a leftover draft directory that is an unmodified partial copy is removed automatically; anything else is named so it can be removed by hand.
-* Hardening: search-replace refuses to rename an option into or out of a protected name, or to a non-ASCII name. Background operation records are signed and any record not written by WPVibe on this site never runs.
 
 = Older versions =
 WP.org caps the changelog at 5,000 words. For the full release history back to 1.0.0, see https://wpvibe.ai/changelog/

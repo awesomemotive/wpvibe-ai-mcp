@@ -258,6 +258,14 @@ trait WPVibe_CLI_Option {
 		}
 		$key   = $positional[0];
 
+		// John, 2026-10-20 (#887): the CLI may turn approval bypass off, never on.
+		if ( self::is_bypass_option( $key ) ) {
+			$parsed = $this->parse_option_value( $positional[1], $flags, WPVibe_Approval_Bypass::OPTION );
+			if ( ! isset( $parsed['error'] ) && ! WPVibe_Approval_Bypass::turns_on( $parsed['value'] ) ) {
+				return $this->turn_bypass_off();
+			}
+		}
+
 		if ( null !== self::match_option_name( $key, self::BLOCKED_OPTIONS ) ) {
 			return $this->error_result(
 				sprintf(
@@ -383,6 +391,10 @@ trait WPVibe_CLI_Option {
 		// HARD-BLOCK — these options are never approval-gated. No legitimate AI
 		// workflow needs to delete them. Checked across the whole list before any
 		// write, so a blocked key cannot ride along behind a permitted one.
+		// Deleting approval bypass turns it off, which the CLI may do (#887), but only on its own.
+		if ( 1 === count( $keys ) && self::is_bypass_option( $keys[0] ) ) {
+			return $this->turn_bypass_off();
+		}
 		foreach ( $keys as $key ) {
 			if ( null !== self::match_option_name( $key, self::BLOCKED_OPTIONS ) ) {
 				return $this->error_result( $this->blocked_option_message( $key, 'deleted' ) );
@@ -895,6 +907,36 @@ trait WPVibe_CLI_Option {
 		) );
 	}
 
+
+	/** The approval-bypass option, under any spelling match_option_name folds (#887). */
+	private static function is_bypass_option( $key ) {
+		return WPVibe_Approval_Bypass::OPTION === self::match_option_name( $key, self::BLOCKED_OPTIONS );
+	}
+
+	/** Off is the option's absence; guard_value stays the backstop for every other writer. */
+	private function turn_bypass_off() {
+		$was_on = WPVibe_Approval_Bypass::is_on();
+		delete_option( WPVibe_Approval_Bypass::OPTION );
+		if ( WPVibe_Approval_Bypass::is_on() ) {
+			return $this->error_result( __( 'Could not turn off "Dangerously bypass approvals": the option is still set after the delete. A site administrator can turn it off with the button in the bypass banner in wp-admin.', 'vibe-ai' ) );
+		}
+		if ( $was_on && class_exists( 'WPVibe_Audit_Log' ) ) {
+			$user  = wp_get_current_user();
+			$login = is_object( $user ) && isset( $user->user_login ) ? (string) $user->user_login : '';
+			WPVibe_Audit_Log::log_execution( array(
+				'operation'      => 'approval_bypass:off',
+				'command'        => 'WP-CLI: Dangerously bypass approvals turned off',
+				'result_summary' => sprintf( 'by %s', $login ),
+			) );
+		}
+		WPVibe_Change_Tracker::mark( array(
+			'summary'      => 'Approval bypass turned off',
+			'action_label' => 'Refresh',
+		) );
+		return $this->success_result( array( 'message' => $was_on
+			? __( 'Turned off "Dangerously bypass approvals": WPVibe asks for approval again before risky changes.', 'vibe-ai' )
+			: __( '"Dangerously bypass approvals" is already off.', 'vibe-ai' ) ) );
+	}
 
 	/** Blocked options with a supported narrow-door command get it named in the refusal. */
 	private function blocked_option_alternative( $key ) {

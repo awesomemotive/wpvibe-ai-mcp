@@ -1038,7 +1038,12 @@ trait WPVibe_CLI_Post {
 			'action_label' => 'Refresh',
 		) );
 
-		return $this->bulk_result( 'updated', $ok, $ids, $results );
+		$result = $this->bulk_result( 'updated', $ok, $ids, $results );
+		$note   = WPVibe_Revision_Guard::revisions_off_note( $ids );
+		if ( 0 === $result['exit_code'] && '' !== $note ) {
+			$result['stderr'] = trim( $result['stderr'] . "\n" . $note );
+		}
+		return $result;
 	}
 
 

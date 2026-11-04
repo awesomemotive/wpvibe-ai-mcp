@@ -184,8 +184,19 @@ class WPVibe_Draft_Theme {
 		}
 
 		$active_slug = (string) get_option( 'stylesheet' );
-		if ( ! WPVibe_Draft_Lock::valid_slug( $active_slug ) || is_link( get_theme_root() . '/' . $active_slug ) ) {
+		if ( ! WPVibe_Draft_Lock::valid_slug( $active_slug ) ) {
 			return WPVibe_Draft_Lock::conflict();
+		}
+		if ( is_link( get_theme_root() . '/' . $active_slug ) ) {
+			return WPVibe_Draft_Lock::conflict_because(
+				'active_theme_symlink',
+				sprintf(
+					/* translators: %s: theme folder */
+					__( 'The active theme \'%s\' is a symbolic link to a folder the host manages (WordPress.com themes and some hosts work this way), so WPVibe cannot make a draft copy of it. Nothing was changed. To build a theme WPVibe can edit, use create_classic_theme instead.', 'vibe-ai' ),
+					$active_slug
+				),
+				'not_supported'
+			);
 		}
 		if ( in_array( strtolower( $active_slug ), self::BUILDER_THEMES, true ) ) {
 			return new WP_Error(
@@ -218,9 +229,20 @@ class WPVibe_Draft_Theme {
 		if ( ( file_exists( $dest ) || is_link( $dest ) ) && ! $this->clear_partial_copy( $source, $dest, $draft_slug ) ) {
 			return $this->orphan_error( $draft_slug );
 		}
+		error_clear_last();
 		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir
 		if ( ! @mkdir( $dest, 0755 ) ) {
-			return WPVibe_Draft_Lock::conflict();
+			$php_error = error_get_last();
+			return WPVibe_Draft_Lock::conflict_because(
+				'draft_dir_create_failed',
+				sprintf(
+					/* translators: 1: folder path, 2: PHP error message */
+					__( 'WPVibe could not create the draft folder %1$s (%2$s). Usually wp-content/themes is not writable by PHP on this host, or the disk is full. Nothing was changed. Ask the host to let PHP write to wp-content/themes, then retry create_draft_theme.', 'vibe-ai' ),
+					self::site_relative( $dest ),
+					is_array( $php_error ) && '' !== (string) $php_error['message'] ? self::site_relative( (string) $php_error['message'] ) : __( 'no reason given', 'vibe-ai' )
+				),
+				'host_environment'
+			);
 		}
 
 		try {
@@ -1275,7 +1297,14 @@ class WPVibe_Draft_Theme {
 
 		foreach ( $iterator as $item ) {
 			if ( $item->isLink() ) {
-				return WPVibe_Draft_Lock::conflict();
+				$link = self::site_relative( $item->getPathname() );
+				return WPVibe_Draft_Lock::conflict_because(
+					'theme_contains_symlink',
+					/* translators: %s: path of the symbolic link */
+					sprintf( __( 'The theme contains a symbolic link (%s), which WPVibe will not copy; replacing it with a real file or folder lets WPVibe work on this theme.', 'vibe-ai' ), $link ),
+					'not_supported',
+					array( 'link' => $link )
+				);
 			}
 			$dest_path = $dst . '/' . $iterator->getSubPathName();
 			if ( $item->isDir() ) {

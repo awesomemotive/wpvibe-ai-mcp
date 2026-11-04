@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.21.6] - 2026-11-04
+
+- Fix: wp-admin no longer offers Activate or Live Preview on a WPVibe draft theme, which locked every draft change once active. A switch to a draft from anywhere else puts the site straight back on its theme and says how to preview or publish the draft instead.
+- Fix: Asking your AI to search or edit a post that does not exist now says the post does not exist, instead of reporting a missing permission and asking you to reconnect.
+- Fix: When Approve is refused because the request is not a plain browser login, the message now names the cause (an Application Password, a server password such as HTTP Basic Auth, or an extra header) and how to get past it.
+- Fix: On white-labelled sites with "Dangerously bypass approvals" on, the warning banner now turns it off in place. Your AI can turn the setting off for you too, but never on.
+- Fix: When your AI cannot make a draft copy of your theme, it now says why and what to do: a theme the host links in from elsewhere (as on WordPress.com), a link inside the theme, a themes folder WordPress cannot write to, or a draft record the database did not keep. It used to say only that the existing draft was preserved.
+- Fix: Connecting a site now tells WPVibe which way WordPress created the connection's password, to help trace connections that fail.
+- Hardening: Before WPVibe first changes a post's title or content, WordPress keeps a revision of the original, so the first AI edit can be undone. When revisions are off for that post, your AI is told the change cannot be undone.
+
 ## [1.21.5] - 2026-11-03
 
 - Fix: Approve now connects on sites whose REST API address answers "not found". It retries through the ?rest_route= address, which those sites still answer, and the help notice names the address it tried.

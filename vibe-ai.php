@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WPVibe – MCP Server for WordPress, works with Claude, ChatGPT & other AI MCP agents
  * Description: Connect any AI assistant to your WordPress site. Manage content, edit themes, and automate site tasks with Claude, ChatGPT, Cursor & more via MCP.
- * Version: 1.21.5
+ * Version: 1.21.6
  * Author: SeedProd
  * Author URI: https://wpvibe.ai
  * License: GPL-2.0-or-later
@@ -14,7 +14,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WPVIBE_VERSION', '1.21.5' );
+define( 'WPVIBE_VERSION', '1.21.6' );
 define( 'WPVIBE_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'WPVIBE_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 define( 'WPVIBE_PLUGIN_BASENAME', plugin_basename( __FILE__ ) );
@@ -44,6 +44,8 @@ require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-preview.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-cli.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-code-snippet.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-change-tracker.php';
+require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-revision-guard.php';
+require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-draft-activation-guard.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-live-reload.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-classic-theme.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-admin.php';
@@ -156,6 +158,8 @@ function wpvibe_init() {
 	WPVibe_Self_Update::instance();
 	WPVibe_Detached_Ops::instance()->maybe_purge_legacy_handoffs();
 	WPVibe_App_Password_Policy::init();
+	WPVibe_Revision_Guard::register();
+	WPVibe_Draft_Activation_Guard::register();
 	WPVibe_White_Label::instance();
 	WPVibe_Code_Snippet::load_wpcode_file_cache();
 	WPVibe_REST::instance();

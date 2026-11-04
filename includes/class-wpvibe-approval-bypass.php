@@ -44,6 +44,11 @@ class WPVibe_Approval_Bypass {
 		return is_array( $value ) && ! empty( $value['enabled'] );
 	}
 
+	/** Whether writing this value would turn bypass on: the CLI may write anything that turns it off (#887). */
+	public static function turns_on( $value ) {
+		return self::value_on( $value );
+	}
+
 	/** @return true|WP_Error A bypass-claimed run of an ALWAYS_ASK operation is refused like a site with bypass off, so the Worker falls back to an approval. */
 	public static function allows( $operation ) {
 		if ( ! self::$request_bypassed || ! in_array( (string) $operation, self::ALWAYS_ASK, true ) ) {
@@ -146,8 +151,17 @@ class WPVibe_Approval_Bypass {
 		if ( is_wp_error( $result ) ) {
 			wp_die( esc_html( $result->get_error_message() ), 403 );
 		}
-		wp_safe_redirect( admin_url( 'admin.php?page=vibe-ai#wpvibe-bypass-approvals' ) );
+		wp_safe_redirect( self::redirect_after_save() );
 		exit;
+	}
+
+	/** The settings page, or, while white label hides it (it is not registered then), the page the form was on (#887). */
+	public static function redirect_after_save() {
+		if ( class_exists( 'WPVibe_White_Label' ) && WPVibe_White_Label::is_hidden() ) {
+			$back = wp_get_referer();
+			return $back ? $back : admin_url();
+		}
+		return admin_url( 'admin.php?page=vibe-ai#wpvibe-bypass-approvals' );
 	}
 
 	public static function render_notice() {
@@ -160,6 +174,25 @@ class WPVibe_Approval_Bypass {
 		}
 		$by   = isset( $details['user_login'] ) ? (string) $details['user_login'] : '';
 		$when = isset( $details['enabled_at'] ) ? gmdate( 'Y-m-d H:i', (int) $details['enabled_at'] ) . ' UTC' : '';
+		// While white label hides WPVibe its settings page is not registered, so the banner carries the off switch itself (#887).
+		$hidden = class_exists( 'WPVibe_White_Label' ) && WPVibe_White_Label::is_hidden();
+		if ( $hidden ) {
+			printf(
+				'<div class="notice notice-error"><p><strong>%1$s</strong> %2$s</p><form method="post" action="%3$s" style="margin:0 0 0.75em"><input type="hidden" name="action" value="%4$s" />%5$s<button type="submit" class="button">%6$s</button></form></div>',
+				esc_html__( 'WPVibe is bypassing approvals on this site.', 'vibe-ai' ),
+				esc_html( sprintf(
+					/* translators: 1: username, 2: date and time */
+					__( 'AI changes run without an approval prompt, including deletes, SQL, code and user changes. Turned on by %1$s at %2$s.', 'vibe-ai' ),
+					$by,
+					$when
+				) ),
+				esc_url( admin_url( 'admin-post.php' ) ),
+				esc_attr( self::ACTION ),
+				wp_nonce_field( self::ACTION, '_wpnonce', true, false ), // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- core-built hidden inputs.
+				esc_html__( 'Turn it off', 'vibe-ai' )
+			);
+			return;
+		}
 		printf(
 			'<div class="notice notice-error"><p><strong>%1$s</strong> %2$s <a href="%3$s">%4$s</a></p></div>',
 			esc_html__( 'WPVibe is bypassing approvals on this site.', 'vibe-ai' ),

@@ -31,7 +31,7 @@ trait WPVibe_CLI_Security {
 
 		// Gate on irreversibility, not count. Reversible ops run freely at any
 		// scale — a trash (post delete) is restorable, and post update keeps a
-		// WordPress revision. Only irreversible ops confirm: user delete and
+		// revision of the prior state (WPVibe_Revision_Guard). Only irreversible ops confirm: user delete and
 		// plugin uninstall (no trash analog), and post delete --force (bypasses
 		// trash, permanent). When an irreversible op names several targets,
 		// enumerate them so one approval shows the full list. Three explicit IDs

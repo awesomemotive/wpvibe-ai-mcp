@@ -71,7 +71,28 @@
 		}
 	}
 
-	var api = { classify: classify, markerFor: markerFor, beaconTarget: beaconTarget, VENDORS: VENDORS };
+	/** The success_url marked wpvibe_mint=plugin, so the Worker's callback records how the password was minted (#689); unchanged unless allowlisted. */
+	function withMintMarker( successUrl, hosts ) {
+		try {
+			var u = new URL( String( successUrl || '' ) );
+			if ( ( hosts || [] ).indexOf( u.hostname ) === -1 || u.searchParams.has( 'wpvibe_mint' ) ) return successUrl;
+			u.searchParams.set( 'wpvibe_mint', 'plugin' );
+			return u.toString();
+		} catch ( e ) {
+			return successUrl;
+		}
+	}
+
+	var SESSION_ONLY_SIGNALS = [ 'app_password', 'x_wpvibe_authorization', 'authorization_header', 'php_auth_user' ];
+
+	/** The plugin's session-only refusal (#733) as a verdict with its signal and message; null for any other answer. */
+	function sessionOnlyVerdict( json, status ) {
+		if ( ! json || typeof json !== 'object' || json.code !== 'wpvibe_authorize_session_only' ) return null;
+		var signal = json.data && json.data.signal;
+		return { kind: 'session_only', status: Number( status ) || 403, marker: null, signal: SESSION_ONLY_SIGNALS.indexOf( signal ) !== -1 ? signal : '', message: String( json.message || '' ) };
+	}
+
+	var api = { classify: classify, markerFor: markerFor, beaconTarget: beaconTarget, withMintMarker: withMintMarker, sessionOnlyVerdict: sessionOnlyVerdict, VENDORS: VENDORS };
 	if ( typeof module !== 'undefined' && module.exports ) { module.exports = api; }
 	if ( ! root || ! root.document ) return;
 	root.wpvibeAuthorizePreflight = api;
@@ -109,6 +130,10 @@
 			if ( Object.prototype.hasOwnProperty.call( origApiRequest, key ) ) routed[ key ] = origApiRequest[ key ];
 		}
 		wp.apiRequest = routed;
+		// Core reads authApp.success after this action to build the redirect (wp-admin/js/auth-app.js).
+		wp.hooks.addAction( 'wp_application_passwords_approve_app_request_success', 'wpvibe/mint-path', function () {
+			try { authApp.success = withMintMarker( authApp.success, cfg.beaconHosts ); } catch ( e ) { /* telemetry never blocks the page */ }
+		} );
 	}
 
 	var t = cfg.i18n || {};
@@ -123,7 +148,7 @@
 		var target = beaconTarget( authApp.success, cfg.beaconHosts );
 		if ( ! target || sent[ phase ] ) return;
 		sent[ phase ] = true;
-		var payload = JSON.stringify( { phase: phase, kind: verdict.kind, status: verdict.status, marker: verdict.marker || '' } );
+		var payload = JSON.stringify( { phase: phase, kind: verdict.kind, status: verdict.status, marker: verdict.marker || '', signal: verdict.signal || '' } );
 		try {
 			if ( root.navigator && root.navigator.sendBeacon ) {
 				root.navigator.sendBeacon( target, new Blob( [ payload ], { type: 'text/plain' } ) );
@@ -157,7 +182,9 @@
 		var p1 = document.createElement( 'p' );
 		p1.textContent = fmt( t.came_back, describe( verdict ) ) + ( verdict.marker ? ' ' + fmt( t.marker, verdict.marker ) : '' );
 		if ( verdict.kind === 'cannot_create' || verdict.kind === 'unavailable_for_user' ) p1.textContent = t[ verdict.kind ] || '';
+		if ( verdict.kind === 'session_only' ) p1.textContent = verdict.message;
 		div.appendChild( p1 );
+		if ( verdict.kind === 'session_only' ) return div; // the message carries its own remedy
 		var ol = document.createElement( 'ol' );
 		[ t.step1, fmt( t.step2, mintAddress() ) ].forEach( function ( s ) { var li = document.createElement( 'li' ); li.textContent = s || ''; ol.appendChild( li ); } );
 		div.appendChild( ol );
@@ -182,6 +209,8 @@
 	// 1. The failure path: replace core's empty red bar with what actually happened.
 	wp.hooks.addAction( 'wp_application_passwords_approve_app_request_error', 'wpvibe/authorize-preflight', function ( error, textStatus, errorThrown, jqXHR ) {
 		try {
+			var refused = sessionOnlyVerdict( error, jqXHR && jqXHR.status );
+			if ( refused ) { beacon( 'approve', refused ); return; } // core shows the plugin's message, which names the remedy
 			if ( error && error.message ) return; // core showed a real message; leave it alone
 			var v = classify( jqXHR && jqXHR.status, jqXHR && jqXHR.getResponseHeader && jqXHR.getResponseHeader( 'content-type' ), jqXHR && jqXHR.responseText, jqXHR && jqXHR.getResponseHeader && jqXHR.getResponseHeader( 'server' ) );
 			if ( v.kind === 'json' ) return;
@@ -196,6 +225,10 @@
 			beacon( 'approve', v );
 		} catch ( e ) { /* advisory only */ }
 	} );
+
+	function parseJson( text ) {
+		try { return JSON.parse( String( text || '' ).replace( /^\uFEFF/, '' ).trim() ); } catch ( e ) { return null; }
+	}
 
 	function classifyXhr( jqXHR ) {
 		return classify( jqXHR && jqXHR.status, jqXHR && jqXHR.getResponseHeader && jqXHR.getResponseHeader( 'content-type' ), jqXHR && jqXHR.responseText, jqXHR && jqXHR.getResponseHeader && jqXHR.getResponseHeader( 'server' ) );
@@ -237,13 +270,22 @@
 							retry.fail( function ( retryXHR ) {
 								try {
 									var rv = classifyXhr( retryXHR );
-									if ( rv.kind === 'json' && ! noRoute( retryXHR, rv ) ) { restRouteRoot = cfg.restRouteRoot; return; }
+									if ( rv.kind === 'json' && ! noRoute( retryXHR, rv ) ) {
+										restRouteRoot = cfg.restRouteRoot;
+										var refusedRetry = sessionOnlyVerdict( retryXHR && ( retryXHR.responseJSON || parseJson( retryXHR.responseText ) ), rv.status );
+										if ( refusedRetry ) warn( refusedRetry );
+										return;
+									}
 									if ( v.kind !== 'json' ) warn( v );
 								} catch ( e ) { /* advisory only */ }
 							} );
 							return;
 						}
-						if ( v.kind === 'json' ) return; // 401 / 403 JSON is a healthy REST answer
+						if ( v.kind === 'json' ) {
+							var refused = sessionOnlyVerdict( jqXHR && ( jqXHR.responseJSON || parseJson( jqXHR.responseText ) ), v.status );
+							if ( refused ) warn( refused );
+							return; // any other 401 / 403 JSON is a healthy REST answer
+						}
 						warn( v );
 					} catch ( e ) { /* advisory only */ }
 				} );
