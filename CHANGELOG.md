@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.21.7] - 2026-11-05
+
+- Fix: When your AI tries to delete the folder of a WPVibe draft theme, it is now refused and pointed to discarding the draft instead, so WPVibe is never left pointing at a draft that no longer exists. A publish that moved the draft live but could not restore its theme name no longer leaves that stale draft record behind either.
+- Fix: With "Allow for WPVibe" on, the WPVibe page now explains that while a security plugin turns Application Passwords off, only a password WPVibe created gets through. If your account has none yet, it says so and how to connect.
+- Fix: On sites where another plugin turns on strict database error reporting, a database query from your AI with a mistake in it now returns the SQL error instead of WordPress's critical error page, and no longer leaves a read-only transaction or time limit open.
+
 ## [1.21.6] - 2026-11-04
 
 - Fix: wp-admin no longer offers Activate or Live Preview on a WPVibe draft theme, which locked every draft change once active. A switch to a draft from anywhere else puts the site straight back on its theme and says how to preview or publish the draft instead.

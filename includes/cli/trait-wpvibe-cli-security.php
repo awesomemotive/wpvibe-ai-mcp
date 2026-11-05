@@ -1452,7 +1452,7 @@ trait WPVibe_CLI_Security {
 			$rest  = isset( $m[2] ) ? trim( rtrim( $m[2], '; ' ) ) : '';
 			$count_sql = "SELECT COUNT(*) FROM (SELECT 1 FROM `{$table}` {$rest} LIMIT " . ( $cap + 1 ) . ") AS subq";
 			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-			$count = $this->preview_sql_safe( $count_sql ) ? $wpdb->get_var( $count_sql ) : null; // nosemgrep: direct-db-query
+			$count = $this->preview_sql_safe( $count_sql ) ? $this->db_query_call( 'get_var', $count_sql ) : null; // nosemgrep: direct-db-query
 			if ( null !== $count && empty( $wpdb->last_error ) ) {
 				$n = (int) $count;
 				$preview['affected_count'] = min( $n, $cap );
@@ -1463,7 +1463,7 @@ trait WPVibe_CLI_Security {
 				}
 				$sample_sql = "SELECT * FROM `{$table}` {$rest} LIMIT 5";
 				// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-				$sample = $this->preview_sql_safe( $sample_sql ) ? $wpdb->get_results( $sample_sql, ARRAY_A ) : null; // nosemgrep: direct-db-query
+				$sample = $this->preview_sql_safe( $sample_sql ) ? $this->db_query_call( 'get_results', $sample_sql, ARRAY_A ) : null; // nosemgrep: direct-db-query
 				if ( $sample && empty( $wpdb->last_error ) ) {
 					$preview['sample_rows'] = $this->trim_sample_rows( $sample );
 				}
@@ -1480,7 +1480,7 @@ trait WPVibe_CLI_Security {
 			$where = isset( $m[2] ) && -1 !== $m[2][1] ? trim( rtrim( substr( $trimmed, $m[2][1] ), '; ' ) ) : '';
 			$count_sql = "SELECT COUNT(*) FROM (SELECT 1 FROM `{$table}` {$where} LIMIT " . ( $cap + 1 ) . ") AS subq";
 			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-			$count = $this->preview_sql_safe( $count_sql ) ? $wpdb->get_var( $count_sql ) : null; // nosemgrep: direct-db-query
+			$count = $this->preview_sql_safe( $count_sql ) ? $this->db_query_call( 'get_var', $count_sql ) : null; // nosemgrep: direct-db-query
 			if ( null !== $count && empty( $wpdb->last_error ) ) {
 				$n = (int) $count;
 				$preview['affected_count'] = min( $n, $cap );
@@ -1493,7 +1493,7 @@ trait WPVibe_CLI_Security {
 				// reviewable by content, not just by count — same as the DELETE branch.
 				$sample_sql = "SELECT * FROM `{$table}` {$where} LIMIT 5";
 				// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-				$sample = $this->preview_sql_safe( $sample_sql ) ? $wpdb->get_results( $sample_sql, ARRAY_A ) : null; // nosemgrep: direct-db-query
+				$sample = $this->preview_sql_safe( $sample_sql ) ? $this->db_query_call( 'get_results', $sample_sql, ARRAY_A ) : null; // nosemgrep: direct-db-query
 				if ( $sample && empty( $wpdb->last_error ) ) {
 					$preview['sample_rows'] = $this->trim_sample_rows( $sample );
 				}

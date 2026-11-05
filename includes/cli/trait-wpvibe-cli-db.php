@@ -167,13 +167,34 @@ trait WPVibe_CLI_Db {
 		return (bool) preg_match( '/^(SELECT\b|SHOW\b|(?:EXPLAIN|DESCRIBE|DESC)\s+SELECT\b|(?:DESCRIBE|DESC)\s+(?!(?:ANALYZE|FORMAT|EXTENDED|PARTITIONS|UPDATE|DELETE|INSERT|REPLACE|TABLE|FOR|WITH)\b)[`A-Z0-9_$])/', strtoupper( trim( $this->strip_sql_comments_for_validation( $sql ) ) ) );
 	}
 
+	/**
+	 * A wpdb call (query, get_results, get_var, get_col) for db query. Once something on the site turns on strict mysqli reporting
+	 * (mysqli_report(MYSQLI_REPORT_STRICT)), wpdb throws mysqli_sql_exception instead of setting last_error; the
+	 * uncaught throw became WordPress's critical error and left the read-only transaction and the statement timeout
+	 * open (#1218). The throw becomes last_error again, so every caller's error path runs as it always has.
+	 */
+	private function db_query_call( $method, $sql, $output = null ) {
+		global $wpdb;
+		try {
+			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, PluginCheck.Security.DirectDB.UnescapedDBParameter
+			return null === $output ? $wpdb->$method( $sql ) : $wpdb->$method( $sql, $output ); // nosemgrep: direct-db-query
+		} catch ( mysqli_sql_exception $e ) {
+			// Only the driver's own throw: anything else (a filter after the statement ran) must not read as "not run".
+			// Code 0 is MYSQLI_REPORT_INDEX's "No index used", thrown after the statement succeeded: it ran, so it isn't an error here.
+			if ( 0 === (int) $e->getCode() ) {
+				throw $e;
+			}
+			$wpdb->last_error = '' !== (string) $e->getMessage() ? (string) $e->getMessage() : 'mysqli_sql_exception';
+			return false;
+		}
+	}
+
 	/** START TRANSACTION READ ONLY (MySQL 5.6.5+, MariaDB 10.0+); false when the server refuses it. */
 	private function db_query_begin_read_only() {
 		global $wpdb;
 		$this->db_query_hold_reconnect();
 		$suppress = $wpdb->suppress_errors( true );
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		$wpdb->query( 'START TRANSACTION READ ONLY' ); // nosemgrep: direct-db-query
+		$this->db_query_call( 'query', 'START TRANSACTION READ ONLY' );
 		$ok = '' === (string) $wpdb->last_error;
 		$wpdb->suppress_errors( $suppress );
 		$wpdb->last_error = '';
@@ -199,7 +220,11 @@ trait WPVibe_CLI_Db {
 	/** Whether the transaction's own connection is still up; with retries held at 0 this never reconnects or bails. */
 	private function db_query_connected() {
 		global $wpdb;
-		return (bool) $wpdb->check_connection( false );
+		try {
+			return (bool) $wpdb->check_connection( false );
+		} catch ( mysqli_sql_exception $e ) {
+			return false; // Under strict reporting, a dead link's ping throws instead of answering false.
+		}
 	}
 
 	private function db_query_restore_reconnect() {
@@ -212,8 +237,7 @@ trait WPVibe_CLI_Db {
 	private function db_query_end_read_only() {
 		global $wpdb;
 		$suppress = $wpdb->suppress_errors( true );
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		$wpdb->query( 'ROLLBACK' ); // nosemgrep: direct-db-query
+		$this->db_query_call( 'query', 'ROLLBACK' );
 		$wpdb->suppress_errors( $suppress );
 		$wpdb->last_error = '';
 		$this->db_query_restore_reconnect();
@@ -260,8 +284,7 @@ trait WPVibe_CLI_Db {
 			? 'SET SESSION max_statement_time=' . (int) $seconds
 			: 'SET SESSION MAX_EXECUTION_TIME=' . ( (int) $seconds * 1000 );
 		$suppress = $wpdb->suppress_errors( true );
-		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		$wpdb->query( $set ); // nosemgrep: direct-db-query
+		$this->db_query_call( 'query', $set );
 		$wpdb->suppress_errors( $suppress );
 		$wpdb->last_error = '';
 	}
@@ -414,8 +437,7 @@ trait WPVibe_CLI_Db {
 				 * read-only transaction wherever the server supports one.
 				 */
 				$this->db_query_read_timeout( 30 );
-				// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, PluginCheck.Security.DirectDB.UnescapedDBParameter
-				$results = $wpdb->get_results( $read, ARRAY_A ); // nosemgrep: direct-db-query
+				$results = $this->db_query_call( 'get_results', $read, ARRAY_A );
 				$error   = $wpdb->last_error;
 				if ( $read_only ) {
 					$this->db_query_end_read_only();
@@ -465,8 +487,7 @@ trait WPVibe_CLI_Db {
 				return $affected + array( 'tier' => 'write' );
 			}
 		} else {
-			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, PluginCheck.Security.DirectDB.UnescapedDBParameter
-			$affected = $wpdb->query( $sql ); // nosemgrep: direct-db-query
+			$affected = $this->db_query_call( 'query', $sql );
 			if ( false === $affected || $wpdb->last_error ) {
 				/* translators: %s: SQL error message */
 				return $this->error_result( sprintf( __( 'SQL error: %s', 'vibe-ai' ), $wpdb->last_error ) ) + array( 'tier' => 'write' );
@@ -554,7 +575,7 @@ trait WPVibe_CLI_Db {
 			global $wpdb;
 			$suppress = $wpdb->suppress_errors( true );
 			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-			$names = $wpdb->get_col( "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE' AND (ENGINE IS NULL OR ENGINE <> 'InnoDB')" ); // nosemgrep: direct-db-query
+			$names = $this->db_query_call( 'get_col', "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE' AND (ENGINE IS NULL OR ENGINE <> 'InnoDB')" ); // nosemgrep: direct-db-query
 			$ok    = '' === (string) $wpdb->last_error && is_array( $names );
 			$wpdb->suppress_errors( $suppress );
 			$wpdb->last_error = '';
@@ -593,7 +614,7 @@ trait WPVibe_CLI_Db {
 		global $wpdb;
 		$suppress = $wpdb->suppress_errors( true );
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		$schemas = $wpdb->get_col( 'SELECT LOWER(SCHEMA_NAME) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME <> DATABASE()' ); // nosemgrep: direct-db-query
+		$schemas = $this->db_query_call( 'get_col', 'SELECT LOWER(SCHEMA_NAME) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME <> DATABASE()' ); // nosemgrep: direct-db-query
 		$failed  = '' !== (string) $wpdb->last_error || ! is_array( $schemas );
 		$wpdb->suppress_errors( $suppress );
 		$wpdb->last_error = '';
@@ -650,10 +671,10 @@ trait WPVibe_CLI_Db {
 			$in       = "'" . implode( "','", array_map( 'esc_sql', $tables ) ) . "'";
 			$suppress = $wpdb->suppress_errors( true );
 			// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-			$innodb = $wpdb->get_var( "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ({$in}) AND ENGINE = 'InnoDB'" ); // nosemgrep: direct-db-query
+			$innodb = $this->db_query_call( 'get_var', "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ({$in}) AND ENGINE = 'InnoDB'" ); // nosemgrep: direct-db-query
 			$ok     = '' === (string) $wpdb->last_error;
 			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-			$indirect = $wpdb->get_var( 'SELECT (SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = DATABASE()) + (SELECT COUNT(*) FROM information_schema.VIEWS WHERE TABLE_SCHEMA = DATABASE()) + (SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = DATABASE())' ); // nosemgrep: direct-db-query
+			$indirect = $this->db_query_call( 'get_var', 'SELECT (SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = DATABASE()) + (SELECT COUNT(*) FROM information_schema.VIEWS WHERE TABLE_SCHEMA = DATABASE()) + (SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = DATABASE())' ); // nosemgrep: direct-db-query
 			$ok     = $ok && '' === (string) $wpdb->last_error && null !== $indirect;
 			$wpdb->suppress_errors( $suppress );
 			$wpdb->last_error                 = '';
@@ -670,7 +691,7 @@ trait WPVibe_CLI_Db {
 	private function code_storage_fingerprint() {
 		global $wpdb;
 		$rows  = array();
-		$posts = $wpdb->get_results( "SELECT * FROM {$wpdb->posts} WHERE post_type IN ('wpcode','elementor_snippet') ORDER BY ID", ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$posts = $this->db_query_call( 'get_results', "SELECT * FROM {$wpdb->posts} WHERE post_type IN ('wpcode','elementor_snippet') ORDER BY ID", ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		if ( $wpdb->last_error || ! is_array( $posts ) ) {
 			return null;
 		}
@@ -682,7 +703,7 @@ trait WPVibe_CLI_Db {
 			"SELECT * FROM {$wpdb->term_relationships} WHERE object_id IN ({$ids}) ORDER BY object_id, term_taxonomy_id",
 			"SELECT tt.*, t.name, t.slug, t.term_group FROM {$wpdb->term_taxonomy} tt JOIN {$wpdb->terms} t ON t.term_id = tt.term_id WHERE tt.taxonomy LIKE 'wpcode%' ORDER BY tt.term_taxonomy_id",
 		) as $query ) {
-			$result = $wpdb->get_results( $query, ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$result = $this->db_query_call( 'get_results', $query, ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 			if ( $wpdb->last_error || ! is_array( $result ) ) {
 				return null;
 			}
@@ -713,11 +734,11 @@ trait WPVibe_CLI_Db {
 			if ( ! $this->db_query_connected() ) {
 				return $this->db_query_connection_lost( false );
 			}
-			$wpdb->query( 'ROLLBACK' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$this->db_query_call( 'query', 'ROLLBACK' );
 			return $result;
 		};
 		// wpdb::query() returns false with no last_error when the connection is gone and not re-made.
-		if ( false === $wpdb->query( 'START TRANSACTION' ) || $wpdb->last_error ) { // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		if ( false === $this->db_query_call( 'query', 'START TRANSACTION' ) || $wpdb->last_error ) {
 			if ( ! $this->db_query_connected() ) {
 				return $this->db_query_connection_lost( false );
 			}
@@ -729,8 +750,7 @@ trait WPVibe_CLI_Db {
 		if ( null === $before ) {
 			return $abort( $this->error_result( $unreadable ) );
 		}
-		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, PluginCheck.Security.DirectDB.UnescapedDBParameter
-		$affected = $wpdb->query( $sql ); // nosemgrep: direct-db-query
+		$affected = $this->db_query_call( 'query', $sql );
 		$error    = $wpdb->last_error;
 		if ( false === $affected || $error ) {
 			/* translators: %s: SQL error message */
@@ -747,7 +767,7 @@ trait WPVibe_CLI_Db {
 		if ( $after !== $before ) {
 			return $abort( $this->error_result( __( 'Not run: this statement changes WPCode or Elementor custom-code snippets (their posts, meta or type/location terms). A session approval never covers code, so the statement was rolled back and nothing changed. Leave those rows out (for example post_type NOT IN (\'wpcode\',\'elementor_snippet\')), or use code_snippet for snippet changes.', 'vibe-ai' ) ) );
 		}
-		$committed = $wpdb->query( 'COMMIT' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$committed = $this->db_query_call( 'query', 'COMMIT' );
 		if ( false === $committed || $wpdb->last_error ) {
 			if ( ! $this->db_query_connected() ) {
 				return $this->db_query_connection_lost( true );

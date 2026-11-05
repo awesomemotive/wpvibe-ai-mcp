@@ -756,6 +756,11 @@ class WPVibe_Draft_Theme {
 				$style   = preg_replace( '/^Theme Name:\s*.+$/m', 'Theme Name: ' . $original_name, $style );
 				$written = $fs->put_contents( $style_path, $style, FS_CHMOD_FILE );
 				if ( ! $written ) {
+					// Moved by rename, the draft folder is live now and a record left pointing at it reads as "that folder is gone" (#871).
+					// Copied, the draft is still there and keeps its record.
+					if ( ! is_dir( $draft_dir ) ) {
+						self::clear_draft_records();
+					}
 					return new WP_Error(
 						'name_restore_failed',
 						sprintf(

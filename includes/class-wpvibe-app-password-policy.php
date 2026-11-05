@@ -77,6 +77,19 @@ class WPVibe_App_Password_Policy {
 		return $error;
 	}
 
+	/** Whether the account holds a password allow_for_user() lets through the site owner's block; the admin card names it when not (#909). */
+	public static function holds_wpvibe_password( $user_id ) {
+		if ( ! $user_id || ! class_exists( 'WP_Application_Passwords' ) ) {
+			return false;
+		}
+		foreach ( (array) WP_Application_Passwords::get_user_application_passwords( (int) $user_id ) as $item ) {
+			if ( self::is_wpvibe_password( $item ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	private static function is_wpvibe_password( $item ) {
 		$app_id = class_exists( 'WPVibe_Authorize_Notice' ) ? WPVibe_Authorize_Notice::APP_ID : '';
 		if ( '' !== $app_id && isset( $item['app_id'] ) && $app_id === (string) $item['app_id'] ) {

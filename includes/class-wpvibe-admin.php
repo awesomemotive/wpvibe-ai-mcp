@@ -301,6 +301,13 @@ class WPVibe_Admin {
 								<?php else : ?>
 								<strong><?php esc_html_e( 'Application Passwords are allowed for WPVibe requests.', 'vibe-ai' ); ?></strong>
 								<p><?php esc_html_e( 'Your security plugin still controls every other request. Turn this off if you no longer use WPVibe on this site.', 'vibe-ai' ); ?></p>
+								<p><?php
+								echo esc_html(
+									WPVibe_App_Password_Policy::holds_wpvibe_password( get_current_user_id() )
+										? __( 'While a security plugin turns Application Passwords off, only a password WPVibe created, approved through the link your AI sends, gets through. Any other password on this account is refused.', 'vibe-ai' )
+										: __( 'While a security plugin turns Application Passwords off, only a password WPVibe created gets through, and this account has none yet. Ask your AI to connect this site (the prompt in Step 3) and approve the link it sends.', 'vibe-ai' )
+								);
+								?></p>
 								<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" class="wpvibe-inline-form">
 									<input type="hidden" name="action" value="wpvibe_app_passwords" />
 									<input type="hidden" name="disable" value="1" />

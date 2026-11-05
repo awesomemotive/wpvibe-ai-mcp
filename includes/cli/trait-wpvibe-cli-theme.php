@@ -502,6 +502,26 @@ trait WPVibe_CLI_Theme {
 	}
 
 
+	/** The registered draft is removed with its record by delete_draft_theme; deleting only the folder strands the record (#871). */
+	private function draft_delete_refusal( $slug ) {
+		$draft = (string) get_option( 'wpvibe_draft_theme', '' );
+		if ( '' === $draft ) {
+			return null;
+		}
+		$named = strtolower( $draft ) === strtolower( rtrim( trim( (string) $slug ), '/\\' ) );
+		// A path spelling (./x, x/., ../themes/x) reaches the same folder through delete_theme().
+		$folder = realpath( rtrim( get_theme_root( $draft ), '/\\' ) . '/' . $draft );
+		if ( ! $named && ( false === $folder || realpath( rtrim( get_theme_root(), '/\\' ) . '/' . trim( (string) $slug ) ) !== $folder ) ) {
+			return null;
+		}
+		return sprintf(
+			/* translators: 1: draft theme folder, 2: theme the draft belongs to */
+			__( '\'%1$s\' is the WPVibe draft of \'%2$s\', so it is not deleted here: deleting the folder alone leaves WPVibe pointing at a draft that no longer exists. Nothing was changed. To discard the draft and its unpublished edits, use delete_draft_theme.', 'vibe-ai' ),
+			$draft,
+			(string) get_option( 'wpvibe_draft_source', '' ) ?: substr( $draft, 0, -13 )
+		);
+	}
+
 	private function handle_theme_delete( $positional, $flags ) {
 		if ( empty( $positional[0] ) ) {
 			return $this->error_result( __( 'Theme slug required. Usage: theme delete <slug> [<slug>...]', 'vibe-ai' ) );
@@ -512,6 +532,11 @@ trait WPVibe_CLI_Theme {
 		$results = array();
 		$ok      = 0;
 		foreach ( $positional as $slug ) {
+			$draft_refusal = $this->draft_delete_refusal( $slug );
+			if ( null !== $draft_refusal ) {
+				$results[] = array( 'target' => $slug, 'status' => 'error', 'error' => $draft_refusal );
+				continue;
+			}
 			$theme = wp_get_theme( $slug );
 			if ( ! $theme->exists() ) {
 				$results[] = array( 'target' => $slug, 'status' => 'error', 'error' => 'not found' );

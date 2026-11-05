@@ -4,7 +4,7 @@ Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.21.6
+Stable tag: 1.21.7
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -223,6 +223,11 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 
 == Changelog ==
 
+= 1.21.7 =
+* Fix: When your AI tries to delete the folder of a WPVibe draft theme, it is now refused and pointed to discarding the draft instead, so WPVibe is never left pointing at a draft that no longer exists. A publish that moved the draft live but could not restore its theme name no longer leaves that stale draft record behind either.
+* Fix: With "Allow for WPVibe" on, the WPVibe page now explains that while a security plugin turns Application Passwords off, only a password WPVibe created gets through. If your account has none yet, it says so and how to connect.
+* Fix: On sites where another plugin turns on strict database error reporting, a database query from your AI with a mistake in it now returns the SQL error instead of WordPress's critical error page, and no longer leaves a read-only transaction or time limit open.
+
 = 1.21.6 =
 * Fix: wp-admin no longer offers Activate or Live Preview on a WPVibe draft theme, which locked every draft change once active. A switch to a draft from anywhere else puts the site straight back on its theme and says how to preview or publish the draft instead.
 * Fix: Asking your AI to search or edit a post that does not exist now says the post does not exist, instead of reporting a missing permission and asking you to reconnect.
@@ -368,11 +373,6 @@ No. WPVibe lets you manage your WordPress site entirely through conversation wit
 * Fix: a db query SELECT whose quoted text contains a write word (for example 'delete' in a value, or REPLACE(name, 'a', 'update')) no longer asks for approval and then refuses to run. A statement that starts with SELECT, SHOW, DESCRIBE or EXPLAIN SELECT is a read and runs as one.
 * Hardening: a db query that calls SLEEP, BENCHMARK, GET_LOCK or RELEASE_LOCK now needs approval, and read queries stop after 30 seconds instead of holding a database connection open.
 * Fix: the db query statement is sent to MySQL exactly as typed. Quote marks inside the statement are quote marks to MySQL and can no longer be turned into extra SQL.
-
-= 1.17.4 =
-* Fix: the site information request no longer fails with a server error on sites where WordPress has not loaded its plugin helpers for REST requests (seen on WordPress 6.4). Approvals on those sites could not complete because WPVibe could not read the plugin version.
-* Fix: when a draft theme has been activated as the live theme, the draft conflict message now says so, names both themes, and explains how to recover, instead of telling you to continue editing a draft that WPVibe will not touch.
-* Improvement: the connection check message for a password gate in front of WordPress (staging protection or HTTP Basic Auth) now tells you to let the WPVibe relay IP address through the gate and links to where that address is listed.
 
 = Older versions =
 WP.org caps the changelog at 5,000 words. For the full release history back to 1.0.0, see https://wpvibe.ai/changelog/
