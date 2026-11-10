@@ -19,6 +19,9 @@ class WPVibe_App_Password_Policy {
 	// from then on every per-user and per-password answer is ours to check (#901).
 	private static $opened = false;
 
+	// The user whose WPVibe password is being checked on this WPVibe request, for WP 2FA's API-login question (#1431).
+	private static $wp2fa_wpvibe_user = 0;
+
 	public static function init() {
 		if ( ! self::enabled() ) {
 			return;
@@ -75,6 +78,23 @@ class WPVibe_App_Password_Policy {
 			$error->add( 'wpvibe_app_password_not_wpvibe', __( 'Application passwords are turned off on this site except for WPVibe, and this is not a WPVibe password.', 'vibe-ai' ) );
 		}
 		return $error;
+	}
+
+	/**
+	 * WP 2FA 4.3.0 refuses Application Password logins for every user with 2FA set up ("API login for user disabled",
+	 * #1431) unless two_factor_user_api_login_enable says yes. Before its check (priority 10) this notes whether the
+	 * password being checked is WPVibe's, on a WPVibe request over HTTPS; allow_wp2fa_api_login() then says yes for
+	 * that user only. Nothing is removed: WP 2FA's lockout, other passwords and other plugins' refusals stand.
+	 */
+	public static function note_wpvibe_password( $error, $user, $item ) {
+		$user_id                  = is_object( $user ) && isset( $user->ID ) ? (int) $user->ID : (int) $user;
+		self::$wp2fa_wpvibe_user = ( is_ssl() && self::wpvibe_request() && is_array( $item ) && self::is_wpvibe_password( $item ) ) ? $user_id : 0;
+	}
+
+	public static function allow_wp2fa_api_login( $enabled, $user_id ) {
+		// Only while that password's check runs: a later login in the same request (XML-RPC multicall) gets no yes.
+		return $enabled || ( self::$wp2fa_wpvibe_user > 0 && (int) $user_id === self::$wp2fa_wpvibe_user
+			&& doing_action( 'wp_authenticate_application_password_errors' ) );
 	}
 
 	/** Whether the account holds a password allow_for_user() lets through the site owner's block; the admin card names it when not (#909). */

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WPVibe – MCP Server for WordPress, works with Claude, ChatGPT & other AI MCP agents
  * Description: Connect any AI assistant to your WordPress site. Manage content, edit themes, and automate site tasks with Claude, ChatGPT, Cursor & more via MCP.
- * Version: 1.21.7
+ * Version: 1.22.0
  * Author: SeedProd
  * Author URI: https://wpvibe.ai
  * License: GPL-2.0-or-later
@@ -14,7 +14,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WPVIBE_VERSION', '1.21.7' );
+define( 'WPVIBE_VERSION', '1.22.0' );
 define( 'WPVIBE_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'WPVIBE_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 define( 'WPVIBE_PLUGIN_BASENAME', plugin_basename( __FILE__ ) );
@@ -31,6 +31,7 @@ require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-detached-ops.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-white-label.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-rest.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-elementor.php';
+require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-elementor-validator.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-beaver.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-breakdance.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-bricks.php';
@@ -60,6 +61,7 @@ require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-approval-bypass.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-abilities.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-connection-status.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-connection-check.php';
+require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-diagnostics.php';
 WPVibe_Connection_Check::register();
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-php-guard.php';
 require_once WPVIBE_PLUGIN_DIR . 'includes/class-wpvibe-builder-login.php';
@@ -127,6 +129,12 @@ function wpvibe_check_php_syntax( $source, $label = '' ) {
 // credential; see the class for why this cannot weaken anything.
 WPVibe_Auth_Fallback::apply();
 
+// Keeps the last PHP fatals, with whose code was running, from as early as the plugin loads (#1337).
+WPVibe_Diagnostics::register();
+
+// Elementor reads its MCP switch on init; WPVibe's abilities routes need its abilities registered (#1341).
+WPVibe_Elementor::serve_mcp_abilities();
+
 // Names why core refused an app password (never stored vs. mismatch) in the 401 the Worker reads.
 WPVibe_Auth_Diagnostics::register();
 
@@ -136,6 +144,10 @@ WPVibe_Authorize_Notice::register();
 // Registered at file scope so it precedes the first determine_current_user run.
 add_filter( 'application_password_is_api_request', array( 'WPVibe_REST', 'application_password_is_api_request' ) );
 add_filter( 'application_password_is_api_request', array( 'WPVibe_Error_Contract', 'record_api_request' ), PHP_INT_MAX );
+
+// File scope: WP 2FA calls current_user_can() on plugins_loaded, which authenticates the request (#1431).
+add_action( 'wp_authenticate_application_password_errors', array( 'WPVibe_App_Password_Policy', 'note_wpvibe_password' ), 5, 3 );
+add_filter( 'two_factor_user_api_login_enable', array( 'WPVibe_App_Password_Policy', 'allow_wp2fa_api_login' ), 10, 2 );
 
 // File scope: SeedProd Pro reads this on plugins_loaded, ahead of wpvibe_init.
 add_filter( 'seedprod_allow_theme_display', array( 'WPVibe_Preview', 'allow_seedprod_theme' ) );

@@ -29,9 +29,9 @@ class WPVibe_Op_Proof_V2 {
 		if ( ! isset( static::PUBLIC_KEYS[ $m[1] ] ) ) {
 			return self::error( 'unknown_key', __( 'The signing key is not recognized. Update WPVibe and check the connection again.', 'vibe-ai' ) );
 		}
-		// Connection observations authenticate with the Worker signature itself. All executable
-		// routes also bind the signature to the application password WP authenticated.
-		if ( '/wpvibe/v1/connection-status' === $route ) {
+		// Connection observations and the read-only diagnostics report authenticate with the Worker signature itself.
+		// All executable routes also bind the signature to the application password WP authenticated.
+		if ( in_array( $route, array( '/wpvibe/v1/connection-status', '/wpvibe/v1/diagnostics' ), true ) ) {
 			$credential = '-';
 		} else {
 			$password = preg_replace( '/[^a-z0-9]/i', '', (string) ( $_SERVER['PHP_AUTH_PW'] ?? '' ) );

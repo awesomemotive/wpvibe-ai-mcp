@@ -35,6 +35,36 @@ class WPVibe_Elementor {
 		add_action( 'rest_api_init', array( $this, 'register_routes' ) );
 	}
 
+	/**
+	 * Elementor 4.3 registers its abilities only while its MCP switch is on (elementor_mcp_enabled, off by default; it also
+	 * opens Elementor's own MCP connector to other agents). A request to WPVibe's abilities routes reads the switch as on, so
+	 * Elementor registers them through its own code (schemas, annotations, its V4 gate and guards) for that request alone;
+	 * every other request, Elementor's connector included, keeps the site owner's setting (#1341). Called at file load,
+	 * since Elementor reads the switch on init. The route is the one WordPress will serve: POST, then query string, then path.
+	 */
+	public static function serve_mcp_abilities() {
+		// Only the front controller serves REST: wp-admin, AJAX, cron, XML-RPC and WP-CLI keep the setting whatever their URL says.
+		if ( is_admin() || wp_doing_ajax() || wp_doing_cron() || defined( 'XMLRPC_REQUEST' ) || defined( 'WP_CLI' ) ) {
+			return;
+		}
+		if ( isset( $_POST['rest_route'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification
+			$route = $_POST['rest_route']; // phpcs:ignore WordPress.Security.NonceVerification, WordPress.Security.ValidatedSanitizedInput
+		} elseif ( isset( $_GET['rest_route'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification
+			$route = $_GET['rest_route']; // phpcs:ignore WordPress.Security.NonceVerification, WordPress.Security.ValidatedSanitizedInput
+		} else {
+			$path  = (string) wp_parse_url( (string) ( $_SERVER['REQUEST_URI'] ?? '' ), PHP_URL_PATH ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+			$home  = rtrim( (string) wp_parse_url( home_url(), PHP_URL_PATH ), '/' );
+			$route = preg_match( '#^' . preg_quote( $home . '/', '#' ) . '(?:index\.php/)?' . preg_quote( rest_get_url_prefix(), '#' ) . '(/.*)$#', $path, $m ) ? $m[1] : '';
+		}
+		if ( is_string( $route ) && preg_match( '#^/wpvibe/v1/abilities(?:/|$)#', $route ) ) {
+			add_filter( 'pre_option_elementor_mcp_enabled', array( __CLASS__, 'mcp_switch_on' ) );
+		}
+	}
+
+	public static function mcp_switch_on() {
+		return '1';
+	}
+
 	public function register_routes() {
 		$ns = 'wpvibe/v1';
 
@@ -78,6 +108,7 @@ class WPVibe_Elementor {
 				'template_type' => array( 'type' => 'string',  'required' => false, 'sanitize_callback' => 'sanitize_key' ),
 				'page_template' => array( 'type' => 'string',  'required' => false, 'sanitize_callback' => 'sanitize_text_field' ),
 				'data'          => array( 'type' => 'array',   'required' => true ),
+				'dry_run'       => array( 'type' => 'boolean', 'default'  => false ),
 			),
 		) );
 
@@ -312,6 +343,16 @@ class WPVibe_Elementor {
 			);
 			return null;
 		}
+	}
+
+	private static function invalid_elements( array $errors ) {
+		$lines = array();
+		foreach ( array_slice( $errors, 0, 5 ) as $error ) {
+			$lines[] = $error['path'] . ( null !== $error['id'] ? ' (id ' . $error['id'] . ')' : '' ) . ': ' . $error['message'];
+		}
+		/* translators: 1: number of problems, 2: the first few, one per line */
+		$message = sprintf( __( 'Nothing was saved: %1$d problem(s) in data. Fix them and send the whole call again (dry_run: true checks without saving).%2$s', 'vibe-ai' ), count( $errors ), "\n- " . implode( "\n- ", $lines ) );
+		return new WP_Error( 'invalid_elements', $message, WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400, 'errors' => $errors ) ) );
 	}
 
 	private function elementor_check() {
@@ -618,6 +659,15 @@ class WPVibe_Elementor {
 		$code_post = WPVibe_Code_Snippet::code_post_write_error( $post_type, (int) $id );
 		if ( $code_post ) {
 			return $code_post;
+		}
+
+		// Checked before anything is written: a bad tree used to surface as a fatal after the post existed.
+		$invalid = WPVibe_Elementor_Validator::validate( $data, $template_type ?: ( $id ? (string) get_post_meta( $id, '_elementor_template_type', true ) : '' ) );
+		if ( $invalid ) {
+			return self::invalid_elements( $invalid );
+		}
+		if ( $request->get_param( 'dry_run' ) ) {
+			return rest_ensure_response( array( 'dry_run' => true, 'valid' => true, 'errors' => array(), 'message' => __( 'The elements are valid. Nothing was saved. Only the elements were checked: the post, its permissions and a new page\'s title are checked when you send the call without dry_run.', 'vibe-ai' ) ) );
 		}
 
 		$warnings = array();

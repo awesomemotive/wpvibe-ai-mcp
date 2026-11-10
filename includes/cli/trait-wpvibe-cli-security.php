@@ -961,6 +961,10 @@ trait WPVibe_CLI_Security {
 					? array( 'target' => $t, 'scheduled_instances' => $instances, 'next_run' => $next )
 					: array( 'target' => $t, 'note' => __( 'no scheduled events for this hook', 'vibe-ai' ) );
 			case 'theme':
+				$slug_refusal = $this->theme_slug_refusal( $t );
+				if ( null !== $slug_refusal ) {
+					return array( 'target' => $t, 'note' => $slug_refusal );
+				}
 				$theme = wp_get_theme( $t );
 				if ( ! $theme->exists() ) {
 					return array( 'target' => $t, 'note' => __( 'not found', 'vibe-ai' ) );

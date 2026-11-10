@@ -336,6 +336,25 @@ class WPVibe_Draft_Theme {
 		return $slug;
 	}
 
+	/**
+	 * The value of a draft record no draft operation accepts (hand-edited to 'none', #1365) when clearing it cannot lose
+	 * files: it names nothing in the themes folder and neither live theme. Null otherwise.
+	 */
+	private static function invalid_record() {
+		$draft = get_option( 'wpvibe_draft_theme' );
+		if ( ! is_scalar( $draft ) ) {
+			return null;
+		}
+		$draft = (string) $draft;
+		// Any other spelling (a slash, '..') could still reach a real folder, so it stays a conflict.
+		if ( ! WPVibe_Draft_Lock::valid_slug( $draft ) || $draft === get_option( 'stylesheet' ) || $draft === get_option( 'template' ) ) {
+			return null;
+		}
+		$path = get_theme_root() . '/' . $draft;
+		clearstatcache( true, $path );
+		return file_exists( $path ) || is_link( $path ) ? null : $draft;
+	}
+
 	/** '<source>-wpvibe-draft' when only the source record survives and a real directory sits at that path; '' otherwise. */
 	private static function untracked_dir() {
 		$source = get_option( 'wpvibe_draft_source' );
@@ -1208,7 +1227,20 @@ class WPVibe_Draft_Theme {
 
 	private function delete_locked() {
 		if ( get_option( 'wpvibe_draft_theme' ) && ! WPVibe_Draft_Lock::valid_draft() ) {
-			return WPVibe_Draft_Lock::conflict();
+			$invalid = self::invalid_record();
+			if ( null === $invalid || ! self::clear_draft_records() ) {
+				return WPVibe_Draft_Lock::conflict();
+			}
+			self::record_draft_event( 'stale_cleared' );
+			return rest_ensure_response( array(
+				'status'                 => 'deleted',
+				'invalid_record_cleared' => $invalid,
+				'message'                => sprintf(
+					/* translators: %s: the value the draft record held */
+					__( 'Cleared WPVibe\'s draft record (\'%s\'), which every draft action refused because it does not describe a usable draft. Nothing exists at that path, so no files were deleted. create_draft_theme can start a new draft now.', 'vibe-ai' ),
+					$invalid
+				),
+			) );
 		}
 		$draft_slug = get_option( 'wpvibe_draft_theme' );
 		if ( ! $draft_slug ) {

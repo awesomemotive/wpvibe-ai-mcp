@@ -441,10 +441,12 @@ class WPVibe_REST {
 				'field'       => array( 'type' => 'string', 'required' => false, 'sanitize_callback' => 'sanitize_key' ),
 				'meta_key'    => array( 'type' => 'string', 'required' => false, 'sanitize_callback' => 'sanitize_text_field' ),
 				'option_name' => array( 'type' => 'string', 'required' => false, 'sanitize_callback' => 'sanitize_text_field' ),
-				'old_content' => array( 'type' => 'string', 'required' => true, 'sanitize_callback' => array( 'WPVibe_REST', 'sanitize_file_content' ) ),
-				'new_content' => array( 'type' => 'string', 'required' => true, 'sanitize_callback' => array( 'WPVibe_REST', 'sanitize_file_content' ) ),
+				// Either old_content/new_content, or an `edits` list of them (checked in edit_content).
+				'old_content' => array( 'type' => 'string', 'required' => false, 'sanitize_callback' => array( 'WPVibe_REST', 'sanitize_file_content' ) ),
+				'new_content' => array( 'type' => 'string', 'required' => false, 'sanitize_callback' => array( 'WPVibe_REST', 'sanitize_file_content' ) ),
 				'replace_all' => array( 'type' => 'boolean', 'required' => false, 'default' => false ),
 				'whole_word'  => array( 'type' => 'boolean', 'required' => false, 'default' => false ),
+				'edits'       => array( 'type' => 'array', 'required' => false ),
 			),
 		) );
 
@@ -1278,7 +1280,7 @@ class WPVibe_REST {
 	 * MCP to compare WPVIBE_VERSION strings — flags are forward-compatible.
 	 */
 	public static function feature_flags() {
-		return array( 'content_edit', 'content_search', 'code_snippet', 'code_snippet_dormant', 'beaver_save', 'breakdance_save', 'bricks_save', 'armor', 'authorize_mint', 'op_proof', 'op_proof_v2', 'detached_ops', 'connection_readiness', 'connection_status', 'svg_sanitize', 'content_read_range' );
+		return array( 'content_edit', 'content_search', 'code_snippet', 'code_snippet_dormant', 'beaver_save', 'breakdance_save', 'bricks_save', 'armor', 'authorize_mint', 'op_proof', 'op_proof_v2', 'detached_ops', 'connection_readiness', 'connection_status', 'svg_sanitize', 'content_read_range', 'content_edit_batch' );
 	}
 
 	public function get_site_info() {
@@ -1372,16 +1374,89 @@ class WPVibe_REST {
 		}
 	}
 
+	/** content/edit's `edits` list: at most this many, and this many bytes of old_content plus new_content in all. */
+	const CONTENT_EDIT_BATCH_MAX       = 50;
+	const CONTENT_EDIT_BATCH_MAX_BYTES = 2097152;
+
+	/** The `edits` list as {old_content, new_content, replace_all, whole_word} rows, or a 400 naming what is wrong. */
+	private static function content_edits( $edits ) {
+		$invalid = static function ( $message, $index = null ) {
+			return new WP_Error( 'invalid_edits', $message, WPVibe_Error_Contract::data( 'invalid_input', false, array_merge( array( 'status' => 400 ), null === $index ? array() : array( 'edit_index' => $index ) ) ) );
+		};
+		// The single form's flags are typed booleans the REST server checks; inside the list, check them here the same way.
+		$flag = static function ( $value ) {
+			if ( null === $value || is_bool( $value ) ) {
+				return (bool) $value;
+			}
+			$map = array( '1' => true, 'true' => true, '0' => false, 'false' => false, '' => false );
+			$key = is_int( $value ) ? (string) $value : ( is_string( $value ) ? strtolower( $value ) : null );
+			return null !== $key && array_key_exists( $key, $map ) ? $map[ $key ] : null;
+		};
+		if ( ! is_array( $edits ) || array() === $edits ) {
+			return $invalid( __( 'edits must be a non-empty list of {old_content, new_content} objects.', 'vibe-ai' ) );
+		}
+		if ( count( $edits ) > self::CONTENT_EDIT_BATCH_MAX ) {
+			/* translators: %d: maximum number of edits */
+			return $invalid( sprintf( __( 'edits holds at most %d edits; split the change into several calls.', 'vibe-ai' ), self::CONTENT_EDIT_BATCH_MAX ) );
+		}
+		$rows  = array();
+		$bytes = 0;
+		foreach ( array_values( $edits ) as $i => $e ) {
+			if ( ! is_array( $e ) || ! isset( $e['old_content'], $e['new_content'] ) || ! is_string( $e['old_content'] ) || ! is_string( $e['new_content'] ) ) {
+				/* translators: %d: 0-based index */
+				return $invalid( sprintf( __( 'edits[%d] needs old_content and new_content, both strings.', 'vibe-ai' ), $i ), $i );
+			}
+			$replace_all = $flag( $e['replace_all'] ?? null );
+			$whole_word  = $flag( $e['whole_word'] ?? null );
+			if ( null === $replace_all || null === $whole_word ) {
+				/* translators: %d: 0-based index */
+				return $invalid( sprintf( __( 'edits[%d]: replace_all and whole_word must be true or false.', 'vibe-ai' ), $i ), $i );
+			}
+			$bytes += strlen( $e['old_content'] ) + strlen( $e['new_content'] );
+			$rows[] = array(
+				'old_content' => $e['old_content'],
+				'new_content' => $e['new_content'],
+				'replace_all' => $replace_all,
+				'whole_word'  => $whole_word,
+			);
+		}
+		if ( $bytes > self::CONTENT_EDIT_BATCH_MAX_BYTES ) {
+			/* translators: %d: maximum size in bytes */
+			return $invalid( sprintf( __( 'edits carries more than %d bytes of old_content and new_content in all; split the change into several calls.', 'vibe-ai' ), self::CONTENT_EDIT_BATCH_MAX_BYTES ) );
+		}
+		return $rows;
+	}
+
 	public function edit_content( $request ) {
 		list( $type, $args ) = $this->content_target( $request );
+		$edits = $request->get_param( 'edits' );
+		$old   = $request->get_param( 'old_content' );
+		$new   = $request->get_param( 'new_content' );
+		if ( null !== $edits ) {
+			if ( null !== $old || null !== $new ) {
+				return new WP_Error( 'invalid_edits', __( 'Send either an edits list or old_content/new_content, not both.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
+			}
+			$edits = self::content_edits( $edits );
+			if ( is_wp_error( $edits ) ) {
+				return $edits;
+			}
+		} elseif ( null === $old || null === $new ) {
+			// What the route's `required` answered before the edits form existed.
+			$missing = array_keys( array_filter( array( 'old_content' => null === $old, 'new_content' => null === $new ) ) );
+			/* translators: %s: list of missing parameters (WordPress core's string) */
+			return new WP_Error( 'rest_missing_callback_param', sprintf( __( 'Missing parameter(s): %s' ), implode( ', ', $missing ) ), array( 'status' => 400, 'params' => $missing ) );
+		}
 		add_filter( 'wp_php_error_message', array( __CLASS__, 'edit_fatal_message' ), 10, 2 );
 		try {
 			$content_ops = new WPVibe_Content_Ops();
+			if ( null !== $edits ) {
+				return $content_ops->edit_batch( $type, $args, $edits );
+			}
 			return $content_ops->edit(
 				$type,
 				$args,
-				$request->get_param( 'old_content' ),
-				$request->get_param( 'new_content' ),
+				$old,
+				$new,
 				(bool) $request->get_param( 'replace_all' ),
 				(bool) $request->get_param( 'whole_word' )
 			);

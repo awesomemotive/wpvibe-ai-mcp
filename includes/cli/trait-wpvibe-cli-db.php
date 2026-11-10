@@ -22,6 +22,18 @@ trait WPVibe_CLI_Db {
 	private $sr_session = false;
 	/** Whether a session run left out a code-snippet row the search text was in. */
 	private $sr_snippets_skipped = false;
+	/** Tables a session run left out because they hold code or keys (session_code_table). */
+	private $sr_code_tables_skipped = array();
+	/** Whether a session run left out a change to a post's type or a term's taxonomy. */
+	private $sr_type_changes_skipped = false;
+
+	/**
+	 * Whether $name is a table no session approval may write: code that runs on the site (Code Snippets, HFCM, Wow
+	 * Coder), a WPVibe table, or WooCommerce API keys. One list for remembered SQL and session search-replace (#1305).
+	 */
+	private static function session_code_table( $name ) {
+		return (bool) preg_match( '/snippets$|hfcm_scripts$|wow_coder|wpvibe_|woocommerce_api_keys$/i', (string) $name );
+	}
 
 
 
@@ -538,7 +550,7 @@ trait WPVibe_CLI_Db {
 		foreach ( array( true, false ) as $backslash ) {
 			$tokens = $this->sql_identifier_tokens( $sql, $backslash );
 			foreach ( $this->sql_write_target_zone( $tokens ) as $token ) {
-				if ( 'p' !== $token[0] && preg_match( '/snippets$|hfcm_scripts$|wow_coder|wpvibe_|woocommerce_api_keys$/i', $token[1] ) ) {
+				if ( 'p' !== $token[0] && self::session_code_table( $token[1] ) ) {
 					return false;
 				}
 			}
@@ -1256,6 +1268,20 @@ trait WPVibe_CLI_Db {
 		$named                     = isset( $state['operation'] ) && 'search_replace:' . $old . '=>' . $new === (string) $state['operation'];
 		$this->sr_session          = ! $dry_run && ( ! $named || ! empty( $state['grant'] ) );
 		$this->sr_snippets_skipped = false;
+		// The tables remembered SQL refuses stay out of a session run too: Code Snippets runs PHP from its table (#1305).
+		$this->sr_code_tables_skipped  = array();
+		$this->sr_type_changes_skipped = false;
+		if ( $this->sr_session ) {
+			$this->sr_code_tables_skipped = array_values( array_filter( $tables, array( __CLASS__, 'session_code_table' ) ) );
+			$tables                       = array_values( array_diff( $tables, $this->sr_code_tables_skipped ) );
+			if ( empty( $tables ) ) {
+				return $this->error_result( sprintf(
+					/* translators: %s: table names */
+					__( 'Refused: %s hold code that runs on the site, WPVibe\'s own records or API keys, and only an approval that showed this exact search-replace covers them. Nothing was changed.', 'vibe-ai' ),
+					implode( ', ', $this->sr_code_tables_skipped )
+				) );
+			}
+		}
 		$report    = array();
 		$total     = 0;
 		$completed = array();
@@ -1338,8 +1364,19 @@ trait WPVibe_CLI_Db {
 		if ( ! empty( $this->sr_protected_tables ) ) {
 			$data['protected_tables_skipped'] = $this->sr_protected_tables;
 		}
+		// Named only when they hold the search text: every site has a WPVibe table, and a plain URL swap needs no note.
+		$code_tables_held = array_values( array_filter( $this->sr_code_tables_skipped, function ( $t ) use ( $old ) {
+			return $this->search_replace_table_holds( $t, $old );
+		} ) );
+		if ( $code_tables_held ) {
+			$data['code_tables_skipped'] = $code_tables_held;
+			$data['code_tables_note']    = __( 'These tables hold code that runs on the site, WPVibe\'s own records or API keys, and were left out, because only an approval that showed this exact search-replace covers them.', 'vibe-ai' );
+		}
 		if ( $this->sr_snippets_skipped ) {
 			$data['snippet_note'] = __( 'Code-snippet rows (WPCode and Elementor custom code: their posts, post meta and WPCode terms, and any row the change would have made one) that contain the search text were left out, because only an approval that showed this exact search-replace covers code. If they need the change, edit them with code_snippet.', 'vibe-ai' );
+		}
+		if ( $this->sr_type_changes_skipped ) {
+			$data['type_change_note'] = __( 'Changes to a post\'s type or a term\'s taxonomy were left out: a session approval never makes them, since one could turn a row into a code snippet. If the change is wanted, approve this search-replace on its own, or change the post with `post update`.', 'vibe-ai' );
 		}
 		if ( $guid_skipped ) {
 			$data['guid_note'] = __( 'The guid column was skipped (WordPress best practice). Pass --include-guids to replace inside GUIDs too.', 'vibe-ai' );
@@ -1526,18 +1563,16 @@ trait WPVibe_CLI_Db {
 		return ' AND `term_id` NOT IN (SELECT `term_id` FROM ' . $this->esc_sql_ident( $prefix . 'term_taxonomy' ) . " WHERE `taxonomy` LIKE 'wpcode%')";
 	}
 
-	/** Whether, in a session run, rewriting $col to $replaced would turn a post or a term into a code snippet. */
+	/** Whether, in a session run, rewriting $col could turn a post or a term into a code snippet: any change to a post's type or a term's taxonomy. */
 	private function search_replace_makes_snippet( $table, $col, $replaced ) {
 		$snippet = $this->sr_session && is_string( $replaced ) ? $this->search_replace_snippet_table( $table ) : null;
 		if ( null === $snippet ) {
 			return false;
 		}
-		// MySQL compares these columns case-insensitively and ignoring trailing spaces, so WPCode would still find the row.
-		$value = strtolower( rtrim( $replaced, ' ' ) );
-		if ( 'posts' === $snippet[0] && 'post_type' === strtolower( $col ) ) {
-			return in_array( $value, array( 'wpcode', 'elementor_snippet' ), true );
-		}
-		return 'term_taxonomy' === $snippet[0] && 'taxonomy' === strtolower( $col ) && 0 === strpos( $value, 'wpcode' );
+		// A session run never changes a post's type or a term's taxonomy at all: those columns' collations also fold
+		// accents, so no PHP comparison can tell which new value WPCode or Elementor would find as theirs (#1305).
+		return ( 'posts' === $snippet[0] && 'post_type' === strtolower( $col ) )
+			|| ( 'term_taxonomy' === $snippet[0] && 'taxonomy' === strtolower( $col ) );
 	}
 
 	/** Whether the snippet guard left out a row of $table holding the search text in a column the run searched. */
@@ -1554,6 +1589,22 @@ trait WPVibe_CLI_Db {
 		}
 		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		return (bool) $wpdb->get_var( 'SELECT 1 FROM ' . $this->esc_sql_ident( $table ) . ' WHERE ( ' . implode( ' OR ', $matches ) . ' ) AND NOT (1' . $guard . ') LIMIT 1' ); // nosemgrep: direct-db-query
+	}
+
+	/** Whether any text column of $table holds $old, literally or JSON-escaped. */
+	private function search_replace_table_holds( $table, $old ) {
+		global $wpdb;
+		list( , $columns ) = $this->table_columns( $table );
+		if ( empty( $columns ) ) {
+			return false;
+		}
+		$old_json = $this->json_encode_strip_quotes( $old );
+		$matches  = array();
+		foreach ( $columns as $col ) {
+			$matches[] = $this->search_replace_match( $this->esc_sql_ident( $col ), $old, $old_json );
+		}
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		return (bool) $wpdb->get_var( 'SELECT 1 FROM ' . $this->esc_sql_ident( $table ) . ' WHERE ( ' . implode( ' OR ', $matches ) . ' ) LIMIT 1' ); // nosemgrep: direct-db-query
 	}
 
 	/** The row match for $old in one column: the literal, or its JSON-escaped form. */
@@ -1669,7 +1720,7 @@ trait WPVibe_CLI_Db {
 					continue;
 				}
 				if ( $this->search_replace_makes_snippet( $table, $col, $replaced ) ) {
-					$this->sr_snippets_skipped = true;
+					$this->sr_type_changes_skipped = true;
 					continue;
 				}
 				if ( $dry_run ) {

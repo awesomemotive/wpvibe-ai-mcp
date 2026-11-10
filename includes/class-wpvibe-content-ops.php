@@ -316,6 +316,24 @@ class WPVibe_Content_Ops {
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public function edit( $type, $args, $old_content, $new_content, $replace_all = false, $whole_word = false ) {
+		return $this->edit_many( $type, $args, array( array( 'old_content' => $old_content, 'new_content' => $new_content, 'replace_all' => $replace_all, 'whole_word' => $whole_word ) ), false );
+	}
+
+	/**
+	 * Several edits to one target (issue #1397): applied in order to the value in
+	 * memory, each with edit()'s rules and against the result of the one before,
+	 * all or nothing, then one save (one revision for a post).
+	 *
+	 * @param string $type  post | meta | option
+	 * @param array  $args  Same shape as edit().
+	 * @param array  $edits List of {old_content, new_content, replace_all?, whole_word?}.
+	 * @return WP_REST_Response|WP_Error
+	 */
+	public function edit_batch( $type, $args, $edits ) {
+		return $this->edit_many( $type, $args, $edits, true );
+	}
+
+	private function edit_many( $type, $args, $edits, $batch ) {
 		$args    = self::resolve_field_alias( $type, $args );
 		$current = $this->load( $type, $args );
 		if ( is_wp_error( $current ) ) {
@@ -329,39 +347,18 @@ class WPVibe_Content_Ops {
 			return new WP_Error( 'serialized_value', __( 'This value is PHP-serialized; a text replace would corrupt it. A wp-cli `option` write also refuses serialized input, and a raw `post meta update` would double-serialize it, so neither is a safe fallback. If this is page-builder layout data (Beaver Builder, Bricks, Breakdance), load that builder\'s skill and use its WPVibe save endpoint, which round-trips serialization safely. Otherwise write it through the owning plugin\'s own settings UI or REST route, which serializes correctly.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 422 ) ) );
 		}
 
-		$replaced = 0;
-		$updated  = $this->compute_replacement( $current, $old_content, $new_content, (bool) $replace_all, (bool) $whole_word, $replaced );
-
-		// Text inside a JSON value or block-comment attributes must be escaped
-		// for that context. When the raw edit misses or would corrupt the value,
-		// retry once with the escaped form; the same corruption check decides.
-		$context     = $this->escape_context( $type, $args, $current );
-		$escaped_for = null;
-		if ( is_wp_error( $updated ) ) {
-			if ( null !== $context && 'no_match' === $updated->get_error_code() ) {
-				$retry = $this->escaped_retry( $context, $type, $args, $current, $old_content, $new_content, (bool) $replace_all, (bool) $whole_word, true );
-				if ( null !== $retry ) {
-					list( $updated, $replaced ) = $retry;
-					$escaped_for = $context;
-				}
+		$updated = $current;
+		$applied = array();
+		foreach ( array_values( $edits ) as $i => $e ) {
+			$step = $this->apply_edit( $type, $args, $updated, $e['old_content'], $e['new_content'], ! empty( $e['replace_all'] ), ! empty( $e['whole_word'] ) );
+			if ( is_wp_error( $step ) ) {
+				return $batch ? self::name_edit_error( $step, $i, count( $edits ) ) : $step;
 			}
+			$updated   = $step['value'];
+			$applied[] = $step;
 		}
-		if ( is_wp_error( $updated ) ) {
-			if ( is_string( $current ) && in_array( $updated->get_error_code(), array( 'no_match', 'multiple_matches' ), true ) ) {
-				$this->augment_match_error( $updated, $current, $old_content );
-			}
-			return $updated;
-		}
-
-		$corrupted = $this->corruption_error( $type, $args, $current, $updated );
-		if ( null !== $corrupted ) {
-			$retry = null === $context || null !== $escaped_for ? null : $this->escaped_retry( $context, $type, $args, $current, $old_content, $new_content, (bool) $replace_all, (bool) $whole_word, false );
-			if ( null === $retry ) {
-				return $corrupted;
-			}
-			list( $updated, $replaced ) = $retry;
-			$escaped_for = $context;
-		}
+		$replaced    = array_sum( array_column( $applied, 'replaced' ) );
+		$escaped_for = $batch ? null : $applied[0]['escaped_for'];
 
 		$stored = $this->store( $type, $args, $updated );
 		if ( is_wp_error( $stored ) ) {
@@ -407,7 +404,27 @@ class WPVibe_Content_Ops {
 			'replaced' => $replaced,
 			'bytes'    => $stored_len,
 		);
-		if ( 'whitespace' === $this->last_match_mode ) {
+		if ( $batch ) {
+			$response['edits'] = array_map( static function ( $a ) {
+				return array_filter( array(
+					'replaced'    => $a['replaced'],
+					'match_mode'  => $a['whitespace'] ? 'whitespace_lenient' : null,
+					'escaped_for' => $a['escaped_for'],
+				), static function ( $v ) { return null !== $v; } );
+			}, $applied );
+			$notes = array();
+			if ( in_array( true, array_column( $applied, 'whitespace' ), true ) ) {
+				$notes[] = __( 'Some edits matched only after allowing whitespace differences (match_mode in edits); verify the result reads as intended.', 'vibe-ai' );
+			}
+			if ( array_filter( array_column( $applied, 'escaped_for' ) ) ) {
+				$notes[] = __( 'Some edits sat inside a JSON value or block-comment attributes and were escaped for it (escaped_for in edits); the stored value still parses.', 'vibe-ai' );
+			}
+			$response['message'] = trim( sprintf(
+				/* translators: %d: number of edits */
+				_n( 'Content updated successfully: %d edit in one save.', 'Content updated successfully: %d edits in one save.', count( $applied ), 'vibe-ai' ),
+				count( $applied )
+			) . ' ' . implode( ' ', $notes ) );
+		} elseif ( $applied[0]['whitespace'] ) {
 			$response['match_mode'] = 'whitespace_lenient';
 			$response['message']   .= ' ' . __( 'old_content matched only after allowing whitespace differences; verify the result reads as intended.', 'vibe-ai' );
 		}
@@ -426,6 +443,66 @@ class WPVibe_Content_Ops {
 			$response['message']         = __( 'Content updated, but the site modified the saved value (a filter such as kses or a security plugin altered it). Your copy of this value is now stale; re-read it with content/search before making further edits.', 'vibe-ai' );
 		}
 		return rest_ensure_response( $response );
+	}
+
+	/** A batch edit's error keeps its code and data, and says which edit failed and that nothing was saved. */
+	private static function name_edit_error( $error, $index, $total ) {
+		$data = $error->get_error_data();
+		$data = is_array( $data ) ? $data : array();
+		$data['edit_index'] = $index;
+		return new WP_Error( $error->get_error_code(), sprintf(
+			/* translators: 1: 1-based edit number 2: number of edits 3: 0-based index 4: the edit's own error message */
+			__( 'Edit %1$d of %2$d (edits[%3$d]) failed, so nothing was saved: %4$s', 'vibe-ai' ),
+			$index + 1,
+			$total,
+			$index,
+			$error->get_error_message()
+		), $data );
+	}
+
+	/**
+	 * One edit against $current, with no save: the match rules, the escaped retry
+	 * for JSON and block attributes, and the corruption check.
+	 *
+	 * @return array|WP_Error {value, replaced, escaped_for, whitespace}
+	 */
+	private function apply_edit( $type, $args, $current, $old_content, $new_content, $replace_all, $whole_word ) {
+		$this->last_match_mode = null;
+		$replaced = 0;
+		$updated  = $this->compute_replacement( $current, $old_content, $new_content, (bool) $replace_all, (bool) $whole_word, $replaced );
+
+		// Text inside a JSON value or block-comment attributes must be escaped
+		// for that context. When the raw edit misses or would corrupt the value,
+		// retry once with the escaped form; the same corruption check decides.
+		$context     = $this->escape_context( $type, $args, $current );
+		$escaped_for = null;
+		if ( is_wp_error( $updated ) ) {
+			if ( null !== $context && 'no_match' === $updated->get_error_code() ) {
+				$retry = $this->escaped_retry( $context, $type, $args, $current, $old_content, $new_content, (bool) $replace_all, (bool) $whole_word, true );
+				if ( null !== $retry ) {
+					list( $updated, $replaced ) = $retry;
+					$escaped_for = $context;
+				}
+			}
+		}
+		if ( is_wp_error( $updated ) ) {
+			if ( is_string( $current ) && in_array( $updated->get_error_code(), array( 'no_match', 'multiple_matches' ), true ) ) {
+				$this->augment_match_error( $updated, $current, $old_content );
+			}
+			return $updated;
+		}
+
+		$corrupted = $this->corruption_error( $type, $args, $current, $updated );
+		if ( null !== $corrupted ) {
+			$retry = null === $context || null !== $escaped_for ? null : $this->escaped_retry( $context, $type, $args, $current, $old_content, $new_content, (bool) $replace_all, (bool) $whole_word, false );
+			if ( null === $retry ) {
+				return $corrupted;
+			}
+			list( $updated, $replaced ) = $retry;
+			$escaped_for = $context;
+		}
+
+		return array( 'value' => $updated, 'replaced' => $replaced, 'escaped_for' => $escaped_for, 'whitespace' => 'whitespace' === $this->last_match_mode );
 	}
 
 	/**

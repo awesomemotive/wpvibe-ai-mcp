@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.22.0] - 2026-11-10
+
+- Feature: Your AI can now make several changes to one post, setting or field in a single edit, saved together as one revision. If any change does not match, nothing is saved and your AI is told which one failed.
+- Feature: Elementor's own AI abilities (Elementor 4.3 and later) now work through WPVibe even when Elementor's MCP setting is off. The setting stays as you left it for everything else, including Elementor's own MCP connection.
+- Feature: Before saving an Elementor page, WPVibe now checks every element with Elementor's own rules: unique ids, widgets that are installed and active, and Elementor 4 settings in the right shape. A page with problems is not saved, and your AI is told which element to fix. Your AI can also check a page without saving it.
+- Feature: WPVibe now keeps your site's last few PHP fatal errors for 7 days, with the plugin or theme that caused them, so WPVibe can tell why a site fails even when it cannot sign in. It keeps PHP's own error text, file names inside WordPress, memory use and your WordPress, PHP and active plugin versions: no stack traces, values or request data. The connection check on the WPVibe page shows the latest one.
+- Fix: WPVibe connects again on sites running WP 2FA 4.3.0, which blocked Application Password logins for every user with two-factor set up. Only WPVibe's own password, on a WPVibe request over HTTPS, gets through. WP 2FA's lockout and every other password stay as they were.
+- Fix: When WPVibe's draft theme record holds a value no draft action accepts, such as "none", every draft action used to fail. Deleting the draft now clears that record, and only when nothing exists at that path, so no files are deleted.
+- Security: Theme delete and update, and their approval preview, now refuse a theme name that is a path (a slash, a backslash, "." or ".."). Until now an approved theme delete given such a path could remove a folder outside your themes folder.
+- Hardening: A search-replace that runs without an approval showing that exact change, such as a fleet run, now leaves out tables that hold code or keys (Code Snippets, Header Footer Code Manager, Wow Coder, WPVibe's own records and WooCommerce API keys), and never changes a post's type or a term's taxonomy. A search-replace you approved still covers them.
+
 ## [1.21.7] - 2026-11-05
 
 - Fix: When your AI tries to delete the folder of a WPVibe draft theme, it is now refused and pointed to discarding the draft instead, so WPVibe is never left pointing at a draft that no longer exists. A publish that moved the draft live but could not restore its theme name no longer leaves that stale draft record behind either.

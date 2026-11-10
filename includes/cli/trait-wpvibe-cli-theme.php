@@ -353,7 +353,7 @@ trait WPVibe_CLI_Theme {
 		} else {
 			foreach ( $positional as $slug ) {
 				$theme = wp_get_theme( $slug );
-				if ( ! $theme->exists() ) {
+				if ( null !== $this->theme_slug_refusal( $slug ) || ! $theme->exists() ) {
 					$skipped[] = array( 'name' => $slug, 'status' => 'error', 'reason' => 'not found' );
 				} elseif ( ! isset( $available[ $slug ] ) ) {
 					$skipped[] = array( 'name' => $slug, 'status' => 'skipped', 'reason' => 'no update available' );
@@ -522,6 +522,15 @@ trait WPVibe_CLI_Theme {
 		);
 	}
 
+	/** A theme slug is a folder name in the themes folder; a path (../x, ./x, a/b) reaches other folders through delete_theme() (#1394). */
+	private function theme_slug_refusal( $slug ) {
+		if ( WPVibe_Draft_Lock::valid_slug( $slug ) ) {
+			return null;
+		}
+		/* translators: %s: the slug as given */
+		return sprintf( __( '\'%s\' is not a theme folder name (it contains a slash, a backslash, or is . or ..), so it is refused. Nothing was changed. Use the folder name theme list shows.', 'vibe-ai' ), (string) $slug );
+	}
+
 	private function handle_theme_delete( $positional, $flags ) {
 		if ( empty( $positional[0] ) ) {
 			return $this->error_result( __( 'Theme slug required. Usage: theme delete <slug> [<slug>...]', 'vibe-ai' ) );
@@ -535,6 +544,11 @@ trait WPVibe_CLI_Theme {
 			$draft_refusal = $this->draft_delete_refusal( $slug );
 			if ( null !== $draft_refusal ) {
 				$results[] = array( 'target' => $slug, 'status' => 'error', 'error' => $draft_refusal );
+				continue;
+			}
+			$slug_refusal = $this->theme_slug_refusal( $slug );
+			if ( null !== $slug_refusal ) {
+				$results[] = array( 'target' => $slug, 'status' => 'error', 'error' => $slug_refusal );
 				continue;
 			}
 			$theme = wp_get_theme( $slug );
