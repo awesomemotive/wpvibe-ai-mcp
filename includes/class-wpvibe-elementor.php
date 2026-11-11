@@ -638,6 +638,30 @@ class WPVibe_Elementor {
 	// POST /elementor/save-page
 	// ------------------------------------------------------------------
 
+	/**
+	 * Another user has this post open in the editor (#1488): refuse rather than overwrite their unsaved work.
+	 * Core's post lock names who holds it; Elementor's own MCP guard (where present) also sees unsaved editor changes.
+	 */
+	private static function post_lock_conflict( $post_id ) {
+		if ( ! function_exists( 'wp_check_post_lock' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/post.php';
+		}
+		$holder = wp_check_post_lock( $post_id );
+		if ( $holder ) {
+			$user = get_userdata( $holder );
+			$name = $user && ! empty( $user->display_name ) ? $user->display_name : __( 'Another user', 'vibe-ai' );
+			/* translators: %s: the display name of the user editing the post. */
+			$message = sprintf( __( '%s is editing this page in WordPress right now. Nothing was saved, so their unsaved changes are safe. Try again once they have saved their changes or left the editor.', 'vibe-ai' ), $name );
+			return new WP_Error( 'post_locked', $message, WPVibe_Error_Contract::data( 'wp_core', true, array( 'status' => 409, 'locked_by' => (int) $holder ) ) );
+		}
+		$guard = apply_filters( 'elementor/mcp/pre_execute_guard', null, array( 'post_id' => $post_id ) );
+		if ( is_wp_error( $guard ) ) {
+			$message = __( 'Someone has unsaved changes to this page open in the Elementor editor. Nothing was saved. Try again once they have saved or discarded their changes.', 'vibe-ai' );
+			return new WP_Error( 'post_locked', $message, WPVibe_Error_Contract::data( 'wp_core', true, array( 'status' => 409, 'elementor_guard' => $guard->get_error_code() ) ) );
+		}
+		return null;
+	}
+
 	public function save_page( $request ) {
 		$check = $this->elementor_check();
 		if ( is_wp_error( $check ) ) {
@@ -688,6 +712,10 @@ class WPVibe_Elementor {
 			$cap_check = $this->check_post_caps( $post->post_type, 'update', $id, $status );
 			if ( is_wp_error( $cap_check ) ) {
 				return $cap_check;
+			}
+			$locked = self::post_lock_conflict( (int) $id );
+			if ( $locked ) {
+				return $locked;
 			}
 			$update = array( 'ID' => $id );
 			if ( $title ) {

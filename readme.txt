@@ -4,7 +4,7 @@ Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.22.0
+Stable tag: 1.22.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -222,6 +222,11 @@ Yes. Connected sites are unlimited on every plan, including the free plan. Conne
 No. WPVibe lets you manage your WordPress site entirely through conversation with your AI assistant. No coding required for content management. Theme editing is also conversational, your AI writes the code for your WordPress theme.
 
 == Changelog ==
+
+= 1.22.1 =
+* Fix: When someone else has an Elementor page open in WordPress, your AI's save now waits instead of overwriting their unsaved changes. Your AI is told who is editing the page and to try again once they have saved or left the editor.
+* Fix: When a plugin install or update fails, your AI now sees which file failed, WordPress's error code and the upgrader's log, not only "Could not copy file.". On hosts such as WP Engine that refuse PHP file writes outside wp-admin, it asks you to update in wp-admin instead of retrying.
+* Hardening: The upgrader log your AI sees after a failed install or update now keeps only the site name of a download link, which for a premium plugin can carry its license key, and shows file paths inside WordPress instead of the server's full path.
 
 = 1.22.0 =
 * Feature: Your AI can now make several changes to one post, setting or field in a single edit, saved together as one revision. If any change does not match, nothing is saved and your AI is told which one failed.

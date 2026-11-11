@@ -341,27 +341,22 @@ trait WPVibe_CLI_Plugin {
 			// DestructivePluginUpgrader) — the emulated rollback/downgrade path.
 			$result = $upgrader->install( $api->download_link, array( 'overwrite_package' => ! empty( $flags['force'] ) ) );
 		} catch ( \Throwable $e ) {
-			$skin_messages = $skin->get_upgrade_messages();
 			return $this->error_result(
 				sprintf(
 					/* translators: 1: plugin name, 2: error message, 3: upgrader messages */
 					__( 'Install of %1$s threw a fatal error: %2$s%3$s', 'vibe-ai' ),
 					$api->name,
 					$e->getMessage(),
-					$skin_messages ? ' Upgrader log: ' . implode( ' / ', $skin_messages ) : ''
+					$this->upgrader_log_text( $skin )
 				)
 			);
 		}
 
 		if ( is_wp_error( $result ) ) {
-			$skin_messages = $skin->get_upgrade_messages();
-			return $this->error_result(
-				$result->get_error_message() . ( $skin_messages ? ' Upgrader log: ' . implode( ' / ', $skin_messages ) : '' )
-			);
+			return $this->error_result( $this->upgrader_failure_text( $result, $skin ) );
 		}
 		if ( ! $result ) {
-			$messages = $skin->get_upgrade_messages();
-			return $this->error_result( __( 'Install failed.', 'vibe-ai' ) . ( $messages ? ' Upgrader log: ' . implode( ' / ', $messages ) : '' ) );
+			return $this->error_result( __( 'Install failed.', 'vibe-ai' ) . $this->upgrader_log_text( $skin ) );
 		}
 
 		// Optionally activate (matches real WP-CLI --activate flag).
@@ -667,7 +662,7 @@ trait WPVibe_CLI_Plugin {
 			$result     = ( is_array( $bulk ) && isset( $bulk[ $file ] ) ) ? $bulk[ $file ] : null;
 
 			if ( is_wp_error( $result ) ) {
-				return $this->error_result( $result->get_error_message() );
+				return $this->error_result( $this->upgrader_failure_text( $result, $skin ) );
 			}
 			if ( empty( $result ) ) {
 				return $this->error_result( __( 'Update failed. The plugin files were not replaced; the installed version is unchanged.', 'vibe-ai' ) );
@@ -707,7 +702,8 @@ trait WPVibe_CLI_Plugin {
 			);
 			$result = is_array( $bulk ) && isset( $bulk[ $file ] ) ? $bulk[ $file ] : null;
 			if ( is_wp_error( $result ) ) {
-				$row['status'] = 'error: ' . $result->get_error_message();
+				// The skin's log covers the whole batch, so a row carries only its own error.
+				$row['status'] = 'error: ' . $this->upgrader_failure_text( $result );
 			} elseif ( empty( $result ) ) {
 				$row['status'] = 'error: update failed';
 			} else {
@@ -771,6 +767,48 @@ trait WPVibe_CLI_Plugin {
 		);
 	}
 
+
+	/**
+	 * An upgrader WP_Error as something to act on: core's message and code, the file its data names
+	 * (copy_dir puts the destination there), and the skin's log when given. Core's message alone
+	 * ("Could not copy file.") names neither the file nor the cause. A PHP file that could not be
+	 * written is the managed-host rule that also blocks draft themes (#518), so retrying won't help.
+	 *
+	 * @param WP_Error                     $error Upgrader result.
+	 * @param Automatic_Upgrader_Skin|null $skin  The upgrader's skin, for its log.
+	 * @return string
+	 */
+	private function upgrader_failure_text( $error, $skin = null ) {
+		$text = $error->get_error_message() . ' (' . $error->get_error_code() . ')';
+		$data = $error->get_error_data();
+		$path = is_string( $data ) && '' !== $data ? WPVibe_Draft_Theme::site_relative( $data ) : '';
+		if ( '' !== $path ) {
+			/* translators: %s: file path */
+			$text .= ' ' . sprintf( __( 'File: %s.', 'vibe-ai' ), $path );
+		}
+		$text .= $this->upgrader_log_text( $skin );
+		if ( 0 === strpos( (string) $error->get_error_code(), 'copy_failed' ) && 'php' === strtolower( pathinfo( $path, PATHINFO_EXTENSION ) ) ) {
+			$text .= ' ' . __( 'WordPress could not write this PHP file. Some managed hosts, WP Engine among them, refuse PHP file writes outside wp-admin, and then retrying here fails the same way: ask the user to do it in wp-admin (Dashboard > Updates, or Plugins > Add New Plugin), or with the host\'s own tools.', 'vibe-ai' );
+		}
+		return $text;
+	}
+
+	/**
+	 * The skin's log, prefixed, or '' without one. Core logs the package URL ("Downloading update from ..."), which for a
+	 * premium plugin can carry a license key or signed token, so a URL keeps only its scheme and host. Core also logs an
+	 * error with its data, the absolute path, so paths are made site-relative.
+	 *
+	 * @param Automatic_Upgrader_Skin|null $skin The upgrader's skin.
+	 * @return string
+	 */
+	private function upgrader_log_text( $skin ) {
+		$messages = $skin ? $skin->get_upgrade_messages() : array();
+		if ( ! $messages ) {
+			return '';
+		}
+		$log = preg_replace( '#\b(https?://)(?:[^/\s@?\#]*@)?([^/\s?\#&]+)\S*#i', '$1$2/...', implode( ' / ', $messages ) );
+		return ' Upgrader log: ' . WPVibe_Draft_Theme::site_relative( (string) $log );
+	}
 
 	private function handle_plugin_uninstall( $positional, $flags ) {
 		if ( empty( $positional[0] ) ) {
