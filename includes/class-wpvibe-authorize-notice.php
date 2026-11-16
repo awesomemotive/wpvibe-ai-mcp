@@ -109,6 +109,8 @@ class WPVibe_Authorize_Notice {
 				'came_back' => __( 'The request WordPress makes to create the application password came back as %s. The WPVibe authorization route must return JSON to finish.', 'vibe-ai' ),
 				'cannot_create' => __( 'This WordPress account cannot create Application Passwords. Ask a site administrator to check this account\'s permissions.', 'vibe-ai' ),
 				'unavailable_for_user' => __( 'Application Passwords are disabled for this account. Ask a site administrator to review the setting before approving again.', 'vibe-ai' ),
+				'cookie_nonce_title' => __( 'WordPress refused this approval page as out of date', 'vibe-ai' ),
+				'cookie_nonce' => __( 'WordPress could not match this page to your current login, usually because the page went stale. Reload this page and click Approve again. If it happens again, open the connect link in a private (incognito) window, log in to WordPress there and approve. If even that fails, a cache or CDN is serving cached wp-admin pages or stripping cookies on /wp-json/: exclude both from caching, then try again.', 'vibe-ai' ),
 				/* translators: %s: vendor or plugin name detected in the response. */
 				'marker'    => __( 'The response looks like it came from %s.', 'vibe-ai' ),
 				'step1'     => __( 'Open this link in a private (incognito) window with browser extensions off, log in as an administrator, and click Approve once.', 'vibe-ai' ),

@@ -182,21 +182,24 @@ class WPVibe_Connection_Check {
 		}
 		$raw = (string) wp_remote_retrieve_body( $response );
 		if ( null === $body && '' !== trim( $raw ) ) {
-			$page = self::maintenance_page_owner();
+			$page = self::maintenance_page_owner( $raw );
 			return array( 'status' => 'failed', 'summary' => $page ? sprintf( __( 'The REST API returned a web page instead of JSON (HTTP %1$d). %2$s is in coming soon or maintenance mode and is answering instead of the WordPress API.', 'vibe-ai' ), $code, $page ) : sprintf( __( 'The REST API returned a web page instead of JSON (HTTP %d). A coming soon page, maintenance mode, or firewall page is answering instead of the WordPress API.', 'vibe-ai' ), $code ), 'next' => $page ? __( 'Exclude the REST API from that mode, or turn the mode off while connecting. Then run the check again.', 'vibe-ai' ) : __( 'Turn off maintenance or coming soon mode for REST requests, or ask your host which page is answering /wp-json/. Then run the check again.', 'vibe-ai' ) );
 		}
 		return array( 'status' => 'unknown', 'summary' => sprintf( __( 'The REST API returned HTTP %d to a request from this site. The remote check below tells you whether WPVibe can reach it.', 'vibe-ai' ), $code ), 'next' => '' );
 	}
 
-	private static function maintenance_page_owner() {
+	// A mode switched on is not proof its page answered: name SeedProd only when the response carries its
+	// page's markup, else the generic wording (#715). A 503 with Retry-After is no proof either: WordPress's
+	// own maintenance mode and many hosts send one too.
+	private static function maintenance_page_owner( $raw ) {
 		$seedprod = get_option( 'seedprod_settings' );
 		if ( is_string( $seedprod ) ) {
 			$seedprod = json_decode( $seedprod, true );
 		}
-		if ( is_array( $seedprod ) && ( ! empty( $seedprod['enable_coming_soon_mode'] ) || ! empty( $seedprod['enable_maintenance_mode'] ) ) ) {
-			return 'SeedProd';
+		if ( ! is_array( $seedprod ) || ( empty( $seedprod['enable_coming_soon_mode'] ) && empty( $seedprod['enable_maintenance_mode'] ) ) ) {
+			return null;
 		}
-		return null;
+		return false !== stripos( (string) $raw, 'seedprod' ) ? 'SeedProd' : null;
 	}
 
 	// Many well-behaved plugins hook these filters, so only name a plugin that exists to turn REST off.

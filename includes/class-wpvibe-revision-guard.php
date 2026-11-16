@@ -54,6 +54,25 @@ class WPVibe_Revision_Guard {
 		}
 	}
 
+	/**
+	 * A revision of $post as it is now, carrying copies of $meta_keys (#1489): a page builder's save keeps one before it
+	 * overwrites a published layout, since core only revisions the new state. Null when revisions are off for the post or
+	 * WordPress refused one. update_metadata, because update_post_meta on a revision writes to its parent.
+	 */
+	public static function snapshot( $post, array $meta_keys ) {
+		$revision_id = wp_revisions_enabled( $post ) ? _wp_put_post_revision( $post ) : 0;
+		if ( ! $revision_id || is_wp_error( $revision_id ) ) {
+			return null;
+		}
+		foreach ( $meta_keys as $key ) {
+			$value = get_post_meta( $post->ID, $key, true );
+			if ( '' !== $value && array() !== $value ) {
+				update_metadata( 'post', (int) $revision_id, $key, wp_slash( $value ) );
+			}
+		}
+		return (int) $revision_id;
+	}
+
 	/** For posts this request changed with revisions off: the change can't be undone from WordPress. '' when none. */
 	public static function revisions_off_note( $post_ids ) {
 		$lines = array();

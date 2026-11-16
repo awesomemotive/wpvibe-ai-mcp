@@ -458,7 +458,7 @@ class WPVibe_Preview {
 				<?php esc_html_e( 'WPVibe Draft Preview', 'vibe-ai' ); ?>
 			</span>
 			<span class="wpvibe-info">
-				<?php esc_html_e( 'Changes are only visible to you. The live site is unaffected.', 'vibe-ai' ); ?>
+				<?php esc_html_e( 'Anyone with this preview link can see this draft until the link expires. The live site is unaffected.', 'vibe-ai' ); ?>
 				<?php
 				$seedprod_note = self::seedprod_theme_note();
 				if ( '' !== $seedprod_note ) {

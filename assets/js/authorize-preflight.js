@@ -38,8 +38,9 @@
 	}
 
 	/**
-	 * What came back. JSON of any status is a healthy REST answer (401 rest_not_logged_in,
-	 * 403 rest_cookie_invalid_nonce, 200 list); only non-JSON is a block.
+	 * What came back. JSON of any status is a REST answer, not a block (401 rest_not_logged_in,
+	 * 403 rest_cookie_invalid_nonce, 200 list); only non-JSON is a block. A cookie-check
+	 * refusal is still reported, by cookieNonceVerdict, since Approve meets it too.
 	 * @return {{kind: 'json'|'html'|'empty'|'network', status: number, marker: string|null}}
 	 */
 	function classify( status, contentType, bodyText, server ) {
@@ -92,7 +93,18 @@
 		return { kind: 'session_only', status: Number( status ) || 403, marker: null, signal: SESSION_ONLY_SIGNALS.indexOf( signal ) !== -1 ? signal : '', message: String( json.message || '' ) };
 	}
 
-	var api = { classify: classify, markerFor: markerFor, beaconTarget: beaconTarget, withMintMarker: withMintMarker, sessionOnlyVerdict: sessionOnlyVerdict, VENDORS: VENDORS };
+	/** Core's "Cookie check failed" (403 rest_cookie_invalid_nonce): a stale page, or a cache that keeps old nonces or strips cookies (#821). */
+	function cookieNonceVerdict( json, status ) {
+		if ( ! json || typeof json !== 'object' || json.code !== 'rest_cookie_invalid_nonce' ) return null;
+		return { kind: 'cookie_nonce', status: Number( status ) || 403, marker: null, message: String( json.message || '' ) };
+	}
+
+	/** A refusal that names its own remedy: the plugin's session-only one, or core's cookie check. */
+	function namedRefusal( json, status ) {
+		return sessionOnlyVerdict( json, status ) || cookieNonceVerdict( json, status );
+	}
+
+	var api = { classify: classify, markerFor: markerFor, beaconTarget: beaconTarget, withMintMarker: withMintMarker, sessionOnlyVerdict: sessionOnlyVerdict, cookieNonceVerdict: cookieNonceVerdict, VENDORS: VENDORS };
 	if ( typeof module !== 'undefined' && module.exports ) { module.exports = api; }
 	if ( ! root || ! root.document ) return;
 	root.wpvibeAuthorizePreflight = api;
@@ -176,15 +188,16 @@
 		div.setAttribute( 'role', 'alert' );
 		var h = document.createElement( 'p' );
 		var strong = document.createElement( 'strong' );
-		strong.textContent = ( lead ? lead + ' ' : '' ) + ( t.title || '' );
+		strong.textContent = ( lead ? lead + ' ' : '' ) + ( ( verdict.kind === 'cookie_nonce' ? t.cookie_nonce_title : t.title ) || '' );
 		h.appendChild( strong );
 		div.appendChild( h );
 		var p1 = document.createElement( 'p' );
 		p1.textContent = fmt( t.came_back, describe( verdict ) ) + ( verdict.marker ? ' ' + fmt( t.marker, verdict.marker ) : '' );
 		if ( verdict.kind === 'cannot_create' || verdict.kind === 'unavailable_for_user' ) p1.textContent = t[ verdict.kind ] || '';
 		if ( verdict.kind === 'session_only' ) p1.textContent = verdict.message;
+		if ( verdict.kind === 'cookie_nonce' ) p1.textContent = ( verdict.message ? verdict.message.replace( /\.$/, '' ) + '. ' : '' ) + ( t.cookie_nonce || '' );
 		div.appendChild( p1 );
-		if ( verdict.kind === 'session_only' ) return div; // the message carries its own remedy
+		if ( verdict.kind === 'session_only' || verdict.kind === 'cookie_nonce' ) return div; // the message carries its own remedy
 		var ol = document.createElement( 'ol' );
 		[ t.step1, fmt( t.step2, mintAddress() ) ].forEach( function ( s ) { var li = document.createElement( 'li' ); li.textContent = s || ''; ol.appendChild( li ); } );
 		div.appendChild( ol );
@@ -211,6 +224,15 @@
 		try {
 			var refused = sessionOnlyVerdict( error, jqXHR && jqXHR.status );
 			if ( refused ) { beacon( 'approve', refused ); return; } // core shows the plugin's message, which names the remedy
+			var stale = cookieNonceVerdict( error, jqXHR && jqXHR.status );
+			if ( stale ) {
+				// Core's bar says only "Cookie check failed"; ours says it and how to get past it.
+				$( '.notice-error' ).not( '.wpvibe-authorize-notice' ).filter( function () { return $( this ).text().trim().replace( /\.$/, '' ) === stale.message.replace( /\.$/, '' ); } ).remove();
+				$( '.wpvibe-authorize-notice' ).remove();
+				place( buildNotice( stale, 'error', '' ) );
+				beacon( 'approve', stale );
+				return;
+			}
 			if ( error && error.message ) return; // core showed a real message; leave it alone
 			var v = classify( jqXHR && jqXHR.status, jqXHR && jqXHR.getResponseHeader && jqXHR.getResponseHeader( 'content-type' ), jqXHR && jqXHR.responseText, jqXHR && jqXHR.getResponseHeader && jqXHR.getResponseHeader( 'server' ) );
 			if ( v.kind === 'json' ) return;
@@ -272,7 +294,7 @@
 									var rv = classifyXhr( retryXHR );
 									if ( rv.kind === 'json' && ! noRoute( retryXHR, rv ) ) {
 										restRouteRoot = cfg.restRouteRoot;
-										var refusedRetry = sessionOnlyVerdict( retryXHR && ( retryXHR.responseJSON || parseJson( retryXHR.responseText ) ), rv.status );
+										var refusedRetry = namedRefusal( retryXHR && ( retryXHR.responseJSON || parseJson( retryXHR.responseText ) ), rv.status );
 										if ( refusedRetry ) warn( refusedRetry );
 										return;
 									}
@@ -282,7 +304,7 @@
 							return;
 						}
 						if ( v.kind === 'json' ) {
-							var refused = sessionOnlyVerdict( jqXHR && ( jqXHR.responseJSON || parseJson( jqXHR.responseText ) ), v.status );
+							var refused = namedRefusal( jqXHR && ( jqXHR.responseJSON || parseJson( jqXHR.responseText ) ), v.status );
 							if ( refused ) warn( refused );
 							return; // any other 401 / 403 JSON is a healthy REST answer
 						}

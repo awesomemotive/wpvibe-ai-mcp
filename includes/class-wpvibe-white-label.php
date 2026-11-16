@@ -5,13 +5,14 @@
  * When the wpvibe_hide_from_admins option is truthy, every WPVibe surface
  * in wp-admin is suppressed for every user: admin menu, dashboard widget,
  * Plugins-row entry, post-edit sidebar, and Site Health plugin entries.
- * Update notices stay visible: WordPress.org forbids hiding them. The
+ * Update notices stay visible: WordPress.org forbids hiding them, so the
+ * Plugins row comes back while an update is available. The
  * site keeps working through the MCP connection; the agency manages it
  * via AI.
  *
  * Rails: enabling requires an active WPVibe connection, the plugin enrolls
- * itself in core auto-updates while hidden (there is no visible Plugins row
- * to update from, and it cannot update itself over its own connection), and
+ * itself in core auto-updates while hidden (the Plugins row shows only while
+ * an update is pending, and it cannot update itself over its own connection), and
  * hiding self-reverts after 30 days without an authenticated WPVibe request
  * so abandoned sites always resurface.
  *
@@ -86,16 +87,30 @@ class WPVibe_White_Label {
 	 * Remove the WPVibe row from the plugins.php list table. wp-admin only:
 	 * WP-CLI applies the all_plugins filter too, and there the row must stay
 	 * visible — shell access is a documented recovery path, and hiding it
-	 * would break `wp plugin update vibe-ai` on hidden sites.
+	 * would break `wp plugin update vibe-ai` on hidden sites. The row also
+	 * stays while WordPress knows of a newer WPVibe: its "new version
+	 * available" line hangs off this row (#1501).
 	 *
 	 * @param array $plugins
 	 * @return array
 	 */
 	public function filter_plugins_list( $plugins ) {
-		if ( is_admin() && ! wp_doing_cron() && self::is_hidden() && defined( 'WPVIBE_PLUGIN_BASENAME' ) ) {
+		if ( is_admin() && ! wp_doing_cron() && self::is_hidden() && defined( 'WPVIBE_PLUGIN_BASENAME' ) && ! self::update_available() ) {
 			unset( $plugins[ WPVIBE_PLUGIN_BASENAME ] );
 		}
 		return $plugins;
+	}
+
+	/**
+	 * Whether WordPress's update check lists a newer WPVibe and core would print its update line for this user:
+	 * only with update_plugins, and never on a multisite sub-site. Otherwise the row would come back with no line.
+	 */
+	private static function update_available() {
+		if ( is_multisite() || ! current_user_can( 'update_plugins' ) ) {
+			return false;
+		}
+		$updates = get_site_transient( 'update_plugins' );
+		return is_object( $updates ) && ! empty( $updates->response[ WPVIBE_PLUGIN_BASENAME ] );
 	}
 
 	/**

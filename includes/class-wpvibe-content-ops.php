@@ -520,15 +520,17 @@ class WPVibe_Content_Ops {
 
 		$args    = self::resolve_field_alias( $type, $args );
 		$current = $this->load( $type, $args );
-		// A meta key the post doesn't have simply holds no matches.
-		if ( is_wp_error( $current ) && 'meta_not_found' === $current->get_error_code() ) {
+		// A meta key the post doesn't have simply holds no matches, and says so (#1063).
+		$meta_missing = is_wp_error( $current ) && 'meta_not_found' === $current->get_error_code();
+		if ( $meta_missing ) {
 			$current = '';
 		}
 		if ( is_wp_error( $current ) ) {
 			return $current;
 		}
 		// Arrays/objects are searched as their JSON text (read-only; edit still refuses them).
-		if ( ! is_string( $current ) ) {
+		$stored_text = is_string( $current );
+		if ( ! $stored_text ) {
 			$current = wp_json_encode( $current, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
 			if ( false === $current ) {
 				return new WP_Error( 'not_text', __( 'Stored value is not searchable as text (it could not be encoded as JSON).', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 422 ) ) );
@@ -536,15 +538,37 @@ class WPVibe_Content_Ops {
 		}
 
 		$result = $this->find_matches( $current, $pattern, (bool) $case_sensitive, max( 1, (int) $max_results ) );
+		$mode   = null;
+		// JSON meta stored with \uXXXX escapes (Elementor's _elementor_data) holds the text escaped, so a
+		// miss retries with the pattern escaped the same way, as edit() does (#1063). Case folding can't
+		// reach escaped non-ASCII letters (\u017b vs \u017c), so a case-insensitive retry folds ASCII only.
+		if ( ! $result['matches'] && $stored_text && 'json' === $this->escape_context( $type, $args, $current ) ) {
+			$escaped = self::escape_for_context( 'json', self::desanitize( (string) $pattern ), $current );
+			if ( null !== $escaped && $escaped !== self::desanitize( (string) $pattern ) ) {
+				$retry = $this->find_matches( $current, $escaped, (bool) $case_sensitive, max( 1, (int) $max_results ) );
+				if ( $retry['matches'] ) {
+					$result = $retry;
+					$mode   = 'json_escaped';
+				}
+			}
+		}
 
-		return rest_ensure_response( array(
+		$response = array(
 			'target'        => $this->target_label( $type, $args ),
 			'pattern'       => $pattern,
 			'matches'       => $result['matches'],
 			'total_matches' => count( $result['matches'] ),
 			'total_lines'   => $result['total_lines'],
 			'truncated'     => $result['truncated'],
-		) );
+		);
+		if ( $mode ) {
+			// content/edit takes the plain text; it escapes old and new content to match on its own.
+			$response['match_mode'] = $mode;
+		}
+		if ( $meta_missing ) {
+			$response['meta_key_missing'] = true;
+		}
+		return rest_ensure_response( $response );
 	}
 
 	// ------------------------------------------------------------------

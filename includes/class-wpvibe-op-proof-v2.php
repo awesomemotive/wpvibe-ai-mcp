@@ -57,7 +57,9 @@ class WPVibe_Op_Proof_V2 {
 			}
 		} catch ( Throwable $error ) { $valid = false; }
 		if ( ! $valid ) {
-			return self::error( 'invalid', __( 'The signed approval does not match this site, connection, or operation. Keep the existing connection and send the failed check to WPVibe support.', 'vibe-ai' ) );
+			// The audience checked against, hex-encoded so a host proxy that rewrites the address in responses cannot change it:
+			// the Worker compares it with the connected address to name a mismatch (#760). The site's own address, nothing secret.
+			return self::error( 'invalid', __( 'The signed approval does not match this site, connection, or operation. Keep the existing connection and send the failed check to WPVibe support.', 'vibe-ai' ), array( 'audience_hex' => bin2hex( static::audience() ) ) );
 		}
 		if ( $bypass ) {
 			// The site's own setting decides at the moment of execution, whatever the Worker last saw.
@@ -69,7 +71,7 @@ class WPVibe_Op_Proof_V2 {
 		return true;
 	}
 
-	private static function error( $code, $message ) {
-		return new WP_Error( 'wpvibe_op_proof_' . $code, $message, array( 'status' => 403 ) );
+	private static function error( $code, $message, $data = array() ) {
+		return new WP_Error( 'wpvibe_op_proof_' . $code, $message, array( 'status' => 403 ) + $data );
 	}
 }

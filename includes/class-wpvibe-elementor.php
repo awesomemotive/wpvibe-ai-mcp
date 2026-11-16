@@ -112,6 +112,16 @@ class WPVibe_Elementor {
 			),
 		) );
 
+		register_rest_route( $ns, '/elementor/restore-revision', array(
+			'methods'             => 'POST',
+			'callback'            => array( $this, 'restore_revision' ),
+			'permission_callback' => array( $this, 'can_edit_posts' ),
+			'args'                => array(
+				'id'          => array( 'type' => 'integer', 'required' => true, 'sanitize_callback' => 'absint' ),
+				'revision_id' => array( 'type' => 'integer', 'required' => true, 'sanitize_callback' => 'absint' ),
+			),
+		) );
+
 		register_rest_route( $ns, '/elementor/save-template', array(
 			'methods'             => 'POST',
 			'callback'            => array( $this, 'save_template' ),
@@ -662,6 +672,38 @@ class WPVibe_Elementor {
 		return null;
 	}
 
+	/**
+	 * Before save-page overwrites a published page (#1489): keep it as a WordPress revision with its Elementor data and
+	 * page settings, as Elementor's History > Revisions does, so restore-revision (or Elementor's editor) can put it back.
+	 * Returns the revision id, or null (with a warning when revisions are off).
+	 */
+	private static function snapshot_published_page( $post, array &$warnings ) {
+		// A page with no Elementor layout yet has none to put back; core's revisions keep its content.
+		if ( 'publish' !== $post->post_status || self::elements_meta_is_empty( get_post_meta( $post->ID, '_elementor_data', true ) ) ) {
+			return null;
+		}
+		// Elementor copies its meta onto a new revision of a page built with it; the snapshot copies it as well, either way.
+		$revision_id = WPVibe_Revision_Guard::snapshot( $post, array( '_elementor_data', '_elementor_page_settings', '_wp_page_template' ) );
+		if ( ! $revision_id ) {
+			$warnings[] = array(
+				'code'    => 'undo_unavailable',
+				'message' => __( 'WordPress kept no copy of this page as it was before the save (revisions are off for it, or WordPress refused the revision), so this save cannot be undone with restore-revision.', 'vibe-ai' ),
+				'context' => 'post_id=' . (int) $post->ID,
+			);
+		}
+		return $revision_id;
+	}
+
+	/** An error after the snapshot still hands back the way to undo what was written before it (#1489). */
+	private static function with_undo_id( $error, $undo_id ) {
+		// A revision limit of 1 can already have pruned the copy by the time the save fails.
+		if ( $undo_id && get_post( $undo_id ) ) {
+			$data = $error->get_error_data();
+			$error->add_data( array_merge( is_array( $data ) ? $data : array(), array( 'undo_revision_id' => (int) $undo_id ) ) );
+		}
+		return $error;
+	}
+
 	public function save_page( $request ) {
 		$check = $this->elementor_check();
 		if ( is_wp_error( $check ) ) {
@@ -696,6 +738,7 @@ class WPVibe_Elementor {
 
 		$warnings = array();
 		$document = null;
+		$undo_id  = null;
 		// Defaults belong to creates; an update keeps the post's status and document type unless the caller sets them.
 		if ( ! $id ) {
 			$status        = $status ?: 'publish';
@@ -717,7 +760,8 @@ class WPVibe_Elementor {
 			if ( $locked ) {
 				return $locked;
 			}
-			$update = array( 'ID' => $id );
+			$undo_id = self::snapshot_published_page( $post, $warnings );
+			$update  = array( 'ID' => $id );
 			if ( $title ) {
 				$update['post_title'] = $title;
 			}
@@ -759,20 +803,20 @@ class WPVibe_Elementor {
 		}
 
 		if ( ! $document ) {
-			return new WP_Error( 'document_init_failed', __( 'Could not initialize Elementor document.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 500 ) ) );
+			return self::with_undo_id( new WP_Error( 'document_init_failed', __( 'Could not initialize Elementor document.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 500 ) ) ), $undo_id );
 		}
 
 		// Document::save handles _elementor_data write, version stamp,
 		// _elementor_element_cache invalidation, and CSS regen.
 		$saved = $this->save_document( $document, $data, empty( $request['id'] ) ? $id : 0 );
 		if ( is_wp_error( $saved ) ) {
-			return $saved;
+			return self::with_undo_id( $saved, $undo_id );
 		}
 		// Elementor 4.2 can answer success while the document's data lands
 		// empty (and an empty autosave/revision then wins in the editor).
 		$verified = $this->verify_saved_elements( $id, $data, $warnings );
 		if ( is_wp_error( $verified ) ) {
-			return $verified;
+			return self::with_undo_id( $verified, $undo_id );
 		}
 
 		// Direct meta write, not Document::save(['settings'=>...]) — save_settings()
@@ -803,11 +847,109 @@ class WPVibe_Elementor {
 			"post_id={$id}"
 		);
 
-		return rest_ensure_response( array(
+		$response = array(
 			'id'       => $id,
 			'view_url' => get_permalink( $id ),
 			'edit_url' => admin_url( 'post.php?post=' . $id . '&action=elementor' ),
 			'warnings' => $warnings,
+		);
+		// A low revision limit can prune the copy as soon as the save's own revision lands.
+		if ( ! empty( $undo_id ) && get_post( $undo_id ) ) {
+			$response['undo_revision_id'] = $undo_id;
+		} elseif ( ! empty( $undo_id ) ) {
+			$response['warnings'][] = array(
+				'code'    => 'undo_unavailable',
+				'message' => __( 'The copy of this page from before the save was removed by the site\'s revision limit, so this save cannot be undone with restore-revision.', 'vibe-ai' ),
+				'context' => 'post_id=' . (int) $id,
+			);
+		}
+		return rest_ensure_response( $response );
+	}
+
+	// ------------------------------------------------------------------
+	// POST /elementor/restore-revision
+	// ------------------------------------------------------------------
+
+	/** Puts a page's title, content, _elementor_data and page settings back as one of its revisions holds them (#1489). */
+	public function restore_revision( $request ) {
+		$check = $this->elementor_check();
+		if ( is_wp_error( $check ) ) {
+			return $check;
+		}
+		$id          = (int) $request->get_param( 'id' );
+		$revision_id = (int) $request->get_param( 'revision_id' );
+		$post        = get_post( $id );
+		if ( ! $post ) {
+			return new WP_Error( 'not_found', __( 'Post not found.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
+		}
+		$code_post = WPVibe_Code_Snippet::code_post_write_error( $post->post_type, $id );
+		if ( $code_post ) {
+			return $code_post;
+		}
+		$cap_check = $this->check_post_caps( $post->post_type, 'update', $id );
+		if ( is_wp_error( $cap_check ) ) {
+			return $cap_check;
+		}
+		$revision = get_post( $revision_id );
+		// An autosave is the editor's unsaved draft, not a version of the page.
+		if ( ! $revision || 'revision' !== $revision->post_type || (int) $revision->post_parent !== $id || wp_is_post_autosave( $revision ) ) {
+			/* translators: 1: revision ID, 2: post ID */
+			return new WP_Error( 'revision_not_found', sprintf( __( 'Revision %1$d is not a revision of post %2$d.', 'vibe-ai' ), $revision_id, $id ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
+		}
+		$elements = get_post_meta( $revision_id, '_elementor_data', true );
+		// An empty layout (Elementor 4.2 can save one) would wipe the page.
+		if ( ! is_string( $elements ) || self::elements_meta_is_empty( $elements ) ) {
+			/* translators: %d: revision ID */
+			return new WP_Error( 'no_elementor_data', sprintf( __( 'Revision %d holds no Elementor data, so it cannot restore the page layout. Nothing was changed.', 'vibe-ai' ), $revision_id ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
+		}
+		$locked = self::post_lock_conflict( $id );
+		if ( $locked ) {
+			return $locked;
+		}
+		$settings = get_post_meta( $revision_id, '_elementor_page_settings', true );
+		$template = get_post_meta( $revision_id, '_wp_page_template', true );
+		// The restore saves a revision of its own, and a revision limit would prune the oldest: the one being restored.
+		$keep_all = function () {
+			return -1;
+		};
+		$limits   = array( 'wp_revisions_to_keep', "wp_{$post->post_type}_revisions_to_keep" );
+		foreach ( $limits as $limit ) {
+			add_filter( $limit, $keep_all, PHP_INT_MAX );
+		}
+		// Title, content and excerpt; Elementor's own wp_restore_post_revision hook also copies its meta back.
+		$restored = wp_restore_post_revision( $revision_id );
+		foreach ( $limits as $limit ) {
+			remove_filter( $limit, $keep_all, PHP_INT_MAX );
+		}
+		if ( ! $restored ) {
+			return new WP_Error( 'restore_failed', __( 'WordPress could not restore the revision. Nothing was changed.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'wp_core', true, array( 'status' => 500 ) ) );
+		}
+		update_post_meta( $id, '_elementor_data', wp_slash( $elements ) );
+		if ( is_array( $settings ) && $settings ) {
+			update_post_meta( $id, '_elementor_page_settings', wp_slash( $settings ) );
+		} else {
+			delete_post_meta( $id, '_elementor_page_settings' );
+		}
+		if ( is_string( $template ) && '' !== $template ) {
+			update_post_meta( $id, '_wp_page_template', $template );
+		}
+		// Elementor renders from this cache until it is cleared, as Document::save does.
+		delete_post_meta( $id, '_elementor_element_cache' );
+		$warnings = array();
+		$this->try_step(
+			$warnings,
+			function() use ( $id ) {
+				\Elementor\Core\Files\CSS\Post::create( $id )->update();
+			},
+			'css_regen_failed',
+			"post_id={$id}"
+		);
+		return rest_ensure_response( array(
+			'id'                   => $id,
+			'restored_revision_id' => $revision_id,
+			'view_url'             => get_permalink( $id ),
+			'edit_url'             => admin_url( 'post.php?post=' . $id . '&action=elementor' ),
+			'warnings'             => $warnings,
 		) );
 	}
 

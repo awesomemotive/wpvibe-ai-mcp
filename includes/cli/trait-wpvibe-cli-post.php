@@ -479,8 +479,7 @@ trait WPVibe_CLI_Post {
 		$term_id = (int) $term->term_id;
 		$key     = (string) $positional[1];
 		if ( empty( $flags['force'] ) && is_protected_meta( $key, 'term' ) ) {
-			/* translators: %s: meta key */
-			return $this->error_result( sprintf( __( 'Meta key \'%s\' is a protected/internal key. Use --force to override.', 'vibe-ai' ), $key ) );
+			return $this->protected_meta_refusal( $key, false );
 		}
 		// edit_term maps to the term's own taxonomy edit cap, which core's REST term meta writes check too.
 		if ( ! current_user_can( 'edit_term', $term_id ) ) {
@@ -1056,6 +1055,7 @@ trait WPVibe_CLI_Post {
 		$force   = ! empty( $flags['force'] );
 		$results = array();
 		$ok      = 0;
+		$deleted = 0;
 		foreach ( $ids as $post_id ) {
 			$post = get_post( $post_id );
 			if ( ! $post ) {
@@ -1073,10 +1073,14 @@ trait WPVibe_CLI_Post {
 				continue;
 			}
 			$ok++;
-			$results[] = array( 'id' => $post_id, 'status' => $force ? 'deleted' : 'trashed' );
+			// With trash off (EMPTY_TRASH_DAYS 0) core's wp_trash_post() deletes for good, like wp-admin's Trash link (#1536).
+			$gone = $force || ! EMPTY_TRASH_DAYS || ! get_post( $post_id );
+			$deleted += $gone ? 1 : 0;
+			$results[] = array( 'id' => $post_id, 'status' => $gone ? 'deleted' : 'trashed' );
 		}
 
-		$action = $force ? __( 'permanently deleted', 'vibe-ai' ) : __( 'trashed', 'vibe-ai' );
+		$action = ( $force || ( $deleted && EMPTY_TRASH_DAYS ) ) ? __( 'permanently deleted', 'vibe-ai' )
+			: ( $deleted ? __( 'permanently deleted (this site has no trash)', 'vibe-ai' ) : __( 'trashed', 'vibe-ai' ) );
 		WPVibe_Change_Tracker::mark( array(
 			'summary'      => count( $ids ) > 1 ? "Posts {$action}: {$ok}/" . count( $ids ) : "Post {$action}: #{$ids[0]}",
 			'action_label' => 'Refresh',
@@ -1108,13 +1112,7 @@ trait WPVibe_CLI_Post {
 		$key = $positional[1];
 		// Block protected meta keys (all '_'-prefixed, plus registered protected) unless --force.
 		if ( empty( $flags['force'] ) && is_protected_meta( $key, 'post' ) ) {
-			return $this->error_result(
-				sprintf(
-					/* translators: %s: meta key */
-					__( 'Meta key \'%s\' is a protected/internal key. Use --force to override.', 'vibe-ai' ),
-					$key
-				)
-			);
+			return $this->protected_meta_refusal( $key );
 		}
 
 		$cap_check = $this->check_post_caps( $post->post_type, 'update', $post_id );
@@ -1199,13 +1197,7 @@ trait WPVibe_CLI_Post {
 
 		$key = $positional[1];
 		if ( empty( $flags['force'] ) && is_protected_meta( $key, 'post' ) ) {
-			return $this->error_result(
-				sprintf(
-					/* translators: %s: meta key */
-					__( 'Meta key \'%s\' is a protected/internal key. Use --force to override.', 'vibe-ai' ),
-					$key
-				)
-			);
+			return $this->protected_meta_refusal( $key );
 		}
 
 		$cap_check = $this->check_post_caps( $post->post_type, 'update', $post_id );
@@ -1232,6 +1224,38 @@ trait WPVibe_CLI_Post {
 	}
 
 
+	/** The SEO plugin a protected post meta key belongs to, by its key prefix, or null (#864). */
+	private static function seo_meta_owner( $key ) {
+		$owners = array( 'rank_math_' => 'Rank Math', '_yoast_wpseo_' => 'Yoast SEO', '_seopress_' => 'SEOPress', '_aioseo_' => 'All in One SEO' );
+		foreach ( $owners as $prefix => $owner ) {
+			if ( 0 === strpos( (string) $key, $prefix ) ) {
+				return $owner;
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * The refusal for a protected meta key written without --force. Its first sentence stays as is: the Worker's
+	 * fleet stop-loss groups refusals on it. On a post meta write, an SEO plugin's key also says whose field it is
+	 * and how to write it, so the AI does not drop the user's SEO change (#864).
+	 */
+	private function protected_meta_refusal( $key, $seo_hint = true ) {
+		/* translators: %s: meta key */
+		$message = sprintf( __( 'Meta key \'%s\' is a protected/internal key. Use --force to override.', 'vibe-ai' ), $key );
+		$owner   = $seo_hint ? self::seo_meta_owner( $key ) : null;
+		if ( 'All in One SEO' === $owner ) {
+			$message .= ' ' . __( 'It is an All in One SEO key, but All in One SEO 4 and later read SEO data from their own table, not this meta key, so writing it changes nothing on the page. Load the seo-edit skill for All in One SEO\'s write path instead of retrying with --force.', 'vibe-ai' );
+		} elseif ( $owner ) {
+			/* translators: %s: SEO plugin name */
+			$message .= ' ' . sprintf( __( 'It is %s\'s SEO field, not WordPress internals: to change it as the user asked, resend the same command with --force.', 'vibe-ai' ), $owner );
+			if ( 'Rank Math' === $owner ) {
+				$message .= ' ' . __( 'That writes the meta directly, skipping Rank Math\'s sanitizer, so send plain text; an empty value stores an empty string instead of deleting the key.', 'vibe-ai' );
+			}
+		}
+		return $this->error_result( $message );
+	}
+
 	private function handle_post_meta_delete( $positional, $flags ) {
 		if ( count( $positional ) < 2 ) {
 			return $this->error_result( __( 'Usage: post meta delete <post_id> <key>', 'vibe-ai' ) );
@@ -1249,13 +1273,7 @@ trait WPVibe_CLI_Post {
 
 		$key = $positional[1];
 		if ( empty( $flags['force'] ) && is_protected_meta( $key, 'post' ) ) {
-			return $this->error_result(
-				sprintf(
-					/* translators: %s: meta key */
-					__( 'Meta key \'%s\' is a protected/internal key. Use --force to override.', 'vibe-ai' ),
-					$key
-				)
-			);
+			return $this->protected_meta_refusal( $key, false );
 		}
 
 		$cap_check = $this->check_post_caps( $post->post_type, 'update', $post_id );

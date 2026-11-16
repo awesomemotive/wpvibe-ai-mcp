@@ -97,6 +97,10 @@ class WPVibe_Content_Files {
 			'~[a-z][a-z0-9+.-]*://[^\s/@:]+:[^\s/@]+@~i' => '[REDACTED CREDENTIALS]@',
 			'~[a-z0-9.!#$%&\'*+/=?^_`{|}\~-]+@[a-z0-9.-]+\.[a-z]{2,}~i' => '[REDACTED EMAIL]',
 			'~\b(?:sk|pk|rk)_(?:live_|test_|proj_)?[a-z0-9_-]{12,}\b|\b(?:gh[pousr]_|github_pat_)[a-z0-9_]{12,}\b|\bAKIA[A-Z0-9]{16}\b~i' => '[REDACTED KEY]',
+			// Google/Gemini API keys are case-sensitive AIza + 35 chars and may end in '-', so no trailing \b.
+			'~\bAIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z_-])~' => '[REDACTED KEY]',
+			// '[' stops it at a value an earlier rule already masked.
+			'~([?&](?:key|api_key|access_token)=)[^&#\s\'"<>\[]+~i' => '$1[REDACTED]',
 			'~\beyJ[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+\b~i' => '[REDACTED TOKEN]',
 			// A failed wp_options write logs the whole statement, proof key included; the key is a bare 64-hex string.
 			'~\b[a-f0-9]{64}\b~i' => '[REDACTED HEX]',

@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.23.0] - 2026-11-16
+
+- Feature: Before your AI saves over a published Elementor page, WPVibe now keeps the page as it was as a WordPress revision, with its layout and page settings. If the change is not what you wanted, your AI can put the page back from that revision. If your site keeps no revisions for the page, your AI is told the save cannot be undone.
+- Fix: In white-label mode, WPVibe's row now shows on the Plugins screen while an update is available, so WordPress's "new version available" line appears. The row hides again once WPVibe is up to date.
+- Fix: The draft preview banner now says anyone with the preview link can see the draft until the link expires, instead of "Changes are only visible to you".
+- Fix: When Approve on the connect page fails with WordPress's "Cookie check failed", WPVibe now says why and how to get past it: reload the page and approve again, try a private window, or exclude wp-admin and /wp-json/ from your cache or CDN.
+- Fix: The connection check names SeedProd as the page answering instead of the WordPress API only when SeedProd's coming soon or maintenance page is what answered, not just because the mode is switched on.
+- Fix: When your AI deletes a post on a site with the trash turned off, it is now told the post was deleted for good, not moved to the trash.
+- Fix: When your AI is refused a write to an SEO plugin's field (Rank Math, Yoast SEO or SEOPress), it is now told whose field it is and how to make the change you asked for, instead of dropping it. For All in One SEO, it is pointed to the way that plugin stores its data.
+- Fix: When a signed approval does not match your site, WPVibe can now tell whether your host rewrote your site's address (as on some temporary domains) and say so, instead of a general mismatch error.
+- Fix: When your AI adds an image from a URL that WordPress downloads with its transfer framing still in the file, WPVibe now refuses it and says to use a direct link to the image, instead of adding a broken image to your Media Library.
+- Fix: When your AI searches a page's Elementor data or other stored settings for text with accented or non-English letters, it now finds it, and it is told when the field it searched does not exist.
+- Hardening: When your AI reads a file on your site, WPVibe now also hides Google and Gemini API keys, and keys passed in a link's key= parameter.
+
 ## [1.22.1] - 2026-11-11
 
 - Fix: When someone else has an Elementor page open in WordPress, your AI's save now waits instead of overwriting their unsaved changes. Your AI is told who is editing the page and to try again once they have saved or left the editor.

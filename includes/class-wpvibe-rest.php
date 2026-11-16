@@ -1831,6 +1831,15 @@ class WPVibe_REST {
 				WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) )
 			);
 		}
+		// Core's streams transport writes a chunked response to disk undecoded (#953): a chunk-size line,
+		// then the image. No image format starts with hex digits and CRLF, and the file won't render.
+		if ( ! wp_get_image_mime( $tmp ) && preg_match( '/^[0-9a-f]{1,8}\r\n/i', (string) file_get_contents( $tmp, false, null, 0, 16 ) ) ) {
+			return new WP_Error(
+				'not_an_image',
+				__( 'The URL answered with HTTP chunked framing that was saved along with the response, so the file is not a usable image and nothing was added to the Media Library. Use a URL that serves the image file directly (a static file, not a script that streams it), or upload the image another way.', 'vibe-ai' ),
+				WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) )
+			);
+		}
 		if ( $can_unfiltered_upload ) {
 			return null;
 		}
