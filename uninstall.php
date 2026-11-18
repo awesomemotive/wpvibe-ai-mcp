@@ -34,6 +34,8 @@ delete_option( 'wpvibe_op_proof_required' );
 delete_option( 'wpvibe_op_proof_minter' );
 delete_option( 'wpvibe_op_proof_pending_minter' );
 delete_option( 'wpvibe_bypass_approvals' );
+// Each user's own live reload opt-out (#1206).
+delete_metadata( 'user', 0, 'wpvibe_live_reload_off', '', true );
 
 // Drop our auto-update enrollment (white label adds it) now that the plugin is gone.
 $wpvibe_auto = get_option( 'auto_update_plugins' );
@@ -57,6 +59,14 @@ delete_transient( 'wpvibe_last_change' );
 delete_transient( 'wpvibe_activation_redirect' );
 delete_transient( 'wpvibe_widget_feed' );
 delete_transient( 'wpvibe_widget_feed_error' );
+
+// Theme backups from draft publishes, kept as archives under uploads (#1624).
+if ( ! class_exists( 'WPVibe_Theme_Backup' ) ) {
+	require_once __DIR__ . '/includes/class-wpvibe-theme-backup.php';
+}
+if ( ! is_multisite() ) {
+	WPVibe_Theme_Backup::remove_all();
+}
 
 // Remove any leftover draft / backup theme directories on disk. Multisite shares the themes folder, and
 // another site may run on one of these, so the network keeps them.

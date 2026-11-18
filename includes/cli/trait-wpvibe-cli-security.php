@@ -311,6 +311,30 @@ trait WPVibe_CLI_Security {
 			);
 		}
 
+		// Angie's Super Admin mode opens angie/read-file to every file under ABSPATH, wp-config.php included, so turning it
+		// on needs a human (#1595, John's yes 11-17), as the Worker asks for its REST opt-in. Angie reads the option as
+		// (bool) get_option(), so every stored value but '' and '0' turns it on. Turning it off stays free.
+		$angie_name = 'option patch' === $command_key ? ( $positional[1] ?? '' ) : ( $positional[0] ?? '' );
+		if ( null !== self::match_option_name( $angie_name, array( 'angie_super_admin_enabled' ) ) ) {
+			$angie_on = false;
+			if ( in_array( $command_key, array( 'option update', 'option add' ), true ) ) {
+				$angie_on = self::angie_value_on( (string) ( $positional[1] ?? '' ), 'json' === strtolower( (string) ( $flags['format'] ?? '' ) ) );
+			} elseif ( 'option patch' === $command_key ) {
+				// insert or update leaves an array with an entry, which reads as on (an empty array set first passes as off).
+				$angie_on = in_array( $positional[0] ?? '', array( 'insert', 'update' ), true );
+			}
+			if ( $angie_on ) {
+				return array(
+					'operation' => 'angie_super_admin_enable',
+					'reason'    => __( 'Turns on Angie\'s Super Admin mode, so Angie\'s abilities can read any file under the WordPress root, wp-config.php included (database password and keys), and run PHP.', 'vibe-ai' ),
+					'dry_run'   => array(
+						'command' => 'wp ' . $command_key . ' ' . implode( ' ', array_map( 'strval', (array) $positional ) ),
+						'note'    => __( 'To turn it off later: set the option to 0 (no approval needed).', 'vibe-ai' ),
+					),
+				);
+			}
+		}
+
 		// Builder-critical options (GATED_OPTIONS): update, add, and patch
 		// insert|update all gate — gating patch alone is bypassable via
 		// get-then-update. match_option_name (not in_array) so a padded or
@@ -1539,4 +1563,20 @@ trait WPVibe_CLI_Security {
 		return $rows;
 	}
 
+
+	/**
+	 * Whether a value written to angie_super_admin_enabled turns Super Admin on, judged as Angie reads it back:
+	 * (bool) of the stored string. A JSON scalar is stored as its string form (-0.0 as "-0", which is on); an array
+	 * is on when it has an entry. JSON that doesn't decode writes nothing (the handler refuses it), so it's not on.
+	 */
+	private static function angie_value_on( $value, $json ) {
+		if ( ! $json ) {
+			return ! in_array( $value, array( '', '0' ), true );
+		}
+		$decoded = json_decode( $value, true );
+		if ( null === $decoded ) {
+			return false;
+		}
+		return is_array( $decoded ) ? (bool) $decoded : (bool) (string) $decoded;
+	}
 }

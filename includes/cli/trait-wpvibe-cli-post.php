@@ -850,16 +850,10 @@ trait WPVibe_CLI_Post {
 				$post_type
 			), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'post_type' => $post_type ) ) );
 		}
-		// manage_options fallback: CPTs with custom capability mappings fail the
-		// per-post meta-cap checks below even for admins, who can already reach
-		// the same rows through the approval-gated db query path. An explicit
-		// 'do_not_allow' in the post type's caps is intentional (e.g. HPOS
-		// orders) and stays enforced for everyone.
-		$admin = current_user_can( 'manage_options' );
+		// The post type's own capabilities decide for every role, with no manage_options fallback
+		// (WordPress.org review 11-17, #1624).
 		if ( 'create' === $action ) {
-			$allowed = current_user_can( $pt_obj->cap->create_posts )
-				|| ( $admin && 'do_not_allow' !== $pt_obj->cap->create_posts );
-			if ( ! $allowed ) {
+			if ( ! current_user_can( $pt_obj->cap->create_posts ) ) {
 				return new WP_Error( 'forbidden', sprintf(
 					/* translators: %s: post type label */
 					__( 'You do not have permission to create %s.', 'vibe-ai' ),
@@ -867,18 +861,14 @@ trait WPVibe_CLI_Post {
 				), WPVibe_Error_Contract::data( 'capability_cpt_mapping', false, array( 'status' => 403, 'post_type' => $post_type, 'capability' => $pt_obj->cap->create_posts ) ) );
 			}
 		} else {
-			$edit_allowed = current_user_can( 'edit_post', $post_id )
-				|| ( $admin && 'do_not_allow' !== $pt_obj->cap->edit_posts );
-			if ( ! $edit_allowed ) {
+			if ( ! current_user_can( 'edit_post', $post_id ) ) {
 				return new WP_Error( 'forbidden', sprintf(
 					/* translators: %d: post ID */
 					__( 'You do not have permission to edit post #%d.', 'vibe-ai' ),
 					$post_id
 				), WPVibe_Error_Contract::data( 'capability_cpt_mapping', false, array( 'status' => 403, 'post_type' => $post_type, 'capability' => 'edit_post' ) ) );
 			}
-			$delete_allowed = current_user_can( 'delete_post', $post_id )
-				|| ( $admin && 'do_not_allow' !== $pt_obj->cap->delete_posts );
-			if ( 'delete' === $action && ! $delete_allowed ) {
+			if ( 'delete' === $action && ! current_user_can( 'delete_post', $post_id ) ) {
 				return new WP_Error( 'forbidden', sprintf(
 					/* translators: %d: post ID */
 					__( 'You do not have permission to delete post #%d.', 'vibe-ai' ),
@@ -886,9 +876,7 @@ trait WPVibe_CLI_Post {
 				), WPVibe_Error_Contract::data( 'capability_cpt_mapping', false, array( 'status' => 403, 'post_type' => $post_type, 'capability' => 'delete_post' ) ) );
 			}
 		}
-		$publish_allowed = current_user_can( $pt_obj->cap->publish_posts )
-			|| ( $admin && 'do_not_allow' !== $pt_obj->cap->publish_posts );
-		if ( 'publish' === $new_status && ! $publish_allowed ) {
+		if ( 'publish' === $new_status && ! current_user_can( $pt_obj->cap->publish_posts ) ) {
 			return new WP_Error( 'forbidden_publish', sprintf(
 				/* translators: %s: post type label */
 				__( 'You do not have permission to publish %s.', 'vibe-ai' ),
@@ -903,10 +891,14 @@ trait WPVibe_CLI_Post {
 		$reject = $this->reject_unknown_flags( 'post create', $flags, array(
 			'post_title', 'post_content', 'post_content_base64', 'post_status', 'post_type',
 			'post_excerpt', 'post_name', 'post_parent', 'menu_order', 'comment_status', 'post_date',
-			'porcelain',
+			'porcelain', 'meta_input',
 		), $this->post_write_unsupported_flags( true ) );
 		if ( $reject ) {
 			return $reject;
+		}
+		$meta_input = $this->parse_meta_input( $flags );
+		if ( isset( $meta_input['refusal'] ) ) {
+			return $meta_input['refusal'];
 		}
 		$args = array(
 			'post_title'    => $flags['post_title'] ?? __( 'Untitled', 'vibe-ai' ),
@@ -938,12 +930,20 @@ trait WPVibe_CLI_Post {
 		if ( WPVibe_Code_Snippet::is_code_post_type( $args['post_type'] ) ) {
 			return $this->wpcode_write_refusal();
 		}
+		if ( isset( $meta_input['meta'] ) && 'revision' === $args['post_type'] ) {
+			return $this->meta_input_revision_refusal();
+		}
 
 		$cap_check = $this->check_post_caps( $args['post_type'], 'create', null, $args['post_status'] );
 		if ( is_wp_error( $cap_check ) ) {
 			return $cap_check;
 		}
 
+		// Core writes meta_input through update_post_meta before save_post and the publish hooks, as upstream WP-CLI does;
+		// update_metadata() unslashes, so the values go in slashed like `post meta update`'s.
+		if ( isset( $meta_input['meta'] ) ) {
+			$args['meta_input'] = wp_slash( $meta_input['meta'] );
+		}
 		$id = wp_insert_post( $args, true );
 		if ( is_wp_error( $id ) ) {
 			return $this->error_result( $id->get_error_message() );
@@ -980,11 +980,19 @@ trait WPVibe_CLI_Post {
 		$reject = $this->reject_unknown_flags(
 			'post update',
 			$flags,
-			array_merge( $updatable, array( 'post_content_base64' ) ),
+			array_merge( $updatable, array( 'post_content_base64', 'meta_input' ) ),
 			$this->post_write_unsupported_flags( false )
 		);
 		if ( $reject ) {
 			return $reject;
+		}
+		$meta_input = $this->parse_meta_input( $flags );
+		if ( isset( $meta_input['refusal'] ) ) {
+			return $meta_input['refusal'];
+		}
+		// Meta keeps no revisions, so a post update with --meta_input takes one post: post fields alone stay bulk.
+		if ( isset( $meta_input['meta'] ) && count( $ids ) > 1 ) {
+			return $this->error_result( __( '--meta_input updates one post at a time, since meta has no revisions to undo a bulk write. Run `post update <id> --meta_input=...` once per post.', 'vibe-ai' ) );
 		}
 		$fields = array();
 		foreach ( $updatable as $field ) {
@@ -999,8 +1007,11 @@ trait WPVibe_CLI_Post {
 			}
 			$fields['post_content'] = $decoded;
 		}
+		if ( isset( $meta_input['meta'] ) ) {
+			$fields['meta_input'] = wp_slash( $meta_input['meta'] );
+		}
 		if ( empty( $fields ) ) {
-			return $this->error_result( __( 'No fields to update. Use flags like --post_title, --post_content, --post_status.', 'vibe-ai' ) );
+			return $this->error_result( __( 'No fields to update. Use flags like --post_title, --post_content, --post_status, --meta_input.', 'vibe-ai' ) );
 		}
 		if ( isset( $fields['post_type'] ) && WPVibe_Code_Snippet::is_code_post_type( $fields['post_type'] ) ) {
 			return $this->wpcode_write_refusal();
@@ -1017,6 +1028,9 @@ trait WPVibe_CLI_Post {
 			if ( WPVibe_Code_Snippet::is_code_post( $post ) ) {
 				$results[] = array( 'id' => $post_id, 'status' => 'error', 'error' => 'WPCode snippet — use the code_snippet tool' );
 				continue;
+			}
+			if ( isset( $fields['meta_input'] ) && in_array( 'revision', array( $post->post_type, $fields['post_type'] ?? '' ), true ) ) {
+				return $this->meta_input_revision_refusal();
 			}
 			$cap_check = $this->check_post_caps( $post->post_type, 'update', $post_id, $fields['post_status'] ?? null );
 			if ( is_wp_error( $cap_check ) ) {
@@ -1110,9 +1124,10 @@ trait WPVibe_CLI_Post {
 		}
 
 		$key = $positional[1];
-		// Block protected meta keys (all '_'-prefixed, plus registered protected) unless --force.
-		if ( empty( $flags['force'] ) && is_protected_meta( $key, 'post' ) ) {
-			return $this->protected_meta_refusal( $key );
+		// Block protected meta keys (all '_'-prefixed, plus registered protected) unless --force, checked as core
+		// stores the key: update_metadata() unslashes it, so `\_secret` lands as `_secret`.
+		if ( empty( $flags['force'] ) && is_protected_meta( wp_unslash( $key ), 'post' ) ) {
+			return $this->protected_meta_refusal( wp_unslash( $key ) );
 		}
 
 		$cap_check = $this->check_post_caps( $post->post_type, 'update', $post_id );
@@ -1223,6 +1238,45 @@ trait WPVibe_CLI_Post {
 		return $this->success_result( array( 'message' => sprintf( __( 'Added meta \'%1$s\' on post #%2$d.', 'vibe-ai' ), $key, $post_id ) ), $parsed['notice'] ?? '' );
 	}
 
+
+	/**
+	 * --meta_input as upstream takes it: a JSON object of key => value (#1219), checked key by key before anything is
+	 * written, with the same rails as `post meta update`. A protected key refuses the whole command with that command's
+	 * own refusal (the fleet stop-loss groups on its first sentence), and a PHP-serialized string is refused as there.
+	 *
+	 * @return array Empty without the flag; else 'meta' (the keys and values) or 'refusal' (a result to return).
+	 */
+	private function parse_meta_input( $flags ) {
+		if ( ! isset( $flags['meta_input'] ) ) {
+			return array();
+		}
+		$meta = json_decode( (string) $flags['meta_input'], true );
+		if ( ! is_array( $meta ) || array() === $meta || array_keys( $meta ) === range( 0, count( $meta ) - 1 ) ) {
+			return array( 'refusal' => $this->error_result( __( '--meta_input takes a JSON object of meta keys and values, for example --meta_input=\'{"price":"19"}\'.', 'vibe-ai' ) ) );
+		}
+		foreach ( $meta as $key => $value ) {
+			$key = (string) $key;
+			if ( '' === $key ) {
+				return array( 'refusal' => $this->error_result( __( '--meta_input has an empty meta key.', 'vibe-ai' ) ) );
+			}
+			// Checked as core stores it: update_metadata() unslashes the key, so `\_secret` lands as `_secret`.
+			if ( is_protected_meta( wp_unslash( $key ), 'post' ) ) {
+				$refusal           = $this->protected_meta_refusal( wp_unslash( $key ) );
+				$refusal['stderr'] .= ' ' . __( 'Nothing was written: --meta_input takes no protected keys, so handle this key on its own with `post meta update` as the note above says, and pass the other keys in --meta_input.', 'vibe-ai' );
+				return array( 'refusal' => $refusal );
+			}
+			if ( is_string( $value ) && is_serialized( trim( $value ) ) ) {
+				/* translators: %s: meta key */
+				return array( 'refusal' => $this->error_result( sprintf( __( 'Value for \'%s\' looks like a PHP-serialized string. WordPress serializes values automatically, so writing this would store the serialized text inside another serialized string. Pass the structured value as JSON inside --meta_input instead.', 'vibe-ai' ), $key ) ) );
+			}
+		}
+		return array( 'meta' => $meta );
+	}
+
+	/** Core's update_post_meta() writes a revision's meta to its parent, which the revision's checks never covered. */
+	private function meta_input_revision_refusal() {
+		return $this->error_result( __( '--meta_input can\'t write to a revision: WordPress stores a revision\'s meta on its parent post. Write it on the parent instead, with `post update <parent id> --meta_input=...`.', 'vibe-ai' ) );
+	}
 
 	/** The SEO plugin a protected post meta key belongs to, by its key prefix, or null (#864). */
 	private static function seo_meta_owner( $key ) {

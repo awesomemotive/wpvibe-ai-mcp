@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.24.0] - 2026-11-18
+
+- Feature: Each user can now turn off live reload for themselves, on the WPVibe page or on their own Profile page. With it off, your browser stays on the page you are viewing while your AI edits the site, instead of jumping to each post it changes.
+- Feature: Your AI can now set a post's custom fields in the same step that creates or updates the post, instead of one call per field. Protected fields are still refused, and nothing is written when one is included.
+- Fix: When WordPress would strip scripts or styles from a post because the connected user is not allowed unfiltered HTML, WPVibe now refuses the edit and says why, instead of saving the post with them removed.
+- Fix: On a connection whose WordPress user is not an Administrator, WPVibe's refusals now point your AI to the REST routes for content, and say how to reconnect as an Administrator for admin-only work, instead of suggesting WP-CLI or a plain reconnect.
+- Fix: After a theme publish, when your front page answers with an empty or cut-short page, WPVibe now says it could not confirm the theme works, instead of reporting it as healthy.
+- Feature: When you publish a draft theme, WPVibe now keeps the previous theme as a protected zip under uploads instead of a theme folder, and your AI can put it back with `theme restore-backup`. Running it again undoes the restore. Existing backup folders become zips.
+- Hardening: Turning on Angie's Super Admin mode through an option change now asks for your approval first. Turning it off stays free.
+- Hardening: Your AI can no longer read or change the API keys WordPress keeps for AI providers in Settings > Connectors, or Akismet's API key.
+- Hardening: Edits now check the capabilities of the post, template or theme being changed, not only Administrator access. Theme switches follow the network's allowed themes on multisite, and white label no longer changes network-wide auto-updates for a site administrator.
+- Fix: WPVibe's activity log and approval records tables are now recorded as installed only once they exist, and a failed install is retried.
+- Fix: The readme now describes exactly what passes through the WPVibe service, its relay servers and your AI provider.
+
 ## [1.23.0] - 2026-11-16
 
 - Feature: Before your AI saves over a published Elementor page, WPVibe now keeps the page as it was as a WordPress revision, with its layout and page settings. If the change is not what you wanted, your AI can put the page back from that revision. If your site keeps no revisions for the page, your AI is told the save cannot be undone.

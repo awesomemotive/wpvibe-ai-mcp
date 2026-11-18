@@ -169,6 +169,11 @@ class WPVibe_White_Label {
 		if ( ! self::truthy( $value ) || ! defined( 'WPVIBE_PLUGIN_BASENAME' ) ) {
 			return;
 		}
+		// On multisite the auto-update list is a network setting: only someone who can manage network plugins changes it
+		// (WordPress.org review 11-17, #1624). A site administrator's white label still hides WPVibe on their own site.
+		if ( is_multisite() && ! current_user_can( 'manage_network_plugins' ) ) {
+			return;
+		}
 		// Shared helper with the CLI verb: core's auto-updater reads the SITE
 		// option (a network option on multisite, where get_option missed it).
 		$auto = WPVibe_Self_Update::auto_update_list();

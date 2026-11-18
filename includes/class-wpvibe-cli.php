@@ -254,6 +254,7 @@ class WPVibe_CLI {
 		'cron event run'    => array( 'tier' => 'write', 'cap' => 'manage_options', 'destructive' => true, 'bulk' => array( 'label' => 'cron_hook' ) ),
 		'cron event delete' => array( 'tier' => 'write', 'cap' => 'manage_options', 'destructive' => true, 'bulk' => array( 'label' => 'cron_hook' ) ),
 		'theme install'     => array( 'tier' => 'write', 'cap' => 'install_themes', 'check_file_mods' => true ),
+		'theme restore-backup' => array( 'tier' => 'write', 'cap' => 'edit_themes', 'check_file_mods' => true ),
 		'theme update'      => array( 'tier' => 'write', 'cap' => 'update_themes', 'check_file_mods' => true ),
 		'theme delete'      => array( 'tier' => 'write', 'cap' => 'delete_themes', 'check_file_mods' => true, 'destructive' => true, 'bulk' => array( 'label' => 'theme' ) ),
 		// Role & capability definitions: core REST has no endpoint for these
@@ -444,6 +445,11 @@ class WPVibe_CLI {
 		'secure_auth_salt',
 		'logged_in_salt',
 		'nonce_salt',
+		// API keys and credentials (WordPress.org review 11-17, #1624): WordPress's Connectors keep each AI provider core
+		// discovers in connectors_ai_<provider>_api_key; a connector a plugin registers names its own option, which
+		// match_option_name() adds from wp_get_connectors() (connector_secret_options). Akismet keeps its key here.
+		'connectors_*',
+		'wordpress_api_key',
 	);
 
 	/**
@@ -584,6 +590,7 @@ class WPVibe_CLI {
 		'cron event run'    => 'handle_cron_event_run',
 		'cron event delete' => 'handle_cron_event_delete',
 		'theme install'     => 'handle_theme_install',
+		'theme restore-backup' => 'handle_theme_restore_backup',
 		'theme update'      => 'handle_theme_update',
 		'theme delete'      => 'handle_theme_delete',
 		'config get'        => 'handle_config_get',
@@ -724,6 +731,7 @@ class WPVibe_CLI {
 		'theme get'               => 'theme get <slug> [--fields=<fields>]',
 		'cron test'               => 'cron test',
 		'theme activate'          => 'theme activate <slug>',
+		'theme restore-backup'    => 'theme restore-backup <slug> (puts back the theme WPVibe backed up when a draft was published over it; the version it replaces becomes the backup, so running it again undoes it)',
 		'plugin activate'         => 'plugin activate <slug>',
 		'plugin deactivate'       => 'plugin deactivate <slug>',
 		'plugin install'          => 'plugin install <slug> [--version=<version>] [--activate] [--force] (--force replaces an existing install, e.g. rollback to an older version; needs approval)',
@@ -737,8 +745,8 @@ class WPVibe_CLI {
 		'option delete'           => 'option delete <key> [<key>...]',
 		'transient delete'        => 'transient delete <name> | --all | --expired',
 		'user delete'             => 'user delete <id|login|email> [<id>...] [--reassign=<user>]',
-		'post create'             => 'post create --post_title=<title> [--post_content=<content>] [--post_content_base64=<b64>] [--post_status=<status>] [--post_type=<type>] [--post_date=<Y-m-d H:i:s>] [--porcelain] (use base64 when content mixes single AND double quotes; plain --post_content silently drops colliding quotes; --porcelain returns just the new post ID)',
-		'post update'             => 'post update <id> [<id>...] [--post_title=<title>] [--post_content=<content>] [--post_content_base64=<b64>] [--post_status=<status>] (use base64 when content mixes single AND double quotes)',
+		'post create'             => 'post create --post_title=<title> [--post_content=<content>] [--post_content_base64=<b64>] [--post_status=<status>] [--post_type=<type>] [--post_date=<Y-m-d H:i:s>] [--meta_input=<json>] [--porcelain] (use base64 when content mixes single AND double quotes; plain --post_content silently drops colliding quotes; --porcelain returns just the new post ID)',
+		'post update'             => 'post update <id> [<id>...] [--post_title=<title>] [--post_content=<content>] [--post_content_base64=<b64>] [--post_status=<status>] [--meta_input=<json>] (use base64 when content mixes single AND double quotes)',
 		'post delete'             => 'post delete <id> [<id>...] [--force]',
 		'post meta update'        => 'post meta update <id> <key> <value> [--format=plaintext|json] [--force] (replaces all rows of the key; a {...}/[...] value with no --format keeps the stored shape: array, or JSON text when the current value is text)',
 		'post meta add'           => 'post meta add <id> <key> <value> [--format=plaintext|json] [--force] (appends a row; use for multi-value metas; a {...}/[...] value with no --format keeps the stored shape: array, or JSON text when the current value is text)',
@@ -823,6 +831,9 @@ class WPVibe_CLI {
 	 */
 	public static function match_option_name( $name, $list ) {
 		$name = trim( (string) $name );
+		if ( self::BLOCKED_OPTIONS === $list ) {
+			$list = array_merge( $list, self::connector_secret_options() );
+		}
 		if ( self::is_role_map_name( $name, $list ) ) {
 			return 'wp_user_roles';
 		}
@@ -874,6 +885,26 @@ class WPVibe_CLI {
 			return null;
 		}
 		return substr( $candidate, 0, -1 );
+	}
+
+	/**
+	 * The option each registered WordPress connector keeps its API key or credentials in (WordPress 7.0+), whatever
+	 * name its plugin chose: secrets, so blocked like the list above (#1624). Empty before WordPress 7.0.
+	 *
+	 * @return string[]
+	 */
+	public static function connector_secret_options() {
+		if ( ! function_exists( 'wp_get_connectors' ) ) {
+			return array();
+		}
+		$names = array();
+		foreach ( (array) wp_get_connectors() as $connector ) {
+			$setting = is_array( $connector ) ? ( $connector['authentication']['setting_name'] ?? '' ) : '';
+			if ( is_string( $setting ) && '' !== $setting ) {
+				$names[] = $setting;
+			}
+		}
+		return array_values( array_unique( $names ) );
 	}
 
 	private static function option_name_is( $name, $candidate ) {

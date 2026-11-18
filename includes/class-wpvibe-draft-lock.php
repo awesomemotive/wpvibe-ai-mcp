@@ -141,6 +141,11 @@ class WPVibe_Draft_Lock {
 					/* translators: 1: draft theme folder, 2: theme the draft publishes to. */
 					return new WP_Error( 'draft_conflict', sprintf( __( 'The draft theme (%1$s) is the active theme on this site, so WPVibe will not edit, preview, publish or delete it as a draft. Nothing was changed. The theme it publishes to (%2$s) is missing, and %2$s-wpvibe-backup holds its previous live version. With the host file manager, rename wp-content/themes/%2$s-wpvibe-backup to %2$s, activate %2$s under Appearance > Themes, then publish the draft through WPVibe (the previous version becomes the new backup).', 'vibe-ai' ), $draft, $source ), WPVibe_Error_Contract::data( 'invalid_input', false, $data ) );
 				}
+				// Backups are archives now (#1624): restoring one puts the theme back, and the previous version stays a backup.
+				if ( WPVibe_Theme_Backup::latest( $source ) ) {
+					/* translators: 1: draft theme folder, 2: theme the draft publishes to. */
+					return new WP_Error( 'draft_conflict', sprintf( __( 'The draft theme (%1$s) is the active theme on this site, so WPVibe will not edit, preview, publish or delete it as a draft. Nothing was changed. The theme it publishes to (%2$s) is missing, and WPVibe has a backup of its previous live version. Run the WP-CLI command "theme restore-backup %2$s", activate %2$s under Appearance > Themes, then publish the draft through WPVibe.', 'vibe-ai' ), $draft, $source ), WPVibe_Error_Contract::data( 'invalid_input', false, $data ) );
+				}
 				// A create_classic_theme draft has no source folder until its first publish, so "activate the original" names nothing.
 				/* translators: 1: draft theme folder, 2: theme the draft publishes to. */
 				return new WP_Error( 'draft_conflict', sprintf( __( 'The draft theme (%1$s) is the active theme on this site, so WPVibe will not edit, preview, publish or delete it as a draft. Nothing was changed. The theme it publishes to (%2$s) has no folder on this site yet (a new WPVibe theme gets one on its first publish), so under Appearance > Themes activate the theme the site used before, or any theme other than the draft, then publish the draft through WPVibe: that makes it live as %2$s.', 'vibe-ai' ), $draft, $source ), WPVibe_Error_Contract::data( 'invalid_input', false, $data ) );

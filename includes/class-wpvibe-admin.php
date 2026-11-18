@@ -446,6 +446,8 @@ class WPVibe_Admin {
 				</div>
 				<?php endif; ?>
 
+				<?php echo WPVibe_Live_Reload::settings_html(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped piecewise in settings_html(). ?>
+
 				<?php echo WPVibe_Approval_Bypass::settings_html(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped piecewise in settings_html(). ?>
 
 				<?php if ( $connected ) : ?>

@@ -852,10 +852,21 @@ class WPVibe_REST {
 		$data      = array( 'status' => rest_authorization_required_code(), 'capability' => $capability );
 		$post_type = $post_id > 0 ? get_post_type( $post_id ) : '';
 		if ( $post_type ) {
-			// Admins pass can_edit_content's manage_options fallback, so only
-			// sub-admin accounts can reach this error and the reconnect advice
-			// is accurate for them.
 			$data['post_type'] = $post_type;
+			// An Administrator reaches this when the post type's own capabilities leave them out: reconnecting won't help.
+			if ( current_user_can( 'manage_options' ) ) {
+				return new WP_Error(
+					'wpvibe_missing_capability',
+					sprintf(
+						/* translators: 1: WordPress capability name, 2: post ID, 3: post type slug */
+						__( 'The connected Administrator account failed the "%1$s" check for post #%2$d (post type "%3$s"). This post type sets its own capabilities and does not grant them to this account, so WPVibe cannot edit it here. Edit it in that plugin\'s own screens or through its own API, or ask the user to give the account that post type\'s capabilities.', 'vibe-ai' ),
+						$capability,
+						$post_id,
+						$post_type
+					),
+					WPVibe_Error_Contract::data( 'capability_cpt_mapping', false, $data )
+				);
+			}
 			return new WP_Error(
 				'wpvibe_missing_capability',
 				sprintf(
@@ -1059,7 +1070,16 @@ class WPVibe_REST {
 	 * Per-command capability checks happen in the handler.
 	 */
 	public function can_run_cli() {
-		return current_user_can( 'manage_options' ) ? true : $this->missing_capability_error( 'manage_options' );
+		if ( current_user_can( 'manage_options' ) ) {
+			return true;
+		}
+		// A connection below Administrator can never run WP-CLI, and connect_site alone keeps its login (#1132).
+		$denied = $this->missing_capability_error( 'manage_options' );
+		return new WP_Error(
+			$denied->get_error_code(),
+			__( 'WP-CLI requires the WordPress capability "manage_options", which the connected account does not have, so no WP-CLI command can run on this connection. For content (posts, pages, media, terms), use rest_api on the /wp/v2 routes instead (rest_api_write for writes where it is listed). Only for admin-only work (plugins, themes, site settings): run remove_site for this site, then ask the user to run connect_site and approve it while logged in as an Administrator (connect_site alone keeps the same login). If the connected account already is an Administrator, a security plugin removed this capability and reconnecting cannot help.', 'vibe-ai' ),
+			$denied->get_error_data()
+		);
 	}
 
 	/**
@@ -1195,23 +1215,11 @@ class WPVibe_REST {
 			return new WP_Error( 'not_found', sprintf( __( 'Post #%d does not exist on this site. Check the ID (search or list the posts first); the connection and its permissions are fine.', 'vibe-ai' ), $post_id ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
 		}
 		if ( $post_id > 0 ) {
-			// manage_options fallback: CPT capability mappings (WPForms, LMS
-			// plugins) fail edit_post even for admins. Post types with an
-			// explicit do_not_allow edit cap stay fenced for everyone.
-			if ( current_user_can( 'edit_post', $post_id ) || $this->admin_content_override( $post_id ) ) {
-				return true;
-			}
-			return $this->missing_capability_error( 'edit_post', $post_id );
+			// The post's own edit_post, with no manage_options override: a post type's capabilities decide for every role
+			// (WordPress.org review 11-17, #1624).
+			return current_user_can( 'edit_post', $post_id ) ? true : $this->missing_capability_error( 'edit_post', $post_id );
 		}
 		return current_user_can( 'edit_posts' ) ? true : $this->missing_capability_error( 'edit_posts' );
-	}
-
-	private function admin_content_override( $post_id ) {
-		if ( ! current_user_can( 'manage_options' ) ) {
-			return false;
-		}
-		$pt_obj = get_post_type_object( get_post_type( $post_id ) );
-		return $pt_obj && 'do_not_allow' !== $pt_obj->cap->edit_posts;
 	}
 
 	// ------------------------------------------------------------------

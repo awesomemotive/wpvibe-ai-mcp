@@ -1506,7 +1506,8 @@ trait WPVibe_CLI_Db {
 		}
 		$exact = array();
 		$like  = array( '%' . $wpdb->esc_like( '_user_roles' ) );
-		foreach ( WPVibe_CLI::BLOCKED_OPTIONS as $name ) {
+		// With every option a registered connector names (#1624), as match_option_name() adds them.
+		foreach ( array_merge( WPVibe_CLI::BLOCKED_OPTIONS, WPVibe_CLI::connector_secret_options() ) as $name ) {
 			// The site address stays migratable: approved, with the preview saying so.
 			if ( in_array( $name, self::$sr_address_options, true ) ) {
 				continue;

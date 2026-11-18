@@ -71,6 +71,25 @@ trait WPVibe_CLI_Theme {
 	// Write Handlers
 	// ------------------------------------------------------------------
 
+	/**
+	 * WordPress's own rules for switching themes, which switch_theme() doesn't check (WordPress.org review 11-17, #1624):
+	 * the switch_themes capability, and on multisite only a theme the network allows for this site.
+	 *
+	 * @param WP_Theme|null $theme The theme to switch to; null checks the capability alone.
+	 * @param string        $slug  Its slug, for the message.
+	 * @return array|null A refusal, or null when the switch may go ahead.
+	 */
+	private function theme_switch_refusal( $theme, $slug ) {
+		if ( ! current_user_can( 'switch_themes' ) ) {
+			return $this->error_result( __( 'You do not have permission to switch themes on this site.', 'vibe-ai' ) );
+		}
+		if ( $theme && is_multisite() && ! $theme->is_allowed() ) {
+			/* translators: %s: theme slug */
+			return $this->error_result( sprintf( __( 'Theme \'%s\' is not enabled for this site. On a multisite network, a network administrator enables it in Network Admin > Themes, or for this site in Network Admin > Sites > Edit > Themes.', 'vibe-ai' ), $slug ) );
+		}
+		return null;
+	}
+
 	private function handle_theme_activate( $positional, $flags ) {
 		if ( empty( $positional[0] ) ) {
 			return $this->error_result( __( 'Theme slug required.', 'vibe-ai' ) );
@@ -83,6 +102,10 @@ trait WPVibe_CLI_Theme {
 		if ( ! $theme->exists() ) {
 			/* translators: %s: theme slug */
 			return $this->error_result( sprintf( __( 'Theme \'%s\' not found.', 'vibe-ai' ), $positional[0] ) );
+		}
+		$refused = $this->theme_switch_refusal( $theme, $positional[0] );
+		if ( $refused ) {
+			return $refused;
 		}
 		switch_theme( $positional[0] );
 
@@ -161,11 +184,28 @@ trait WPVibe_CLI_Theme {
 	}
 
 
+	/** Undo a draft publish: the theme's backup archive goes back in place (WordPress.org review 11-17, #1624). */
+	private function handle_theme_restore_backup( $positional, $flags ) {
+		$slug   = (string) ( $positional[0] ?? '' );
+		$result = WPVibe_Draft_Lock::run( function () use ( $slug ) {
+			return WPVibe_Theme_Backup::restore( $slug );
+		} );
+		if ( is_wp_error( $result ) ) {
+			return $this->error_result( $result->get_error_message() );
+		}
+		return $this->success_result( array( 'message' => $result ) );
+	}
+
 	private function handle_theme_install( $positional, $flags, $confirm_write = false ) {
 		if ( empty( $positional[0] ) ) {
 			return $this->error_result( __( 'Theme slug required.', 'vibe-ai' ) );
 		}
 		$slug = sanitize_key( $positional[0] );
+		// --activate also switches themes, so it needs switch_themes before anything is downloaded.
+		$refused = empty( $flags['activate'] ) ? null : $this->theme_switch_refusal( null, $slug );
+		if ( $refused ) {
+			return $refused;
+		}
 
 		require_once ABSPATH . 'wp-admin/includes/file.php';
 		require_once ABSPATH . 'wp-admin/includes/misc.php';
@@ -271,6 +311,12 @@ trait WPVibe_CLI_Theme {
 		if ( ! empty( $flags['activate'] ) ) {
 			$theme      = $upgrader->theme_info();
 			$stylesheet = $theme ? $theme->get_stylesheet() : $slug;
+			$refused    = $this->theme_switch_refusal( $theme ? $theme : wp_get_theme( $stylesheet ), $stylesheet );
+			if ( $refused ) {
+				/* translators: 1: theme name, 2: why it was not activated */
+				$refused['stderr'] = sprintf( __( 'Installed %1$s, but did not activate it: %2$s', 'vibe-ai' ), $api->name, $refused['stderr'] );
+				return $refused;
+			}
 			switch_theme( $stylesheet );
 			$activated = ( get_stylesheet() === $stylesheet );
 			if ( ! $activated ) {

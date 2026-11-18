@@ -25,7 +25,8 @@ defined( 'ABSPATH' ) || exit;
 class WPVibe_Op_Receipts {
 
 	const TABLE          = 'wpvibe_op_receipts';
-	const SCHEMA_VERSION = '1.0';
+	// 1.1: re-checks once on sites that recorded 1.0 without the table being there (#1624).
+	const SCHEMA_VERSION = '1.1';
 	const OPTION_VERSION = 'wpvibe_op_receipts_schema';
 
 	const MAX_SUMMARY = 16384;
@@ -63,6 +64,10 @@ class WPVibe_Op_Receipts {
 		if ( get_option( self::OPTION_VERSION ) === self::SCHEMA_VERSION ) {
 			return;
 		}
+		// A create the server refused is tried again, but at most hourly: this runs on every request.
+		if ( get_transient( self::OPTION_VERSION . '_retry' ) ) {
+			return;
+		}
 
 		global $wpdb;
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
@@ -84,7 +89,16 @@ class WPVibe_Op_Receipts {
 			KEY idx_created (created_at)
 		) {$charset};";
 
+		// Recorded as installed only once the table exists, and silent with WP_DEBUG on (WordPress.org review 11-17, #1624).
+		$suppress = $wpdb->suppress_errors( true );
 		dbDelta( $sql );
+		// Case-insensitive: a server with lower_case_table_names lists a mixed-case prefix in lower case.
+		$exists = 0 === strcasecmp( (string) $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) ) ), $table );
+		$wpdb->suppress_errors( $suppress );
+		if ( ! $exists ) {
+			set_transient( self::OPTION_VERSION . '_retry', 1, HOUR_IN_SECONDS );
+			return;
+		}
 		update_option( self::OPTION_VERSION, self::SCHEMA_VERSION );
 	}
 

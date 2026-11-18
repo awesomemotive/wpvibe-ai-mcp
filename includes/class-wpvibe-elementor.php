@@ -125,7 +125,7 @@ class WPVibe_Elementor {
 		register_rest_route( $ns, '/elementor/save-template', array(
 			'methods'             => 'POST',
 			'callback'            => array( $this, 'save_template' ),
-			'permission_callback' => array( $this, 'can_manage_options' ),
+			'permission_callback' => array( $this, 'can_save_template' ),
 			'args'                => array(
 				'id'         => array( 'type' => 'integer', 'required' => false, 'sanitize_callback' => 'absint' ),
 				'title'      => array( 'type' => 'string',  'required' => false, 'sanitize_callback' => 'sanitize_text_field' ),
@@ -151,6 +151,30 @@ class WPVibe_Elementor {
 
 	public function can_manage_options() {
 		return current_user_can( 'manage_options' ) ? true : $this->missing_capability_error( 'manage_options' );
+	}
+
+	/**
+	 * save-template writes a site-wide Theme Builder template, so it needs manage_options, and the template's own
+	 * capabilities too: edit_post on an existing one, create on a new one, and publish when it publishes (a new
+	 * template does by default). WordPress.org review 11-17 (#1624). An id that isn't a template gets the callback's 404.
+	 */
+	public function can_save_template( $request ) {
+		$admin = $this->can_manage_options();
+		if ( true !== $admin ) {
+			return $admin;
+		}
+		$id     = (int) $request->get_param( 'id' );
+		$status = (string) $request->get_param( 'status' );
+		if ( $id ) {
+			$post = get_post( $id );
+			if ( ! $post || 'elementor_library' !== $post->post_type ) {
+				return true;
+			}
+			return $this->check_post_caps( 'elementor_library', 'update', $id, '' !== $status ? $status : null );
+		}
+		return get_post_type_object( 'elementor_library' )
+			? $this->check_post_caps( 'elementor_library', 'create', null, '' !== $status ? $status : 'publish' )
+			: true;
 	}
 
 	/**

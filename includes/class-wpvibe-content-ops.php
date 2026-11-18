@@ -773,25 +773,16 @@ class WPVibe_Content_Ops {
 	}
 
 	/**
-	 * edit_post_meta maps through edit_post, so CPT capability mappings fail it
-	 * even for admins, and core denies every underscore-prefixed key to every
-	 * role. Administrators get both back here, matching what `post meta update
-	 * --force` already grants them. The override never applies to keys
-	 * registered with an auth_callback (the owning plugin's own answer stands)
-	 * or post types whose edit_posts cap is an explicit do_not_allow.
+	 * Core denies every underscore-prefixed key to every role through edit_post_meta. Administrators get those keys back
+	 * here, matching what `post meta update --force` grants them, but only on a post they can edit_post: the post's own
+	 * and its post type's capabilities still decide (WordPress.org review 11-17, #1624). Never for a key registered with
+	 * an auth_callback, where the owning plugin's own answer stands.
 	 */
 	private function admin_meta_override( $post_id, $key ) {
-		if ( ! current_user_can( 'manage_options' ) ) {
+		if ( ! current_user_can( 'manage_options' ) || ! current_user_can( 'edit_post', $post_id ) ) {
 			return false;
 		}
-		if ( $this->meta_has_auth_callback( $post_id, $key ) ) {
-			return false;
-		}
-		$pt_obj = get_post_type_object( get_post_type( $post_id ) );
-		if ( ! $pt_obj || 'do_not_allow' === $pt_obj->cap->edit_posts ) {
-			return false;
-		}
-		return true;
+		return ! $this->meta_has_auth_callback( $post_id, $key );
 	}
 
 	/**
@@ -1097,7 +1088,7 @@ class WPVibe_Content_Ops {
 		if ( is_protected_meta( $key, 'post' ) && ! current_user_can( 'manage_options' ) ) {
 			return new WP_Error(
 				'meta_forbidden',
-				__( 'This meta key is protected (underscore-prefixed). WPVibe lets Administrator accounts read and edit protected keys here, but the connected account is not an Administrator. Read it with WP-CLI "post meta list"; to write it, use the write path of the plugin that owns the key (an ability or its REST namespace) or reconnect with an Administrator account. Do not fall back to raw SQL.', 'vibe-ai' ),
+				__( 'This meta key is protected (underscore-prefixed). WPVibe lets Administrator accounts read and edit protected keys here, but the connected account is not an Administrator. Read and write it through the plugin that owns the key (an ability via discover_abilities, or its REST namespace). If that plugin has no such path, this needs an Administrator connection: run remove_site for this site, then ask the user to run connect_site and approve it while logged in as an Administrator (connect_site alone keeps the same login). Do not fall back to raw SQL.', 'vibe-ai' ),
 				WPVibe_Error_Contract::data( 'meta_protected', false, array( 'status' => 403, 'protected' => true ) )
 			);
 		}
@@ -1120,6 +1111,10 @@ class WPVibe_Content_Ops {
 				$code_post = WPVibe_Code_Snippet::code_post_write_error( '', (int) $args['post_id'] );
 				if ( $code_post ) {
 					return $code_post;
+				}
+				$stripped = self::kses_strip_error( $args['field'], $updated );
+				if ( $stripped ) {
+					return $stripped;
 				}
 				// wp_update_post expects slashed data; it unslashes internally.
 				$res = wp_update_post( self::keep_page_template( array(
@@ -1181,6 +1176,14 @@ class WPVibe_Content_Ops {
 						WPVibe_Error_Contract::data( 'approval_flow', false, array( 'status' => 403 ) )
 					);
 				}
+				// Turning on Angie's Super Admin mode needs the user's approval (#1595), which this route has no flow for.
+				if ( null !== WPVibe_CLI::match_option_name( (string) $args['name'], array( 'angie_super_admin_enabled' ) ) && ! in_array( (string) $updated, array( '', '0' ), true ) ) {
+					return new WP_Error(
+						'angie_super_admin_gated',
+						__( 'Turning on Angie\'s Super Admin mode needs the user\'s approval: it lets Angie read wp-config.php and run PHP. Use run_wp_cli `option update angie_super_admin_enabled 1`, which asks the user first, and only if the user asked for Super Admin mode.', 'vibe-ai' ),
+						WPVibe_Error_Contract::data( 'approval_flow', false, array( 'status' => 403 ) )
+					);
+				}
 				// update_option does NOT unslash — store the value verbatim.
 				$ok = update_option( (string) $args['name'], $updated );
 				if ( false === $ok && (string) get_option( (string) $args['name'] ) !== (string) $updated ) {
@@ -1191,6 +1194,40 @@ class WPVibe_Content_Ops {
 			default:
 				return new WP_Error( 'bad_target', __( 'target_type must be post, meta, or option.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 400 ) ) );
 		}
+	}
+
+	/**
+	 * Core hooks wp_filter_post_kses on content_save_pre and excerpt_save_pre for
+	 * a user without unfiltered_html (kses_init_filters), which drops script,
+	 * style and other elements with no undo. Refuse such a save before it
+	 * happens (#1064); a site that unhooked the filter saves as before.
+	 */
+	private static function kses_strip_error( $field, $updated ) {
+		$hooks = array( 'post_content' => 'content_save_pre', 'post_excerpt' => 'excerpt_save_pre' );
+		if ( ! isset( $hooks[ $field ] ) || ! function_exists( 'wp_filter_post_kses' ) || false === has_filter( $hooks[ $field ], 'wp_filter_post_kses' ) ) {
+			return null;
+		}
+		$kept = array_count_values( self::tag_names( wp_unslash( wp_filter_post_kses( wp_slash( $updated ) ) ) ) );
+		$lost = array();
+		foreach ( array_count_values( self::tag_names( $updated ) ) as $name => $count ) {
+			if ( ( $kept[ $name ] ?? 0 ) < $count ) {
+				$lost[] = '<' . $name . '>';
+			}
+		}
+		if ( ! $lost ) {
+			return null;
+		}
+		return new WP_Error( 'kses_would_strip', sprintf(
+			/* translators: %s: element names, e.g. <script>, <style> */
+			__( 'Nothing was saved: WordPress would remove %s from this post on save, because it filters post HTML for the connected WordPress user (a user without the unfiltered_html capability; on multisite only super admins have it, and DISALLOW_UNFILTERED_HTML takes it from everyone). Tell the user; a user whose HTML WordPress does not filter has to make this edit, or the post stays as it is.', 'vibe-ai' ),
+			implode( ', ', $lost )
+		), WPVibe_Error_Contract::data( 'capability_role', false, array( 'status' => 403 ) ) );
+	}
+
+	/** Lowercased names of the opening tags in $html. */
+	private static function tag_names( $html ) {
+		preg_match_all( '/<([a-zA-Z][a-zA-Z0-9-]*)[\s\/>]/', (string) $html, $m );
+		return array_map( 'strtolower', $m[1] );
 	}
 
 	private function target_label( $type, $args ) {

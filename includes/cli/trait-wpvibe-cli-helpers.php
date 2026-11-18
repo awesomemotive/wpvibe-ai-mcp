@@ -452,7 +452,6 @@ trait WPVibe_CLI_Helpers {
 	/** Upstream post create/update flags we do not emulate, each routed to the path that works. */
 	private function post_write_unsupported_flags( $is_create ) {
 		$shared = array(
-			'meta_input'  => __( 'Create the post first, then set each key with `post meta update <id> <key> <value>`.', 'vibe-ai' ),
 			'tax_input'   => __( 'Set terms after the write with `post term set <id> <taxonomy> <term>...`.', 'vibe-ai' ),
 			'post_author' => __( 'Posts are authored as the connected WPVibe user. To change the author afterwards, use rest_api PUT /wp/v2/posts/<id> with {"author":<id>}.', 'vibe-ai' ),
 		);

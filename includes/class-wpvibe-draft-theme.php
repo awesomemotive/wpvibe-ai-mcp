@@ -555,8 +555,27 @@ class WPVibe_Draft_Theme {
 		return '';
 	}
 
-	/** Put the backup back live and the published tree back into the draft slot. */
-	private function rollback_publish( $live_dir, $backup_dir, $draft_dir, $swapped_by_rename, $source_slug, $had_live = true, $previous_active = '' ) {
+	/**
+	 * Remove the publish's rollback folder once it is no longer needed (#1624). A live theme that was a symbolic link
+	 * moved here as the link itself: only the link goes, never the files it points to.
+	 *
+	 * @return bool Whether it is gone.
+	 */
+	private function drop_rollback_folder( $backup_dir ) {
+		if ( is_link( $backup_dir ) ) {
+			// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.unlink_unlink -- our own rollback link.
+			return @unlink( $backup_dir ) || ! is_link( $backup_dir );
+		}
+		return ! is_wp_error( $this->delete_directory( $backup_dir ) ) || ! is_dir( $backup_dir );
+	}
+
+	/**
+	 * Put the backup back live and the published tree back into the draft slot. Once the previous theme is live again,
+	 * this publish's archive goes: it is a copy of the live theme, and as the newest it would make the next restore put
+	 * the live theme over itself and prune the real previous version (#1629 review). Kept while the live theme may be
+	 * damaged.
+	 */
+	private function rollback_publish( $live_dir, $backup_dir, $draft_dir, $swapped_by_rename, $source_slug, $had_live = true, $previous_active = '', $archived = '' ) {
 		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- failures reported below.
 		$draft_back = @rename( $live_dir, $draft_dir ) || ! is_wp_error( $this->copy_directory( $live_dir, $draft_dir ) );
 		if ( $draft_back && is_dir( $live_dir ) ) {
@@ -590,6 +609,11 @@ class WPVibe_Draft_Theme {
 		}
 		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
 		$live_back = @rename( $backup_dir, $live_dir ) || ! is_wp_error( $this->copy_directory( $backup_dir, $live_dir ) );
+		// Copied back, the rollback folder is redundant, and no -wpvibe-backup theme folder may stay (#1624).
+		if ( $live_back ) {
+			$this->drop_rollback_folder( $backup_dir );
+			WPVibe_Theme_Backup::discard( $archived );
+		}
 		wp_clean_themes_cache();
 		// Back to the theme the site was actually running: publishing activates
 		// the source, so when the site was on a different theme a failed publish
@@ -689,6 +713,26 @@ class WPVibe_Draft_Theme {
 			}
 		}
 
+		// The live theme's backup is a zip under uploads, not a theme folder (WordPress.org review 11-17, #1624). It is
+		// written first, so a backup that can't be written stops the publish before the live theme is touched. The
+		// -wpvibe-backup folder below only carries this request's own rollback and is gone once the publish succeeds.
+		$archived = '';
+		if ( $had_live && ! is_link( $live_dir ) ) {
+			// Older archives are pruned only once the publish succeeds, so a failed one keeps the backup before it.
+			$archived = WPVibe_Theme_Backup::archive( $live_dir, $source_slug, false );
+			if ( is_wp_error( $archived ) ) {
+				return new WP_Error(
+					'backup_failed',
+					sprintf(
+						/* translators: %s: error message */
+						__( 'Could not back up the live theme before publishing: %s The live theme is intact; nothing was modified. Fix the underlying filesystem issue (permissions, disk space) and retry.', 'vibe-ai' ),
+						$archived->get_error_message()
+					),
+					WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) )
+				);
+			}
+		}
+
 		// If the live theme directory is missing (a prior interrupted publish or
 		// a manual delete left no source on disk), there is nothing to back up
 		// and nothing to delete — proceed straight to the swap.
@@ -704,6 +748,8 @@ class WPVibe_Draft_Theme {
 			} else {
 				$backup_result = $this->copy_directory( $live_dir, $backup_dir );
 				if ( is_wp_error( $backup_result ) ) {
+					// The live theme is untouched: the archive just written would be a newer copy of it (see rollback_publish).
+					WPVibe_Theme_Backup::discard( $archived );
 					return new WP_Error(
 						'backup_failed',
 						sprintf(
@@ -762,6 +808,7 @@ class WPVibe_Draft_Theme {
 			if ( ! $swapped_by_rename ) {
 				$this->delete_directory( $backup_dir );
 			}
+			WPVibe_Theme_Backup::discard( $archived );
 			return $result;
 		}
 		self::unmark_draft( $live_dir );
@@ -779,6 +826,11 @@ class WPVibe_Draft_Theme {
 					// Copied, the draft is still there and keeps its record.
 					if ( ! is_dir( $draft_dir ) ) {
 						self::clear_draft_records();
+					}
+					// The draft is live; the previous version is the archive, not this folder (#1624).
+					$this->drop_rollback_folder( $backup_dir );
+					if ( $archived ) {
+						WPVibe_Theme_Backup::prune( $source_slug, $archived );
 					}
 					return new WP_Error(
 						'name_restore_failed',
@@ -806,7 +858,7 @@ class WPVibe_Draft_Theme {
 			$settled = $this->settle_saved_customizations( $source_slug, $draft_slug, $clashing, $saved );
 		} catch ( \Throwable $e ) {
 			$unmoved = $this->unsettle();
-			$rolled  = $this->rollback_publish( $live_dir, $backup_dir, $draft_dir, $swapped_by_rename, $source_slug, $had_live, $previous_active );
+			$rolled  = $this->rollback_publish( $live_dir, $backup_dir, $draft_dir, $swapped_by_rename, $source_slug, $had_live, $previous_active, $archived );
 			return new WP_Error(
 				'publish_rolled_back',
 				$unmoved
@@ -834,7 +886,7 @@ class WPVibe_Draft_Theme {
 		$health      = WPVibe_PHP_Guard::render_health_check( $health_note );
 		if ( is_wp_error( $health ) ) {
 			$unmoved = $this->unsettle();
-			$rolled  = $this->rollback_publish( $live_dir, $backup_dir, $draft_dir, $swapped_by_rename, $source_slug, $had_live, $previous_active );
+			$rolled  = $this->rollback_publish( $live_dir, $backup_dir, $draft_dir, $swapped_by_rename, $source_slug, $had_live, $previous_active, $archived );
 			if ( $unmoved ) {
 				/* translators: %s: post IDs */
 				$rolled .= ' ' . sprintf( __( 'WPVibe could not put back these saved Site Editor rows: %s.', 'vibe-ai' ), '#' . implode( ', #', $unmoved ) );
@@ -859,8 +911,12 @@ class WPVibe_Draft_Theme {
 			);
 		}
 
-		// Cleanup.
+		// Cleanup. The previous version lives on as the archive written above.
 		$this->delete_directory( $draft_dir );
+		$leftover = ! $this->drop_rollback_folder( $backup_dir );
+		if ( $archived ) {
+			WPVibe_Theme_Backup::prune( $source_slug, $archived );
+		}
 		// The preview token too: an old preview link must not show the next draft before its leftover rows are parked.
 		self::clear_draft_records();
 		self::record_draft_event( 'published' );
@@ -872,11 +928,20 @@ class WPVibe_Draft_Theme {
 			'admin_url'    => home_url( '/' ),
 		) );
 
-		$message = $had_live
-			/* translators: 1: theme slug, 2: backup slug */
-			? sprintf( __( 'Draft published to \'%1$s\'. Backup saved as \'%2$s\'.', 'vibe-ai' ), $source_slug, $source_slug . '-wpvibe-backup' )
+		if ( $had_live && $archived ) {
 			/* translators: %s: theme slug */
-			: sprintf( __( 'New theme \'%s\' published. No existing theme directory was replaced; no theme backup was created.', 'vibe-ai' ), $source_slug );
+			$message = sprintf( __( 'Draft published to \'%1$s\'. The previous version is backed up as a zip under uploads; to put it back, run the WP-CLI command "theme restore-backup %1$s".', 'vibe-ai' ), $source_slug );
+		} elseif ( $had_live ) {
+			/* translators: %s: theme slug */
+			$message = sprintf( __( 'Draft published to \'%s\'. Its previous folder was a link or held no files, so no backup was made.', 'vibe-ai' ), $source_slug );
+		} else {
+			/* translators: %s: theme slug */
+			$message = sprintf( __( 'New theme \'%s\' published. No existing theme directory was replaced; no theme backup was created.', 'vibe-ai' ), $source_slug );
+		}
+		if ( $leftover ) {
+			/* translators: %s: folder */
+			$message .= ' ' . sprintf( __( 'WPVibe could not delete the temporary folder \'%s\' the publish used; delete it with SFTP or the host file manager (the backup is the zip, not this folder).', 'vibe-ai' ), $backup_dir );
+		}
 		if ( $settled['set_aside'] ) {
 			$message .= ' ' . sprintf(
 				/* translators: 1: list of rows, 2: parking theme slug, 3: post id, 4: live theme slug */

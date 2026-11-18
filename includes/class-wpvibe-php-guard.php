@@ -257,6 +257,11 @@ class WPVibe_PHP_Guard {
 		$status = (int) wp_remote_retrieve_response_code( $response );
 		$body   = (string) wp_remote_retrieve_body( $response );
 		if ( ! self::render_looks_fatal( $status, $body ) ) {
+			// An empty or cut-short 200 (a coming-soon page, a plugin's exception handler) can hide a theme fatal (#1185).
+			if ( 200 === $status && false === stripos( $body, '</html' ) ) {
+				$note = __( 'The after-publish render check could not confirm the theme: the front page answered HTTP 200 with an empty or incomplete page (no closing </html>), which a coming-soon page or a plugin\'s error handler can send even when the theme fails. The publish was kept, but nothing confirmed that its templates and front-end hooks (template_redirect, wp_head, wp_footer) run without errors. Open the homepage in a private window, and again while logged in, to check it.', 'vibe-ai' );
+				return null;
+			}
 			return true;
 		}
 		if ( 503 === $status ) {
