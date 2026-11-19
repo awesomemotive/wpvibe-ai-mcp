@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WPVibe – MCP Server for WordPress, works with Claude, ChatGPT & other AI MCP agents
  * Description: Connect any AI assistant to your WordPress site. Manage content, edit themes, and automate site tasks with Claude, ChatGPT, Cursor & more via MCP.
- * Version: 1.24.0
+ * Version: 1.24.1
  * Author: SeedProd
  * Author URI: https://wpvibe.ai
  * License: GPL-2.0-or-later
@@ -14,7 +14,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WPVIBE_VERSION', '1.24.0' );
+define( 'WPVIBE_VERSION', '1.24.1' );
 define( 'WPVIBE_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'WPVIBE_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 define( 'WPVIBE_PLUGIN_BASENAME', plugin_basename( __FILE__ ) );
@@ -185,7 +185,8 @@ function wpvibe_init() {
 	WPVibe_Live_Reload::instance();
 	WPVibe_Audit_Log::maybe_install();
 	WPVibe_Op_Receipts::maybe_install();
-	WPVibe_Theme_Backup::migrate_legacy();
+	WPVibe_Theme_Backup::register();
+	WPVibe_Theme_Backup::migrate_plain();
 	WPVibe_Op_Receipts::instance();
 	WPVibe_Builder_Login::instance();
 	WPVibe_Timing::instance();

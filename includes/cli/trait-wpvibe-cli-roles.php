@@ -1053,7 +1053,11 @@ trait WPVibe_CLI_Roles {
 			/* translators: %s: identifier */
 			return $this->error_result( sprintf( __( 'Invalid user ID, email or login: \'%s\'', 'vibe-ai' ), $positional[0] ) );
 		}
-		$key   = (string) $positional[1];
+		$key     = (string) $positional[1];
+		$allowed = $this->meta_read_permission( 'user', (int) $user->ID, $key );
+		if ( true !== $allowed ) {
+			return $allowed;
+		}
 		$value = get_user_meta( (int) $user->ID, $key, true );
 		if ( '' === $value || null === $value ) {
 			/* translators: 1: key, 2: user ID */
@@ -1091,11 +1095,20 @@ trait WPVibe_CLI_Roles {
 			/* translators: %s: identifier */
 			return $this->error_result( sprintf( __( 'Invalid user ID, email or login: \'%s\'', 'vibe-ai' ), $positional[0] ) );
 		}
-		$only = isset( $flags['keys'] ) ? array_filter( array_map( 'trim', explode( ',', (string) $flags['keys'] ) ) ) : array();
-		$all  = get_user_meta( (int) $user->ID );
-		$rows = array();
+		$allowed = $this->meta_read_permission( 'user', (int) $user->ID );
+		if ( true !== $allowed ) {
+			return $allowed;
+		}
+		$only   = isset( $flags['keys'] ) ? array_filter( array_map( 'trim', explode( ',', (string) $flags['keys'] ) ) ) : array();
+		$all    = get_user_meta( (int) $user->ID );
+		$rows   = array();
+		$hidden = 0;
 		foreach ( (array) $all as $key => $values ) {
 			if ( $only && ! in_array( $key, $only, true ) ) {
+				continue;
+			}
+			if ( ! $this->meta_key_readable( 'user', (int) $user->ID, (string) $key ) ) {
+				$hidden++;
 				continue;
 			}
 			$withheld = $this->is_withheld_user_meta( $key );
@@ -1111,7 +1124,7 @@ trait WPVibe_CLI_Roles {
 				$rows[] = array( 'user_id' => (int) $user->ID, 'meta_key' => $key, 'meta_value' => $mv );
 			}
 		}
-		return $this->success_result( $this->filter_fields( $rows, $flags ) );
+		return $this->success_result( $this->filter_fields( $rows, $flags ), self::meta_hidden_note( $hidden ) );
 	}
 
 
@@ -1190,10 +1203,12 @@ trait WPVibe_CLI_Roles {
 			/* translators: %s: meta key */
 			return $this->error_result( sprintf( __( 'Refused: \'%s\' stores WordPress capabilities or session/credential data. Writing it via user meta would change roles or sessions around the permission system. Change roles with `user set-role`/`user add-role`/`user remove-role`; there is no --force override for this key.', 'vibe-ai' ), $key ) );
 		}
-		// Other protected keys (_-prefixed / registered): --force override, matching post meta.
-		if ( empty( $flags['force'] ) && is_protected_meta( $key, 'user' ) ) {
-			/* translators: %s: meta key */
-			return $this->error_result( sprintf( __( 'Meta key \'%s\' is a protected/internal key. Use --force to override.', 'vibe-ai' ), $key ) );
+		// Everything else follows the post meta rule (#1624): edit_user_meta (or add_/delete_) for this user and key; a
+		// protected key needs --force, which an owning plugin's auth callback still refuses and which otherwise takes
+		// manage_options plus edit_user on this very user.
+		$allowed = $this->meta_write_permission( 'user', 'update' === $mode ? 'edit' : $mode, (int) $user->ID, $key, ! empty( $flags['force'] ) );
+		if ( true !== $allowed ) {
+			return $allowed;
 		}
 
 		if ( 'delete' === $mode ) {

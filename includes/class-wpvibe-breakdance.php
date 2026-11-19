@@ -55,7 +55,7 @@ class WPVibe_Breakdance {
 		register_rest_route( $ns, '/breakdance/save-page', array(
 			'methods'             => 'POST',
 			'callback'            => array( $this, 'save_page' ),
-			'permission_callback' => array( $this, 'can_edit_posts' ),
+			'permission_callback' => array( $this, 'can_save_page' ),
 			'args'                => array(
 				'id'               => array( 'type' => 'integer', 'required' => false, 'sanitize_callback' => 'absint' ),
 				'title'            => array( 'type' => 'string',  'required' => false, 'sanitize_callback' => 'sanitize_text_field' ),
@@ -70,7 +70,7 @@ class WPVibe_Breakdance {
 		register_rest_route( $ns, '/breakdance/get-page', array(
 			'methods'             => 'GET',
 			'callback'            => array( $this, 'get_page' ),
-			'permission_callback' => array( $this, 'can_edit_posts' ),
+			'permission_callback' => array( $this, 'can_edit_post' ),
 			'args'                => array(
 				'id' => array( 'type' => 'integer', 'required' => true, 'sanitize_callback' => 'absint' ),
 			),
@@ -85,7 +85,48 @@ class WPVibe_Breakdance {
 	}
 
 	public function can_edit_posts() {
-		return current_user_can( 'edit_posts' );
+		return current_user_can( 'edit_posts' ) ? true : new WP_Error(
+			'wpvibe_missing_capability',
+			__( 'This action requires the WordPress capability "edit_posts", which the connected account does not have. Administrators have it by default; reconnect with an account that has this capability for full access.', 'vibe-ai' ),
+			WPVibe_Error_Contract::data( 'capability_role', false, array( 'status' => rest_authorization_required_code(), 'capability' => 'edit_posts' ) )
+		);
+	}
+
+	/**
+	 * The save routes check the post they write in their permission_callback, not only edit_posts (WordPress.org review
+	 * 11-17, #1624): edit_post on an existing post plus the publish capability when the save publishes; on a new post,
+	 * the post type's create and publish capabilities. The handler checks the same again before it writes.
+	 */
+	public function can_save_page( $request ) {
+		$base = $this->can_edit_posts();
+		if ( true !== $base ) {
+			return $base;
+		}
+		$id     = (int) $request->get_param( 'id' );
+		$status = (string) $request->get_param( 'status' );
+		$status = '' !== $status ? $status : 'publish';
+		if ( $id ) {
+			$post = get_post( $id );
+			return $post ? $this->check_post_caps( $post->post_type, 'update', $id, $status ) : self::post_not_found( $id );
+		}
+		$post_type = (string) $request->get_param( 'post_type' );
+		return $this->check_post_caps( '' !== $post_type ? $post_type : 'page', 'create', null, $status );
+	}
+
+	/** get-page reads one post's layout: edit_post on it. */
+	public function can_edit_post( $request ) {
+		$base = $this->can_edit_posts();
+		if ( true !== $base ) {
+			return $base;
+		}
+		$id   = (int) $request->get_param( 'id' );
+		$post = get_post( $id );
+		return $post ? $this->check_post_caps( $post->post_type, 'update', $id ) : self::post_not_found( $id );
+	}
+
+	private static function post_not_found( $id ) {
+		/* translators: %d: post ID */
+		return new WP_Error( 'not_found', sprintf( __( 'Post #%d does not exist on this site.', 'vibe-ai' ), (int) $id ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
 	}
 
 	// ------------------------------------------------------------------
@@ -500,9 +541,9 @@ class WPVibe_Breakdance {
 	}
 
 	/**
-	 * Route-level permission_callback only confirms edit_posts. This enforces
-	 * per-post-type create/edit/publish caps so a Contributor can't create a
-	 * published (or private/future) page through the endpoint.
+	 * Per-post-type create/edit/publish caps, so a Contributor can't create a
+	 * published (or private/future) page through the endpoint. The routes'
+	 * permission_callback and the handler both run it.
 	 */
 	private function check_post_caps( $post_type, $action, $post_id = null, $new_status = null ) {
 		$pt_obj = get_post_type_object( $post_type );

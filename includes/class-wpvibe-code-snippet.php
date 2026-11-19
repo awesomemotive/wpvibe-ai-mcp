@@ -49,7 +49,7 @@ class WPVibe_Code_Snippet {
 
 	// WPCode options holding executable output: the active-snippet cache it runs
 	// from and the site-wide header/body/footer scripts. Kept in BLOCKED_OPTIONS
-	// (write-blocked) and READABLE_BLOCKED_OPTIONS (reads stay open).
+	// (write-blocked); reads stay open, as for every option not in SECRET_OPTIONS.
 	const STORAGE_OPTIONS = array( 'wpcode_snippets', 'ihaf_insert_*' );
 
 	// sha256(id LF code) of the code WPVibe last wrote to a snippet it created. Other WPVibe
@@ -143,7 +143,7 @@ class WPVibe_Code_Snippet {
 			'posts_per_page'   => self::DORMANT_CREATE_CAP,
 			'no_found_rows'    => true,
 			'cache_results'    => false,
-			'suppress_filters' => true,
+			// get_posts() suppresses query filters by default, so other plugins' filters can't hide a create from the count.
 			'meta_query'       => array( // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query
 				array(
 					'key'     => self::DORMANT_CREATED_META,

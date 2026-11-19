@@ -387,9 +387,10 @@ trait WPVibe_CLI_Cache {
 				$message = __( 'No supported page-cache plugin detected, so nothing was purged for those URLs. A cache plugin WPVibe does not support may still hold them; purge it from its own settings page.', 'vibe-ai' );
 			}
 		} elseif ( $purged ) {
-			/* translators: %s: plugin names */
 			$message = $object_cache_flushed
+				/* translators: %s: plugin names */
 				? sprintf( __( 'Purged: %s. Object cache flushed.', 'vibe-ai' ), implode( ', ', $purged ) )
+				/* translators: %s: plugin names */
 				: sprintf( __( 'Purged: %s.', 'vibe-ai' ), implode( ', ', $purged ) );
 		} elseif ( $object_cache_flushed ) {
 			$message = __( 'No known cache plugin detected; flushed the WordPress object cache.', 'vibe-ai' );

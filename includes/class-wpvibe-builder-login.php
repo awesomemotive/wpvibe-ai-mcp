@@ -597,7 +597,7 @@ class WPVibe_Builder_Login {
 			return;
 		}
 		global $pagenow;
-		$method = isset( $_SERVER['REQUEST_METHOD'] ) ? strtoupper( (string) $_SERVER['REQUEST_METHOD'] ) : 'GET'; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+		$method = isset( $_SERVER['REQUEST_METHOD'] ) ? strtoupper( sanitize_text_field( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) ) : 'GET';
 		if ( ! is_admin() ) {
 			// The compile step's only front-end request is the sign-in link, which carries no
 			// session cookie yet. Anything else (a preview's iframe or image) needs no account.
@@ -630,8 +630,15 @@ class WPVibe_Builder_Login {
 			}
 		}
 		// The action or page in the log tells a refused builder call from a probe.
-		$what = isset( $_REQUEST['action'] ) ? $_REQUEST['action'] : ( isset( $_GET['page'] ) ? $_GET['page'] : '' ); // phpcs:ignore WordPress.Security.NonceVerification, WordPress.Security.ValidatedSanitizedInput
-		self::refuse( trim( (string) $pagenow . ' ' . $method . ' ' . ( is_string( $what ) ? sanitize_key( $what ) : '' ) ) );
+		// Read only to name the refused request in the log; nothing is changed, so no nonce.
+		// phpcs:disable WordPress.Security.NonceVerification.Recommended
+		if ( isset( $_REQUEST['action'] ) ) {
+			$what = is_string( $_REQUEST['action'] ) ? sanitize_key( wp_unslash( $_REQUEST['action'] ) ) : '';
+		} else {
+			$what = isset( $_GET['page'] ) && is_string( $_GET['page'] ) ? sanitize_key( wp_unslash( $_GET['page'] ) ) : '';
+		}
+		// phpcs:enable WordPress.Security.NonceVerification.Recommended
+		self::refuse( trim( (string) $pagenow . ' ' . $method . ' ' . $what ) );
 	}
 
 	/** pre_comment_on_post: never a comment from a builder session, whatever reached here. */

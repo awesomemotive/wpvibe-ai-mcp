@@ -7,8 +7,8 @@
  * Surfaces in WP admin → WPVibe → Approval Log so users can see what their
  * AI assistant has done to their site.
  *
- * The table is append-only by convention — no code path issues DELETE/UPDATE
- * on this table. Uninstall.php drops it; that's the only path to removal.
+ * Rows are never updated. Only the oldest are deleted, past the most recent
+ * 1,000 (filter wpvibe_audit_log_max_rows); uninstall.php drops the table.
  *
  * Decisions (approved / declined / expired) live in the Worker's
  * pending_operations D1 table — the plugin only knows about executions it
@@ -77,14 +77,62 @@ class WPVibe_Audit_Log {
 		// Recorded as installed only once the table exists, and silent with WP_DEBUG on (WordPress.org review 11-17, #1624).
 		$suppress = $wpdb->suppress_errors( true );
 		dbDelta( $sql );
-		// Case-insensitive: a server with lower_case_table_names lists a mixed-case prefix in lower case.
-		$exists = 0 === strcasecmp( (string) $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) ) ), $table );
+		$exists = self::table_exists();
 		$wpdb->suppress_errors( $suppress );
 		if ( ! $exists ) {
 			set_transient( self::OPTION_VERSION . '_retry', 1, HOUR_IN_SECONDS );
 			return;
 		}
 		update_option( self::OPTION_VERSION, self::SCHEMA_VERSION );
+	}
+
+	/**
+	 * Whether the table can be used: its schema is recorded as installed. The option is autoloaded, so this costs no
+	 * query. A site cloned or migrated without its custom tables still carries the flag; the first query that finds the
+	 * table gone clears it (run()), and from then on nothing touches the table until it exists again.
+	 */
+	public static function ready() {
+		return get_option( self::OPTION_VERSION ) === self::SCHEMA_VERSION;
+	}
+
+	/** Case-insensitive: a server with lower_case_table_names lists a mixed-case prefix in lower case. */
+	private static function table_exists() {
+		global $wpdb;
+		$table = self::table_name();
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		return 0 === strcasecmp( (string) $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) ) ), $table );
+	}
+
+	/**
+	 * Every query on the table goes through here (#1624). Skipped, returning $fallback, while the table isn't ready.
+	 * Database errors are never printed (WP_DEBUG shows them in the page or inside REST JSON). When the query failed
+	 * because the table is gone, the flag is cleared and the table created again; if that works the query runs once
+	 * more, so the entry isn't lost.
+	 *
+	 * @param callable $query    function ( wpdb $wpdb ) that runs one query and returns its result.
+	 * @param mixed    $fallback what the caller gets when the table can't be used.
+	 */
+	private static function run( $query, $fallback ) {
+		if ( ! self::ready() ) {
+			return $fallback;
+		}
+		global $wpdb;
+		$suppress = $wpdb->suppress_errors( true );
+		// Restored even when a query throws (strict mysqli reporting), so wpdb errors aren't left hidden for the request.
+		try {
+			$wpdb->last_error = '';
+			$result           = $query( $wpdb );
+			if ( '' !== (string) $wpdb->last_error && ! self::table_exists() ) {
+				delete_option( self::OPTION_VERSION );
+				delete_transient( self::OPTION_VERSION . '_retry' );
+				self::maybe_install();
+				$wpdb->last_error = '';
+				$result           = self::ready() ? $query( $wpdb ) : $fallback;
+			}
+		} finally {
+			$wpdb->suppress_errors( $suppress );
+		}
+		return $result;
 	}
 
 	/**
@@ -95,23 +143,24 @@ class WPVibe_Audit_Log {
 	 * @param array $args operation, command, params, dry_run, result_summary
 	 */
 	public static function log_execution( $args ) {
-		global $wpdb;
 		$table    = self::table_name();
 		$bypassed = class_exists( 'WPVibe_Approval_Bypass' ) && WPVibe_Approval_Bypass::$request_bypassed;
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		$inserted = $wpdb->insert(
-			$table,
-			array(
-				'user_id'        => get_current_user_id(),
-				'operation'      => substr( (string) ( $args['operation'] ?? 'unknown' ), 0, 64 ),
-				'command'        => (string) ( $args['command'] ?? '' ) . ( $bypassed ? ' [no approval: bypass on]' : '' ),
-				'params_json'    => isset( $args['params'] ) ? wp_json_encode( $args['params'] ) : null,
-				'dry_run_json'   => isset( $args['dry_run'] ) ? wp_json_encode( $args['dry_run'] ) : null,
-				// Cut by character, not byte: a cut inside a multibyte character is invalid UTF-8, which wpdb refuses to insert,
-				// and the whole row would be lost (a failed run's error now lands here, #756).
-				'result_summary' => isset( $args['result_summary'] ) ? mb_substr( (string) $args['result_summary'], 0, 500 ) : null,
-			),
-			array( '%d', '%s', '%s', '%s', '%s', '%s' )
+		$row      = array(
+			'user_id'        => get_current_user_id(),
+			'operation'      => substr( (string) ( $args['operation'] ?? 'unknown' ), 0, 64 ),
+			'command'        => (string) ( $args['command'] ?? '' ) . ( $bypassed ? ' [no approval: bypass on]' : '' ),
+			'params_json'    => isset( $args['params'] ) ? wp_json_encode( $args['params'] ) : null,
+			'dry_run_json'   => isset( $args['dry_run'] ) ? wp_json_encode( $args['dry_run'] ) : null,
+			// Cut by character, not byte: a cut inside a multibyte character is invalid UTF-8, which wpdb refuses to insert,
+			// and the whole row would be lost (a failed run's error now lands here, #756).
+			'result_summary' => isset( $args['result_summary'] ) ? mb_substr( (string) $args['result_summary'], 0, 500 ) : null,
+		);
+		$inserted = self::run(
+			function ( $wpdb ) use ( $table, $row ) {
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+				return $wpdb->insert( $table, $row, array( '%d', '%s', '%s', '%s', '%s', '%s' ) );
+			},
+			false
 		);
 
 		$logged = false !== $inserted;
@@ -167,46 +216,60 @@ class WPVibe_Audit_Log {
 			return;
 		}
 
-		global $wpdb;
-		$table = self::table_name();
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-		$cutoff = $wpdb->get_var(
-			$wpdb->prepare( "SELECT id FROM {$table} ORDER BY id DESC LIMIT 1 OFFSET %d", $max - 1 )
+		$table  = self::table_name();
+		$cutoff = self::run(
+			function ( $wpdb ) use ( $table, $max ) {
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				return $wpdb->get_var( $wpdb->prepare( "SELECT id FROM {$table} ORDER BY id DESC LIMIT 1 OFFSET %d", $max - 1 ) );
+			},
+			null
 		);
 		if ( ! $cutoff ) {
 			return;
 		}
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-		$wpdb->query(
-			$wpdb->prepare( "DELETE FROM {$table} WHERE id < %d", $cutoff )
+		self::run(
+			function ( $wpdb ) use ( $table, $cutoff ) {
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				return $wpdb->query( $wpdb->prepare( "DELETE FROM {$table} WHERE id < %d", $cutoff ) );
+			},
+			false
 		);
 	}
 
 	public static function get_recent( $limit = 50, $offset = 0 ) {
-		global $wpdb;
 		$limit  = max( 1, min( 200, (int) $limit ) );
 		$offset = max( 0, (int) $offset );
 		$table  = self::table_name();
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-		return $wpdb->get_results(
-			$wpdb->prepare( "SELECT * FROM {$table} ORDER BY id DESC LIMIT %d OFFSET %d", $limit, $offset )
+		$rows   = self::run(
+			function ( $wpdb ) use ( $table, $limit, $offset ) {
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				return $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} ORDER BY id DESC LIMIT %d OFFSET %d", $limit, $offset ) );
+			},
+			array()
 		);
+		return is_array( $rows ) ? $rows : array();
 	}
 
 	public static function get_by_id( $id ) {
-		global $wpdb;
 		$id    = (int) $id;
 		$table = self::table_name();
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-		return $wpdb->get_row(
-			$wpdb->prepare( "SELECT * FROM {$table} WHERE id = %d", $id )
+		return self::run(
+			function ( $wpdb ) use ( $table, $id ) {
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				return $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table} WHERE id = %d", $id ) );
+			},
+			null
 		);
 	}
 
 	public static function count() {
-		global $wpdb;
 		$table = self::table_name();
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-		return (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table}" );
+		return (int) self::run(
+			function ( $wpdb ) use ( $table ) {
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				return $wpdb->get_var( "SELECT COUNT(*) FROM {$table}" );
+			},
+			0
+		);
 	}
 }

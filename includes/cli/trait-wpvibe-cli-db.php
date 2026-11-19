@@ -12,6 +12,10 @@ trait WPVibe_CLI_Db {
 	private $db_query_reconnect_retries = null;
 	/** Set true when replace_in_value hits a __PHP_Incomplete_Class; the row is skipped. */
 	private $sr_incomplete = false;
+	/** Set true when replace_in_value meets JSON text with a secret field it cannot rewrite exactly; the row is skipped, unreported. */
+	private $sr_secret_text = false;
+	/** The column naming each row of the table being rewritten (option_name, meta_key), or null. */
+	private $sr_name_col = null;
 	private $sr_skipped_serialized = 0;
 	private $sr_timed_out = false;
 	/** Options search-replace may rewrite after approval (a domain migration); every other protected option is skipped. */
@@ -432,6 +436,30 @@ trait WPVibe_CLI_Db {
 				}
 			}
 
+			// No read returns a secret (#1680, #1624): every table that holds one is read
+			// through a derived table that masks it, so no expression, UNION or LIKE over
+			// its rows can reach the secret. A form that cannot be rewritten with
+			// certainty is refused; WooCommerce API keys are held for approval.
+			// A control byte (other than tab and newline) can change where MySQL ends a comment or a literal
+			// from where the checks here think it does; no legitimate read needs one.
+			// Carriage return too: SQLite's driver (Playground, SQLite hosts) ends a comment at it, MySQL does not.
+			if ( preg_match( '/[\x00-\x08\x0B-\x0D\x0E-\x1F\x7F]/', $read ) ) {
+				return $this->error_result( __( 'Refused: this SQL contains a control character. Remove it and run the read again.', 'vibe-ai' ) );
+			}
+			$safe = $this->db_query_secret_safe_read( $read );
+			if ( isset( $safe['refuse'] ) ) {
+				return $safe['refuse'];
+			}
+			if ( ! empty( $safe['hold'] ) && ! $this->skip_destructive ) {
+				$destructive = $this->classify_db_query_write( $sql, $keyword );
+				if ( ! empty( $destructive['refuse'] ) ) {
+					return $destructive['refuse'];
+				}
+				$destructive['reason'] = __( 'This read returns WooCommerce REST API keys (consumer keys and secrets), which WPVibe only returns with the user\'s approval.', 'vibe-ai' );
+				return $this->approval_required_error( $destructive, 'db query' );
+			}
+			$read = $safe['sql'];
+
 			// Unapproved reads run inside a read-only transaction that is always
 			// rolled back, so the server refuses any write the text hides; that
 			// refusal comes back as an approval. A server without read-only
@@ -463,11 +491,19 @@ trait WPVibe_CLI_Db {
 					return $this->error_result( sprintf( __( 'SQL error: %s', 'vibe-ai' ), $error ) );
 				}
 
+				$masked = $this->count_masked_cells( $results );
 				$output = array(
 					'table_prefix'  => $wpdb->prefix,
 					'rows_returned' => count( $results ),
 					'results'       => $results,
 				);
+				if ( $masked ) {
+					$output['masked'] = sprintf(
+						/* translators: %d: number of values masked */
+						_n( '%d value is shown as [wpvibe-masked: ...]: it is a password, key, salt, token or other credential (or an option with one inside), which db query does not return. Read an option with `option get <name>` to see its other fields; never write the placeholder back.', '%d values are shown as [wpvibe-masked: ...]: each is a password, key, salt, token or other credential (or an option with one inside), which db query does not return. Read an option with `option get <name>` to see its other fields; never write the placeholders back.', $masked, 'vibe-ai' ),
+						$masked
+					);
+				}
 
 				return array(
 					'exit_code' => 0,
@@ -529,6 +565,370 @@ trait WPVibe_CLI_Db {
 		);
 	}
 
+	/** Words after a table that are not its alias (a word that is none of these, or AS, means the reference has one). */
+	private static $sql_not_alias = array(
+		'WHERE', 'JOIN', 'INNER', 'LEFT', 'RIGHT', 'FULL', 'OUTER', 'CROSS', 'NATURAL', 'STRAIGHT_JOIN', 'ON', 'USING',
+		'GROUP', 'ORDER', 'LIMIT', 'HAVING', 'UNION', 'EXCEPT', 'INTERSECT', 'MINUS', 'WINDOW', 'FOR', 'LOCK', 'INTO',
+		'PARTITION', 'FORCE', 'USE', 'IGNORE', 'PROCEDURE', 'SET', 'VALUES', 'VALUE', 'SELECT', 'OFFSET', 'FETCH',
+		'RETURNING', 'TABLESAMPLE', 'QUALIFY',
+	);
+
+	/**
+	 * Which kind of table $name is when its rows hold secrets: options and sitemeta (keys, salts, passwords inside
+	 * settings), usermeta (session tokens, application passwords, 2FA secrets), users (password hashes, reset keys),
+	 * api_keys (WooCommerce REST keys); null for any other table.
+	 */
+	private function secret_table_kind( $name ) {
+		$key = $this->protected_table_key( $name );
+		if ( in_array( $key, array( 'options', 'sitemeta', 'usermeta', 'users' ), true ) ) {
+			return $key;
+		}
+		return preg_match( '/woocommerce_api_keys$/i', (string) $name ) ? 'api_keys' : null;
+	}
+
+	/**
+	 * The read with each table that holds secrets replaced by a derived table that masks them (#1680, #1624), so the
+	 * statement never sees a secret: options and sitemeta show SECRET_ROW_MASK as the value of a secret option or one
+	 * with a secret field inside (the rows option get masks), usermeta as the value of a credential key (the keys
+	 * user meta get withholds), users NULL as user_pass and user_activation_key. Masking the output could not stop
+	 * a UNION, HEX() or a LIKE oracle; with the rows masked no expression over them reaches a secret.
+	 *
+	 * @return array{sql?: string, hold?: bool, refuse?: array} sql: the statement to run (unchanged when it reads no
+	 *   such table); hold: it reads WooCommerce API keys; refuse: it names such a table in a form that cannot be
+	 *   rewritten with certainty (schema-qualified, double-quoted, a multibyte quoting doubt, a failed lookup).
+	 */
+	private function db_query_secret_safe_read( $sql ) {
+		$lists = array( $this->sql_identifier_tokens( $sql, true, true ), $this->sql_identifier_tokens( $sql, false, true ) );
+		$refs  = array();
+		foreach ( $lists as $list ) {
+			$found = $this->sql_secret_table_refs( $list, $sql );
+			if ( ! is_array( $found ) ) {
+				return array( 'refuse' => 'clause' === $found ? $this->secret_clause_refusal() : $this->secret_read_refusal() );
+			}
+			$refs[] = $found;
+		}
+		// Where a literal ends depends on the server's sql_mode (backslash escapes) or, after a high byte, on the
+		// connection's character set: the rewrite runs only when every reading puts the tables in the same place.
+		if ( $refs[0] !== $refs[1] || ( preg_match( '/[\x80-\xFF][\\\\`]/', $sql ) && preg_match( '/options|sitemeta|usermeta|users|api_keys/i', $sql ) ) ) {
+			return array( 'refuse' => $this->secret_read_refusal() );
+		}
+		$refs = $refs[0];
+		if ( ! $refs || $this->sql_reads_no_rows( $lists[0] ) ) {
+			return array( 'sql' => $sql );
+		}
+		// WITH ... UPDATE is a write behind a read's first word: the read-only transaction refuses it, and it comes back
+		// for approval, or for the refusal its target gets, on its own SQL; a derived table as its target would only turn
+		// that into an SQL error. That one form, and only when both lexes agree its statement is the write, is left as
+		// written. EXPLAIN of a write runs, and its plan can answer for a subquery: refused. Everything else is masked,
+		// so a word that merely looks like a write (a misread variable, a function) can never turn the masking off.
+		$first = array( $this->sql_main_verb( $lists[0] ), $this->sql_main_verb( $lists[1] ) );
+		if ( 'WITH-WRITE' === $first[0] && 'WITH-WRITE' === $first[1] ) {
+			return array( 'sql' => $sql );
+		}
+		if ( 'EXPLAIN-WRITE' === $first[0] || 'EXPLAIN-WRITE' === $first[1] ) {
+			return array( 'refuse' => $this->secret_read_refusal() );
+		}
+		foreach ( $refs as $ref ) {
+			if ( 'api_keys' === $ref['kind'] ) {
+				return array( 'sql' => $sql, 'hold' => true );
+			}
+		}
+		$derived = array();
+		for ( $i = count( $refs ) - 1; $i >= 0; $i-- ) {
+			$ref = $refs[ $i ];
+			$key = strtolower( $ref['name'] );
+			if ( ! isset( $derived[ $key ] ) ) {
+				$derived[ $key ] = $this->secret_safe_derived_table( $ref['name'], $ref['kind'] );
+			}
+			if ( null === $derived[ $key ] ) {
+				return array( 'refuse' => $this->secret_read_refusal() );
+			}
+			$replacement = $derived[ $key ] . ( $ref['alias'] ? '' : ' AS ' . $this->esc_sql_ident( $ref['name'] ) );
+			$sql         = substr_replace( $sql, $replacement, $ref['start'], $ref['end'] - $ref['start'] );
+		}
+		return array( 'sql' => $sql );
+	}
+
+	/**
+	 * Each reference to a table that holds secrets, as [start, end, name, kind, alias]. 'uncertain' when one cannot be
+	 * rewritten with certainty (double-quoted, schema.table); 'clause' when a table clause follows it that a derived
+	 * table cannot take (PARTITION, an index hint, MariaDB's AS OF / FOR SYSTEM_TIME). Not a table: a name before a
+	 * dot (a column qualifier), after AS (an alias), or right after @ (a quoted variable name, @`x`).
+	 */
+	private function sql_secret_table_refs( $tokens, $sql ) {
+		$refs = array();
+		foreach ( $tokens as $i => $t ) {
+			if ( 'p' === $t[0] || 'v' === $t[0] ) {
+				continue;
+			}
+			$kind = $this->secret_table_kind( $t[1] );
+			if ( null === $kind ) {
+				continue;
+			}
+			$prev = isset( $tokens[ $i - 1 ] ) ? $tokens[ $i - 1 ] : null;
+			if ( ( null !== $prev && 'w' === $prev[0] && 'AS' === strtoupper( $prev[1] ) ) || ( $t[2] > 0 && '@' === $sql[ $t[2] - 1 ] ) ) {
+				continue;
+			}
+			$dot_before = null !== $prev && 'p' === $prev[0] && '.' === $prev[1];
+			$dot_after  = isset( $tokens[ $i + 1 ] ) && 'p' === $tokens[ $i + 1 ][0] && '.' === $tokens[ $i + 1 ][1];
+			if ( 'd' === $t[0] || ( $dot_before && ! $dot_after ) ) {
+				return 'uncertain'; // Double quotes name a table under ANSI_QUOTES; schema.table is not rewritten.
+			}
+			if ( $dot_after ) {
+				continue;
+			}
+			// An alias follows only across whitespace and comments: `wp_options, wp_posts` is a list (the lexer drops the comma).
+			$next  = isset( $tokens[ $i + 1 ] ) ? $tokens[ $i + 1 ] : null;
+			$alias = null !== $next && in_array( $next[0], array( 'w', 'q', 'd' ), true )
+				&& '' === trim( $this->sql_strip_comments_exact( substr( $sql, $t[3], $next[2] - $t[3] ) ) )
+				&& ( 'w' !== $next[0] || 'AS' === strtoupper( $next[1] ) || ! in_array( strtoupper( $next[1] ), self::$sql_not_alias, true ) );
+			$after = $alias ? $i + ( 'w' === $next[0] && 'AS' === strtoupper( $next[1] ) ? 3 : 2 ) : $i + 1;
+			foreach ( array( $i + 1, $after ) as $at ) {
+				$word  = isset( $tokens[ $at ] ) && 'w' === $tokens[ $at ][0] ? strtoupper( $tokens[ $at ][1] ) : '';
+				$word2 = isset( $tokens[ $at + 1 ] ) && 'w' === $tokens[ $at + 1 ][0] ? strtoupper( $tokens[ $at + 1 ][1] ) : '';
+				if ( in_array( $word, array( 'PARTITION', 'FORCE', 'USE', 'IGNORE' ), true ) || ( 'FOR' === $word && 'SYSTEM_TIME' === $word2 ) || ( 'AS' === $word && 'OF' === $word2 ) ) {
+					return 'clause';
+				}
+			}
+			$refs[] = array( 'start' => $t[2], 'end' => $t[3], 'name' => $t[1], 'kind' => $kind, 'alias' => $alias );
+		}
+		return $refs;
+	}
+
+	/** $text with SQL comments removed, ending them where MySQL does (`--` needs whitespace or a control byte after it). */
+	private function sql_strip_comments_exact( $text ) {
+		$text = preg_replace( '#/\*.*?\*/#s', ' ', (string) $text );
+		return preg_replace( '/(?:#|--(?=[\x00-\x20]|$))[^\n]*/', ' ', $text );
+	}
+
+	/**
+	 * 'WITH-WRITE' when the statement is WITH <ctes> followed by UPDATE, DELETE, INSERT or REPLACE; 'EXPLAIN-WRITE'
+	 * when EXPLAIN/DESC/DESCRIBE has one of those at the top level; '' otherwise. A word counts only as a bare
+	 * keyword at depth 0: not a variable (@UPDATE is a v token), not after a dot, not a REPLACE() or INSERT() call.
+	 */
+	private function sql_main_verb( $tokens ) {
+		$first = null;
+		$depth = 0;
+		foreach ( $tokens as $i => $t ) {
+			if ( 'p' === $t[0] ) {
+				$depth += '(' === $t[1] ? 1 : ( ')' === $t[1] ? -1 : 0 );
+				continue;
+			}
+			if ( 'w' !== $t[0] || 0 !== $depth ) {
+				continue;
+			}
+			$word = strtoupper( $t[1] );
+			if ( null === $first ) {
+				$first = $word;
+				continue;
+			}
+			$dot_before = 'p' === $tokens[ $i - 1 ][0] && '.' === $tokens[ $i - 1 ][1];
+			$call       = isset( $tokens[ $i + 1 ] ) && 'p' === $tokens[ $i + 1 ][0] && '(' === $tokens[ $i + 1 ][1];
+			if ( $dot_before || $call ) {
+				continue;
+			}
+			$write = in_array( $word, array( 'UPDATE', 'DELETE', 'INSERT', 'REPLACE' ), true );
+			if ( 'WITH' === $first && ( $write || in_array( $word, array( 'SELECT', 'TABLE', 'VALUES' ), true ) ) ) {
+				return $write ? 'WITH-WRITE' : ''; // The first statement word after the CTE list decides.
+			}
+			if ( $write && in_array( $first, array( 'EXPLAIN', 'DESC', 'DESCRIBE' ), true ) ) {
+				return 'EXPLAIN-WRITE';
+			}
+		}
+		return '';
+	}
+
+	/**
+	 * A statement that names tables but reads none of their rows: SHOW (SHOW COLUMNS FROM wp_options, SHOW CREATE
+	 * TABLE) or the table form of DESCRIBE/EXPLAIN, with no parenthesis (so no subquery). A derived table in its
+	 * place would only break it.
+	 */
+	private function sql_reads_no_rows( $tokens ) {
+		$words = array();
+		foreach ( $tokens as $t ) {
+			if ( 'p' === $t[0] && '(' === $t[1] ) {
+				return false;
+			}
+			if ( 'w' === $t[0] ) {
+				$words[] = strtoupper( $t[1] );
+			}
+		}
+		if ( ! $words ) {
+			return false;
+		}
+		if ( 'SHOW' === $words[0] ) {
+			return true;
+		}
+		return in_array( $words[0], array( 'DESC', 'DESCRIBE', 'EXPLAIN' ), true )
+			&& ! array_intersect( $words, array( 'SELECT', 'WITH', 'TABLE', 'VALUES', 'UPDATE', 'DELETE', 'INSERT', 'REPLACE' ) );
+	}
+
+	/** `(SELECT ... FROM table)` with the table's secrets masked (see db_query_secret_safe_read), or null when a lookup failed. */
+	private function secret_safe_derived_table( $table, $kind ) {
+		global $wpdb;
+		$needs = array(
+			'options'  => array( 'option_name', 'option_value' ),
+			'sitemeta' => array( 'meta_key', 'meta_value' ),
+			'usermeta' => array( 'meta_key', 'meta_value' ),
+			'users'    => array( 'user_pass', 'user_activation_key' ),
+		);
+		$core  = array(
+			'options'  => array( 'option_id', 'option_name', 'option_value', 'autoload' ),
+			'sitemeta' => array( 'meta_id', 'site_id', 'meta_key', 'meta_value' ),
+			'usermeta' => array( 'umeta_id', 'user_id', 'meta_key', 'meta_value' ),
+			'users'    => array( 'ID', 'user_login', 'user_pass', 'user_nicename', 'user_email', 'user_url', 'user_registered', 'user_activation_key', 'user_status', 'display_name' ),
+		);
+		$wpdb->last_error = '';
+		$columns = $this->db_query_call( 'get_col', 'SHOW COLUMNS FROM ' . $this->esc_sql_ident( $table ) );
+		// The live column list keeps SELECT * and any added column working; core's list when it cannot be read.
+		$lower = is_array( $columns ) ? array_map( 'strtolower', $columns ) : array();
+		if ( '' !== (string) $wpdb->last_error || array_diff( $needs[ $kind ], $lower ) ) {
+			$columns = $core[ $kind ];
+			if ( 'users' === $kind && is_multisite() ) {
+				$columns[] = 'spam';
+				$columns[] = 'deleted';
+			}
+		}
+		$wpdb->last_error = '';
+		$mask = $wpdb->prepare( '%s', WPVibe_CLI::SECRET_ROW_MASK );
+		$swap = array();
+		if ( 'options' === $kind || 'sitemeta' === $kind ) {
+			list( $name_col, $value_col ) = 'options' === $kind ? array( 'option_name', 'option_value' ) : array( 'meta_key', 'meta_value' );
+			$found = $this->secret_option_names( $table, $name_col, $value_col );
+			if ( null === $found ) {
+				return null;
+			}
+			$quoted = array();
+			foreach ( $found['names'] as $name ) {
+				$quoted[] = $wpdb->prepare( '%s', $name );
+			}
+			$when = null !== $found['all_candidates']
+				? $found['all_candidates']
+				: ( $quoted ? $this->esc_sql_ident( $name_col ) . ' IN (' . implode( ', ', $quoted ) . ')' : null );
+			$swap[ $value_col ] = null !== $when
+				? 'CASE WHEN ' . $when . ' THEN ' . $mask . ' ELSE ' . $this->esc_sql_ident( $value_col ) . ' END'
+				: null;
+		} elseif ( 'usermeta' === $kind ) {
+			$swap['meta_value'] = 'CASE WHEN ' . $this->user_meta_secret_condition( 'meta_key' ) . ' THEN ' . $mask . ' ELSE `meta_value` END';
+		} else {
+			$swap['user_pass']           = 'NULL';
+			$swap['user_activation_key'] = 'NULL';
+		}
+		$select = array();
+		foreach ( $columns as $column ) {
+			$expr     = null;
+			foreach ( $swap as $target => $replacement ) {
+				if ( 0 === strcasecmp( $target, (string) $column ) ) {
+					$expr = $replacement;
+				}
+			}
+			$select[] = null === $expr ? $this->esc_sql_ident( $column ) : $expr . ' AS ' . $this->esc_sql_ident( $column );
+		}
+		return '(SELECT ' . implode( ', ', $select ) . ' FROM ' . $this->esc_sql_ident( $table ) . ')';
+	}
+
+	/**
+	 * Names of the rows in an options-shaped table that a read must mask: SECRET_OPTIONS and connector options, and
+	 * every row option get would show with a masked field (WPVibe_CLI::mask_secrets, run on the stored text). A
+	 * LIKE prefilter finds the candidates. Returns ['names' => [...], 'all_candidates' => null], or past the row cap
+	 * ['names' => [], 'all_candidates' => <the prefilter SQL>] to mask every candidate; null when the lookup failed.
+	 */
+	private function secret_option_names( $table, $name_col, $value_col ) {
+		global $wpdb;
+		$secret = array_merge( WPVibe_CLI::SECRET_OPTIONS, WPVibe_CLI::connector_secret_options() );
+		$likes  = array( '%pass%' );
+		foreach ( WPVibe_CLI::SECRET_NAME_PARTS as $part ) {
+			if ( false === strpos( $part, 'pass' ) ) {
+				$likes[] = '%' . $part . '%'; // `_` matches any one character, so `api_key` covers api-key too.
+			}
+		}
+		$n     = $this->esc_sql_ident( $name_col );
+		$v     = $this->esc_sql_ident( $value_col );
+		$where = array();
+		// Both columns use a case-insensitive collation in WordPress, so LIKE matches any case without LOWER().
+		foreach ( $likes as $like ) {
+			$where[] = $wpdb->prepare( "{$n} LIKE %s", $like );
+			$where[] = $wpdb->prepare( "{$v} LIKE %s", $like );
+		}
+		foreach ( $secret as $name ) {
+			$prefix  = WPVibe_CLI::option_list_prefix( $name );
+			$where[] = null !== $prefix
+				? $wpdb->prepare( "{$n} LIKE %s", $wpdb->esc_like( $prefix ) . '%' )
+				: $wpdb->prepare( "{$n} = %s", $name );
+		}
+		$prefilter = '(' . implode( ' OR ', $where ) . ')';
+		$cap       = 1000;
+		$max_bytes = 65536;
+		$wpdb->last_error = '';
+		// Capped in rows and bytes. A value cut at the byte cap cannot be checked, so it is masked; past the row cap
+		// every candidate row is masked (the prefilter itself goes into the CASE).
+		$this->db_query_read_timeout( 30 ); // The same limit as the read itself.
+		$rows  = $this->db_query_call( 'get_results', "SELECT {$n} AS n, LEFT({$v}, {$max_bytes}) AS v FROM " . $this->esc_sql_ident( $table ) . " WHERE {$prefilter} LIMIT " . ( $cap + 1 ), ARRAY_A );
+		$error = (string) $wpdb->last_error;
+		$this->db_query_read_timeout( 0 );
+		$wpdb->last_error = $error;
+		if ( ! is_array( $rows ) || '' !== $error ) {
+			$wpdb->last_error = '';
+			return null;
+		}
+		if ( count( $rows ) > $cap ) {
+			return array( 'names' => array(), 'all_candidates' => $prefilter );
+		}
+		$names = array();
+		foreach ( $rows as $row ) {
+			$name   = (string) ( is_array( $row ) && isset( $row['n'] ) ? $row['n'] : '' );
+			$value  = (string) ( is_array( $row ) && isset( $row['v'] ) ? $row['v'] : '' );
+			$masked = strlen( $value ) >= $max_bytes ? 1 : 0;
+			if ( ! $masked && null === WPVibe_CLI::match_option_name( $name, $secret ) ) {
+				WPVibe_CLI::mask_secrets( $name, $value, $masked );
+			}
+			if ( '' !== $name && ( $masked > 0 || null !== WPVibe_CLI::match_option_name( $name, $secret ) ) ) {
+				$names[ $name ] = true;
+			}
+		}
+		return array( 'names' => array_keys( $names ), 'all_candidates' => null );
+	}
+
+	/** SQL true for a user-meta key whose value user meta get withholds (credential keys and USER_META_SECRET_LIKE), or one SECRET_NAME_PARTS names. */
+	private function user_meta_secret_condition( $column ) {
+		global $wpdb;
+		$col   = 'LOWER(' . $this->esc_sql_ident( $column ) . ')';
+		$likes = WPVibe_CLI::USER_META_SECRET_LIKE;
+		foreach ( WPVibe_CLI::SECRET_NAME_PARTS as $part ) {
+			$likes[] = '%' . $part . '%';
+		}
+		$likes[] = '%pass';
+		$or      = array();
+		foreach ( WPVibe_CLI::USER_META_CREDENTIAL_KEYS as $key ) {
+			$or[] = $wpdb->prepare( "{$col} = %s", strtolower( $key ) );
+		}
+		foreach ( array_unique( $likes ) as $like ) {
+			$or[] = $wpdb->prepare( "{$col} LIKE %s", $like );
+		}
+		return '(' . implode( ' OR ', $or ) . ')';
+	}
+
+	private function secret_clause_refusal() {
+		return $this->error_result( __( 'Refused: PARTITION, index hints (FORCE, USE or IGNORE INDEX) and AS OF / FOR SYSTEM_TIME cannot be used on the options, users or user meta tables in db query, because WPVibe reads those through a copy with secrets masked. Run the read without that clause.', 'vibe-ai' ) );
+	}
+
+	private function secret_read_refusal() {
+		return $this->error_result( __( 'Refused: this read names the options, users or user meta table in a form WPVibe cannot check for secrets (a database-qualified or double-quoted table name, or text whose quoting depends on the server\'s settings). Name the table plainly, e.g. `SELECT option_name FROM {prefix}options WHERE ...`, or use `option get`, `option list`, `user list` or `user meta get`.', 'vibe-ai' ) );
+	}
+
+	/** Cells a read returned masked (by the derived tables above). */
+	private function count_masked_cells( $results ) {
+		$count = 0;
+		foreach ( is_array( $results ) ? $results : array() as $row ) {
+			foreach ( is_array( $row ) ? $row : array() as $cell ) {
+				if ( is_string( $cell ) && false !== strpos( $cell, WPVibe_CLI::SECRET_MASK_MARK ) ) {
+					$count++;
+				}
+			}
+		}
+		return $count;
+	}
+
 	/**
 	 * Row writes (UPDATE, INSERT, DELETE, REPLACE) a session approval may
 	 * cover. Never: schema changes and every other statement; a write whose
@@ -551,6 +951,12 @@ trait WPVibe_CLI_Db {
 			$tokens = $this->sql_identifier_tokens( $sql, $backslash );
 			foreach ( $this->sql_write_target_zone( $tokens ) as $token ) {
 				if ( 'p' !== $token[0] && self::session_code_table( $token[1] ) ) {
+					return false;
+				}
+			}
+			// A write that reads a table holding secrets could copy one into a post (#1680): a human sees each one.
+			foreach ( $tokens as $token ) {
+				if ( 'p' !== $token[0] && null !== $this->secret_table_kind( $token[1] ) ) {
 					return false;
 				}
 			}
@@ -1085,9 +1491,11 @@ trait WPVibe_CLI_Db {
 	 * Tokens MySQL would see, as [type, text]: w bare word, q `backticked`
 	 * name (`` unescaped), d double-quoted literal, p parenthesis; string
 	 * literals and comments are skipped. An executable comment's body is
-	 * scanned as code.
+	 * scanned as code. With $offsets, each token also carries its start and
+	 * end byte offsets in $sql ([2], [3]; quotes included), and a variable
+	 * (@name, @@name) is a v token.
 	 */
-	private function sql_identifier_tokens( $sql, $backslash_escapes ) {
+	private function sql_identifier_tokens( $sql, $backslash_escapes, $offsets = false ) {
 		$tokens = array();
 		$len    = strlen( $sql );
 		$i      = 0;
@@ -1095,7 +1503,8 @@ trait WPVibe_CLI_Db {
 			$c    = $sql[ $i ];
 			$next = $i + 1 < $len ? $sql[ $i + 1 ] : '';
 			if ( "'" === $c || '"' === $c || '`' === $c ) {
-				$buf = '';
+				$buf   = '';
+				$start = $i;
 				$i++;
 				while ( $i < $len ) {
 					$ch = $sql[ $i ];
@@ -1117,11 +1526,12 @@ trait WPVibe_CLI_Db {
 				}
 				$i++;
 				if ( "'" !== $c ) {
-					$tokens[] = array( '`' === $c ? 'q' : 'd', $buf );
+					$tokens[] = $offsets ? array( '`' === $c ? 'q' : 'd', $buf, $start, min( $i, $len ) ) : array( '`' === $c ? 'q' : 'd', $buf );
 				}
 				continue;
 			}
-			if ( '#' === $c || ( '-' === $c && '-' === $next && ( $i + 2 >= $len || ctype_space( $sql[ $i + 2 ] ) ) ) ) {
+			// MySQL starts a `--` comment at any whitespace or control byte after it, not only a space (#1690 review).
+			if ( '#' === $c || ( '-' === $c && '-' === $next && ( $i + 2 >= $len || ord( $sql[ $i + 2 ] ) <= 0x20 ) ) ) {
 				$eol = strpos( $sql, "\n", $i );
 				$i   = false === $eol ? $len : $eol + 1;
 				continue;
@@ -1135,16 +1545,26 @@ trait WPVibe_CLI_Db {
 				$i   = false === $end ? $len : $end + 2;
 				continue;
 			}
+			// With offsets, a user or system variable (@name, @@name) is a v token, never a word: @UPDATE is not UPDATE.
+			if ( $offsets && '@' === $c ) {
+				$start = $i;
+				$i    += '@' === $next ? 2 : 1;
+				while ( $i < $len && preg_match( '/[A-Za-z0-9_$.\x80-\xff]/', $sql[ $i ] ) ) {
+					$i++;
+				}
+				$tokens[] = array( 'v', substr( $sql, $start, $i - $start ), $start, $i );
+				continue;
+			}
 			if ( preg_match( '/[A-Za-z0-9_$\x80-\xff]/', $c ) ) {
 				$start = $i;
 				while ( $i < $len && preg_match( '/[A-Za-z0-9_$\x80-\xff]/', $sql[ $i ] ) ) {
 					$i++;
 				}
-				$tokens[] = array( 'w', substr( $sql, $start, $i - $start ) );
+				$tokens[] = $offsets ? array( 'w', substr( $sql, $start, $i - $start ), $start, $i ) : array( 'w', substr( $sql, $start, $i - $start ) );
 				continue;
 			}
 			if ( '(' === $c || ')' === $c || '.' === $c ) {
-				$tokens[] = array( 'p', $c );
+				$tokens[] = $offsets ? array( 'p', $c, $i, $i + 1 ) : array( 'p', $c );
 			}
 			$i++;
 		}
@@ -1282,9 +1702,10 @@ trait WPVibe_CLI_Db {
 				) );
 			}
 		}
-		$report    = array();
-		$total     = 0;
-		$completed = array();
+		$report         = array();
+		$total          = 0;
+		$completed      = array();
+		$secret_columns = array();
 		$remaining = array();
 
 		foreach ( $tables as $i => $table ) {
@@ -1296,17 +1717,22 @@ trait WPVibe_CLI_Db {
 				break;
 			}
 			list( $primary_keys, $text_columns ) = $this->table_columns( $table );
+			$this->sr_name_col                   = $this->sr_name_column( $text_columns );
+			$secret_columns                      = array_merge( $secret_columns, $this->sr_secret_columns( $table, $text_columns ) );
 			if ( empty( $primary_keys ) ) {
 				$report[] = array( 'table' => $table, 'column' => '', 'count' => 0, 'note' => __( 'Skipped: no primary key.', 'vibe-ai' ) );
 				$completed[] = $table;
 				continue;
 			}
 			$searched = array();
-			foreach ( $text_columns as $col ) {
-				if ( in_array( $col, $skip_columns, true ) || in_array( "$table.$col", $skip_columns, true ) ) {
-					continue;
-				}
-				if ( ! empty( $include_columns ) && ! in_array( $col, $include_columns, true ) && ! in_array( "$table.$col", $include_columns, true ) ) {
+			// The naming column goes last, so every other column is judged by the row's original name.
+			$ordered = $text_columns;
+			if ( null !== $this->sr_name_col ) {
+				$ordered   = array_values( array_diff( $text_columns, array( $this->sr_name_col ) ) );
+				$ordered[] = $this->sr_name_col;
+			}
+			foreach ( $ordered as $col ) {
+				if ( ! $this->search_replace_column_in_scope( $table, $col, $skip_columns, $include_columns ) ) {
 					continue;
 				}
 				$searched[] = $col;
@@ -1363,6 +1789,10 @@ trait WPVibe_CLI_Db {
 		}
 		if ( ! empty( $this->sr_protected_tables ) ) {
 			$data['protected_tables_skipped'] = $this->sr_protected_tables;
+		}
+		if ( $secret_columns ) {
+			$data['secret_columns_skipped'] = $secret_columns;
+			$data['secret_columns_note']    = $this->sr_secret_columns_note();
 		}
 		// Named only when they hold the search text: every site has a WPVibe table, and a plain URL swap needs no note.
 		$code_tables_held = array_values( array_filter( $this->sr_code_tables_skipped, function ( $t ) use ( $old ) {
@@ -1462,7 +1892,8 @@ trait WPVibe_CLI_Db {
 		$foreign   = array();
 		$tables    = array_values( array_filter( $tables, function ( $t ) use ( &$protected, &$foreign ) {
 			$key = $this->protected_table_key( $t );
-			if ( ! $this->is_plain_table_name( $t ) || ( null !== $key && 'options' !== $key ) ) {
+			// WooCommerce keeps API consumer secrets in plain text: no search-replace reads, counts or rewrites that table (#1624).
+			if ( ! $this->is_plain_table_name( $t ) || ( null !== $key && 'options' !== $key ) || preg_match( '/woocommerce_api_keys$/i', $t ) ) {
 				$protected[] = $t;
 				return false;
 			}
@@ -1618,6 +2049,161 @@ trait WPVibe_CLI_Db {
 		return $match;
 	}
 
+	/**
+	 * Whether a row's value is a secret or holds one: a secret option, a secret-named option or meta key, or a value
+	 * with a secret field inside (what option get masks). search-replace never rewrites, counts or names such a value,
+	 * so neither a dry run nor its approval preview answers whether the search text is in a secret (#1624, Fable S1).
+	 */
+	private function sr_row_holds_secret( $name, $value ) {
+		if ( '' !== $name && ( WPVibe_CLI::is_secret_option( $name ) || WPVibe_CLI::is_secret_field( $name ) ) ) {
+			return true;
+		}
+		$masked = 0;
+		WPVibe_CLI::mask_secrets( '', $value, $masked );
+		return $masked > 0;
+	}
+
+	/** The column naming each row (option_name, meta_key) when $table has one, else null. */
+	private function sr_name_column( $text_columns ) {
+		foreach ( array( 'option_name', 'meta_key' ) as $col ) {
+			if ( in_array( $col, (array) $text_columns, true ) ) {
+				return $col;
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * SQL true (1) for a row that may hold a secret: a secret-named row, or a value naming any secret part anywhere.
+	 * Broad on purpose and independent of the search text; the preview judges these rows in PHP rather than leaving
+	 * them out. Never NULL: a NULL column reads as '', so a row lands in exactly one of the preview's two counts.
+	 */
+	private function sr_secret_candidates( $name_col, $value_cols ) {
+		global $wpdb;
+		$parts = array( 'pass' );
+		foreach ( WPVibe_CLI::SECRET_NAME_PARTS as $part ) {
+			if ( false === strpos( $part, 'pass' ) ) {
+				$parts[] = $part;
+			}
+		}
+		$or = array();
+		foreach ( array_unique( array_filter( array_merge( array( $name_col ), $value_cols ) ) ) as $col ) {
+			foreach ( $parts as $part ) {
+				$or[] = 'COALESCE(' . $this->esc_sql_ident( $col ) . ", '')" . $wpdb->prepare( ' LIKE %s', '%' . $part . '%' );
+			}
+		}
+		return $or ? 'IFNULL((' . implode( ' OR ', $or ) . '), 0)' : '0';
+	}
+
+	/**
+	 * The preview's count for one table, as [ count, up to 4 ids of counted rows (posts only) ], exactly as the dry run
+	 * would count it: rows that cannot hold a secret in SQL; the rest paged by primary key and read in chunks of 50,
+	 * each judged by sr_replace_value() with secret fields skipped, until the count passes $cap or the rows run out.
+	 * A count above $cap means "more than $cap". Null when the preview's time ran out first; false on an SQL error.
+	 */
+	private function sr_preview_count_table( $table, $primary_keys, $name_col, $scoped, $where, $old, $new, $cap, $deadline, $want_ids ) {
+		global $wpdb;
+		$t        = $this->esc_sql_ident( $table );
+		$risky    = $this->sr_secret_candidates( $name_col, $scoped );
+		$pk_sql   = implode( ', ', array_map( array( $this, 'esc_sql_ident' ), $primary_keys ) );
+		$old_json = $this->json_encode_strip_quotes( $old );
+		$new_json = $this->json_encode_strip_quotes( $new );
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$n = $wpdb->get_var( "SELECT COUNT(*) FROM (SELECT 1 FROM {$t} WHERE {$where} AND NOT {$risky} LIMIT " . ( $cap + 1 ) . ') AS subq' ); // nosemgrep: direct-db-query
+		if ( null === $n || ! empty( $wpdb->last_error ) ) {
+			return false;
+		}
+		$n   = (int) $n;
+		$ids = array();
+		if ( $want_ids && $n > 0 && $n <= 3 ) {
+			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$ids = (array) $wpdb->get_col( "SELECT ID FROM {$t} WHERE {$where} AND NOT {$risky} LIMIT 4" ); // nosemgrep: direct-db-query
+		}
+		if ( $n > $cap ) {
+			return array( $n, $ids );
+		}
+		$cols   = array_values( array_unique( array_merge( $primary_keys, array_filter( array( $name_col ) ), $scoped ) ) );
+		$single = 1 === count( $primary_keys );
+		$last   = null;
+		$offset = 0;
+		while ( true ) {
+			if ( microtime( true ) > $deadline ) {
+				return null;
+			}
+			$page_where = $single && null !== $last ? ' AND ' . $pk_sql . ' > ' . $this->esc_sql_value( $last ) : '';
+			$page_tail  = $single ? '' : ' OFFSET ' . $offset;
+			// Keys only: a page of large page-builder values never sits in memory at once.
+			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$keys = $wpdb->get_results( "SELECT {$pk_sql} FROM {$t} WHERE {$where} AND {$risky}{$page_where} ORDER BY {$pk_sql} LIMIT 200{$page_tail}", ARRAY_A ); // nosemgrep: direct-db-query
+			if ( ! empty( $wpdb->last_error ) ) {
+				return false;
+			}
+			if ( empty( $keys ) ) {
+				return array( $n, $ids );
+			}
+			foreach ( array_chunk( $keys, 50 ) as $chunk ) {
+				if ( microtime( true ) > $deadline ) {
+					return null;
+				}
+				$in = array();
+				foreach ( $chunk as $key ) {
+					$parts = array();
+					foreach ( $primary_keys as $pk ) {
+						$parts[] = $this->esc_sql_ident( $pk ) . ' = ' . $this->esc_sql_value( $key[ $pk ] ?? '' );
+					}
+					$in[] = '(' . implode( ' AND ', $parts ) . ')';
+				}
+				// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+				$rows = $wpdb->get_results( 'SELECT ' . implode( ', ', array_map( array( $this, 'esc_sql_ident' ), $cols ) ) . " FROM {$t} WHERE " . implode( ' OR ', $in ), ARRAY_A ); // nosemgrep: direct-db-query
+				foreach ( (array) $rows as $row ) {
+					if ( $this->sr_preview_row_changes( $row, $name_col, $scoped, $old, $new, $old_json, $new_json ) ) {
+						$n++;
+						if ( $want_ids && count( $ids ) < 4 && isset( $row['ID'] ) ) {
+							$ids[] = $row['ID'];
+						}
+						if ( $n > $cap ) {
+							return array( $n, $ids );
+						}
+					}
+				}
+			}
+			$last_key = end( $keys );
+			$last     = $single ? ( $last_key[ $primary_keys[0] ] ?? null ) : null;
+			$offset  += count( $keys );
+		}
+	}
+
+	/** Whether the run would change this row: any scoped column changes, a secret-named row's values never. */
+	private function sr_preview_row_changes( $row, $name_col, $scoped, $old, $new, $old_json, $new_json ) {
+		$name   = null !== $name_col ? (string) ( $row[ $name_col ] ?? '' ) : '';
+		$secret = null !== $name_col && ( WPVibe_CLI::is_secret_option( $name ) || WPVibe_CLI::is_secret_field( $name ) );
+		foreach ( $scoped as $col ) {
+			$value = $row[ $col ] ?? null;
+			if ( null === $value || '' === $value || ( $secret && $col !== $name_col ) ) {
+				continue;
+			}
+			if ( 'changed' === $this->sr_replace_value( $value, $old, $new, $old_json, $new_json )[1] ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** The text columns of $table named for a secret, as table.column: never searched, named whatever the search text. */
+	private function sr_secret_columns( $table, $text_columns ) {
+		$out = array();
+		foreach ( (array) $text_columns as $col ) {
+			if ( 'user_pass' !== $col && WPVibe_CLI::is_secret_field( $col ) ) {
+				$out[] = $table . '.' . $col;
+			}
+		}
+		return $out;
+	}
+
+	private function sr_secret_columns_note() {
+		return __( 'These columns are named for a password, secret, token or key, so search-replace never searches or changes them. If one needs the change, the user makes it where that plugin keeps the setting.', 'vibe-ai' );
+	}
+
 	/** Protected option rows in scope whose value contains the needle: skipped, and named in the result so the change is not silently partial. */
 	private function search_replace_protected_rows_matching( $tables, $old ) {
 		global $wpdb;
@@ -1633,9 +2219,17 @@ trait WPVibe_CLI_Db {
 				$match = '( ' . $match . ' OR `option_value`' . $wpdb->prepare( ' LIKE BINARY %s', '%' . $wpdb->esc_like( $old_json ) . '%' ) . ' )';
 			}
 			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-			$rows = $wpdb->get_col( 'SELECT `option_name` FROM ' . $this->esc_sql_ident( $table ) . ' WHERE ' . $match . ' AND NOT (1' . $guard . ') LIMIT 20' ); // nosemgrep: direct-db-query
-			foreach ( (array) $rows as $name ) {
-				$names[] = count( $tables ) > 1 ? $table . '.' . $name : (string) $name;
+			$rows = $wpdb->get_results( 'SELECT `option_name`, `option_value` FROM ' . $this->esc_sql_ident( $table ) . ' WHERE ' . $match . ' AND NOT (1' . $guard . ') LIMIT 50', ARRAY_A ); // nosemgrep: direct-db-query
+			foreach ( (array) $rows as $row ) {
+				$name = (string) ( $row['option_name'] ?? '' );
+				// Naming a secret, or a row with a secret field, would answer "is this text in it" (#1624, Fable S1).
+				if ( $this->sr_row_holds_secret( $name, (string) ( $row['option_value'] ?? '' ) ) ) {
+					continue;
+				}
+				$names[] = count( $tables ) > 1 ? $table . '.' . $name : $name;
+				if ( count( $names ) >= 20 ) {
+					break;
+				}
 			}
 		}
 		return $names;
@@ -1679,6 +2273,9 @@ trait WPVibe_CLI_Db {
 
 		$single_pk = ( 1 === count( $primary_keys ) );
 		$pk_sql    = implode( ', ', array_map( array( $this, 'esc_sql_ident' ), $primary_keys ) );
+		// Each row's name comes with its key, so a secret-named row is skipped with no extra query.
+		$name_col  = null !== $this->sr_name_col && $col !== $this->sr_name_col && ! in_array( $this->sr_name_col, $primary_keys, true ) ? $this->sr_name_col : null;
+		$name_sql  = null !== $name_col ? ', ' . $this->esc_sql_ident( $name_col ) : '';
 		$chunk     = 1000;
 		$last_key  = null;
 		$passes    = 0;
@@ -1694,15 +2291,22 @@ trait WPVibe_CLI_Db {
 			}
 			$order = $single_pk ? " ORDER BY {$pk_sql} ASC" : '';
 			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-			$rows = $wpdb->get_results( "SELECT {$pk_sql} FROM {$table_sql} {$where}{$order} LIMIT {$chunk}" ); // nosemgrep: direct-db-query
+			$rows = $wpdb->get_results( "SELECT {$pk_sql}{$name_sql} FROM {$table_sql} {$where}{$order} LIMIT {$chunk}" ); // nosemgrep: direct-db-query
 			if ( empty( $rows ) ) {
 				break;
 			}
 
 			$count_before = $count;
 			foreach ( $rows as $keys ) {
+				$keys     = (array) $keys;
+				$row_name = null !== $name_col ? (string) ( $keys[ $name_col ] ?? '' ) : '';
+				unset( $keys[ (string) $name_col ] );
+				// A secret-named row (an API key option, a token meta key) is never rewritten or counted (#1624, Fable S1).
+				if ( null !== $name_col && ( WPVibe_CLI::is_secret_option( $row_name ) || WPVibe_CLI::is_secret_field( $row_name ) ) ) {
+					continue;
+				}
 				$where_parts = array();
-				foreach ( (array) $keys as $k => $v ) {
+				foreach ( $keys as $k => $v ) {
 					$where_parts[] = $this->esc_sql_ident( $k ) . ' = ' . $this->esc_sql_value( $v );
 				}
 				$where_row = implode( ' AND ', $where_parts );
@@ -1711,14 +2315,13 @@ trait WPVibe_CLI_Db {
 				if ( null === $value || '' === $value ) {
 					continue;
 				}
-				$this->sr_incomplete = false;
-				$replaced            = $this->replace_in_value( $value, $old, $new, $old_json, $new_json );
-				if ( $this->sr_incomplete ) {
+				list( $replaced, $status ) = $this->sr_replace_value( $value, $old, $new, $old_json, $new_json );
+				if ( 'incomplete' === $status ) {
 					$this->sr_skipped_serialized++;
 					continue;
 				}
-				if ( $replaced === $value || gettype( $replaced ) !== gettype( $value ) ) {
-					continue;
+				if ( 'unchanged' === $status || 'secret' === $status ) {
+					continue; // A secret skip is unreported: a count of these would answer for the secret.
 				}
 				if ( $this->search_replace_makes_snippet( $table, $col, $replaced ) ) {
 					$this->sr_type_changes_skipped = true;
@@ -1779,6 +2382,10 @@ trait WPVibe_CLI_Db {
 				}
 				return serialize( $inner ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_serialize
 			}
+			$json = $this->sr_secret_json_replace( $data, $old, $new, $old_json, $new_json, $depth );
+			if ( null !== $json ) {
+				return $json;
+			}
 			$data = str_replace( $old, $new, $data );
 			if ( $old_json !== $old ) {
 				// Raw JSON in the DB (font data, block attrs) stores escaped slashes.
@@ -1786,8 +2393,12 @@ trait WPVibe_CLI_Db {
 			}
 			return $data;
 		}
+		// A secret field is never rewritten, so neither the run nor its count says whether it held the text (#1624).
 		if ( is_array( $data ) ) {
 			foreach ( $data as $k => $v ) {
+				if ( is_string( $k ) && WPVibe_CLI::is_secret_field( $k ) ) {
+					continue;
+				}
 				$data[ $k ] = $this->replace_in_value( $v, $old, $new, $old_json, $new_json, $depth + 1 );
 			}
 			return $data;
@@ -1798,11 +2409,75 @@ trait WPVibe_CLI_Db {
 		}
 		if ( is_object( $data ) ) {
 			foreach ( get_object_vars( $data ) as $k => $v ) {
+				if ( is_string( $k ) && WPVibe_CLI::is_secret_field( $k ) ) {
+					continue;
+				}
 				$data->$k = $this->replace_in_value( $v, $old, $new, $old_json, $new_json, $depth + 1 );
 			}
 			return $data;
 		}
 		return $data;
+	}
+
+	/**
+	 * One stored value through replace_in_value, as [ replaced, status ]: 'changed', 'unchanged', 'incomplete' (an
+	 * object WPVibe will not load; counted as skipped), or 'secret' (a value with a secret field that cannot be walked
+	 * field by field: malformed serialized text, an unloadable object or JSON that will not re-encode exactly; skipped
+	 * unreported, since a count would answer for the secret). The dry run, the live run and the preview share it.
+	 */
+	private function sr_replace_value( $value, $old, $new, $old_json, $new_json ) {
+		$text = is_string( $value ) ? trim( $value ) : '';
+		if ( '' !== $text && 'b:0;' !== $text && is_serialized( $text ) ) {
+			// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_unserialize, WordPress.PHP.NoSilencedErrors.Discouraged -- no classes are instantiated; only checks it parses.
+			if ( false === @unserialize( $text, array( 'allowed_classes' => false ) ) && $this->sr_value_holds_secret( $value ) ) {
+				return array( $value, 'secret' );
+			}
+		}
+		$this->sr_incomplete  = false;
+		$this->sr_secret_text = false;
+		$replaced             = $this->replace_in_value( $value, $old, $new, $old_json, $new_json );
+		if ( $this->sr_incomplete ) {
+			return array( $value, $this->sr_value_holds_secret( $value ) ? 'secret' : 'incomplete' );
+		}
+		if ( $this->sr_secret_text ) {
+			return array( $value, 'secret' );
+		}
+		if ( $replaced === $value || gettype( $replaced ) !== gettype( $value ) ) {
+			return array( $value, 'unchanged' );
+		}
+		return array( $replaced, 'changed' );
+	}
+
+	private function sr_value_holds_secret( $value ) {
+		$masked = 0;
+		WPVibe_CLI::mask_secrets( '', $value, $masked );
+		return $masked > 0;
+	}
+
+	/**
+	 * JSON text with a secret field: rewritten decoded, leaving the secret fields alone, when re-encoding reproduces
+	 * the stored text exactly; otherwise the row is skipped (sr_secret_text). Null for any other string, which keeps
+	 * the plain text replace.
+	 */
+	private function sr_secret_json_replace( $text, $old, $new, $old_json, $new_json, $depth ) {
+		$trim = trim( $text );
+		if ( '' === $trim || ( '{' !== $trim[0] && '[' !== $trim[0] ) ) {
+			return null;
+		}
+		$masked = 0;
+		WPVibe_CLI::mask_secrets( '', $text, $masked );
+		if ( 0 === $masked ) {
+			return null;
+		}
+		$decoded = json_decode( $text );
+		foreach ( array( 0, JSON_UNESCAPED_SLASHES, JSON_UNESCAPED_UNICODE, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) as $flags ) {
+			if ( json_encode( $decoded, $flags ) === $text ) { // phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode -- must match the stored bytes exactly.
+				$walked = $this->replace_in_value( $decoded, $old, $new, $old_json, $new_json, $depth + 1 );
+				return json_encode( $walked, $flags ); // phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode
+			}
+		}
+		$this->sr_secret_text = true;
+		return $text;
 	}
 
 
@@ -1827,6 +2502,10 @@ trait WPVibe_CLI_Db {
 
 	private function search_replace_column_in_scope( $table, $col, $skip_columns, $include_columns ) {
 		if ( in_array( $col, $skip_columns, true ) || in_array( "$table.$col", $skip_columns, true ) ) {
+			return false;
+		}
+		// A column named for a secret (consumer_secret, api_key, post_password) is never searched (#1624).
+		if ( WPVibe_CLI::is_secret_field( $col ) ) {
 			return false;
 		}
 		if ( ! empty( $include_columns ) && ! in_array( $col, $include_columns, true ) && ! in_array( "$table.$col", $include_columns, true ) ) {
@@ -1932,14 +2611,19 @@ trait WPVibe_CLI_Db {
 		$deadline      = microtime( true ) + 15;
 		$cap           = 1000;
 		$counts        = array();
-		$not_previewed = 0;
-		$where_by_table = array();
+		$not_previewed  = 0;
+		$ids_by_table   = array();
+		$secret_columns = array();
 		foreach ( $tables as $table ) {
 			if ( microtime( true ) > $deadline ) {
 				$not_previewed++;
 				continue;
 			}
-			list( , $text_columns ) = $this->table_columns( $table );
+			list( $primary_keys, $text_columns ) = $this->table_columns( $table );
+			$secret_columns = array_merge( $secret_columns, $this->sr_secret_columns( $table, $text_columns ) );
+			if ( empty( $primary_keys ) ) {
+				continue; // The run skips a table with no primary key, so the preview counts none of it.
+			}
 			$conds = array();
 			foreach ( $text_columns as $col ) {
 				if ( ! $this->search_replace_column_in_scope( $table, $col, $skip_columns, $include_columns ) ) {
@@ -1955,17 +2639,22 @@ trait WPVibe_CLI_Db {
 			if ( empty( $conds ) ) {
 				continue;
 			}
-			$where = '( ' . implode( ' OR ', $conds ) . ' )' . $this->search_replace_row_guard( $table );
-			$sql   = 'SELECT COUNT(*) FROM (SELECT 1 FROM ' . $this->esc_sql_ident( $table ) . ' WHERE ' . $where . ' LIMIT ' . ( $cap + 1 ) . ') AS subq';
-			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-			$n = $wpdb->get_var( $sql ); // nosemgrep: direct-db-query
-			if ( null === $n || ! empty( $wpdb->last_error ) ) {
+			$scoped = array_values( array_filter( $text_columns, function ( $col ) use ( $table, $skip_columns, $include_columns ) {
+				return $this->search_replace_column_in_scope( $table, $col, $skip_columns, $include_columns );
+			} ) );
+			$where    = '( ' . implode( ' OR ', $conds ) . ' )' . $this->search_replace_row_guard( $table );
+			$counted  = $this->sr_preview_count_table( $table, $primary_keys, $this->sr_name_column( $text_columns ), $scoped, $where, $old, $new, $cap, $deadline, $table === $wpdb->prefix . 'posts' );
+			if ( null === $counted ) {
+				$not_previewed++; // Out of time mid-table: the Worker then never calls the counts complete.
 				continue;
 			}
-			$n = (int) $n;
+			if ( false === $counted ) {
+				continue;
+			}
+			list( $n, $ids ) = $counted;
 			if ( $n > 0 ) {
-				$counts[ $table ]         = ( $n > $cap ) ? $cap . '+' : $n;
-				$where_by_table[ $table ] = $where;
+				$counts[ $table ]       = ( $n > $cap ) ? $cap . '+' : $n;
+				$ids_by_table[ $table ] = $ids;
 			}
 		}
 
@@ -1975,9 +2664,9 @@ trait WPVibe_CLI_Db {
 		// Worker's nudge) can route the edit through content/edit instead.
 		$posts_table = $wpdb->prefix . 'posts';
 		if ( 0 === $not_previewed && 1 === count( $counts ) && isset( $counts[ $posts_table ] ) && is_int( $counts[ $posts_table ] ) && $counts[ $posts_table ] <= 3 ) {
-			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-			$ids = $wpdb->get_col( 'SELECT ID FROM ' . $this->esc_sql_ident( $posts_table ) . ' WHERE ' . $where_by_table[ $posts_table ] . ' LIMIT 4' ); // nosemgrep: direct-db-query
-			if ( is_array( $ids ) && ! empty( $ids ) && empty( $wpdb->last_error ) ) {
+			// The ids of the rows the count included, never of a row left out for its secret.
+			$ids = $ids_by_table[ $posts_table ] ?? array();
+			if ( $ids ) {
 				$preview['matching_post_ids'] = array_map( 'intval', array_slice( $ids, 0, 3 ) );
 			}
 		}
@@ -1996,6 +2685,10 @@ trait WPVibe_CLI_Db {
 		}
 		if ( ! empty( $this->sr_protected_tables ) ) {
 			$preview['protected_tables_skipped'] = $this->sr_protected_tables;
+		}
+		if ( $secret_columns ) {
+			$preview['secret_columns_skipped'] = $secret_columns;
+			$preview['secret_columns_note']    = $this->sr_secret_columns_note();
 		}
 		if ( empty( $flags['include_guids'] ) ) {
 			$preview['guid_note'] = __( 'The guid column is skipped by default (WordPress best practice). Pass --include-guids to replace inside GUIDs too.', 'vibe-ai' );

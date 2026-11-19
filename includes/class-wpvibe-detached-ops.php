@@ -45,8 +45,29 @@ class WPVibe_Detached_Ops {
 		register_rest_route( 'wpvibe/v1', '/detached/run', array(
 			'methods'             => 'POST',
 			'callback'            => array( $this, 'handle_run_endpoint' ),
-			'permission_callback' => '__return_true',
+			'permission_callback' => array( $this, 'can_run' ),
 		) );
+	}
+
+	/**
+	 * The single-use token schedule() stored for this op, checked before the handler runs (WordPress.org review 11-17,
+	 * #1624). This only verifies: the handler checks again, since it is also called directly with an array.
+	 */
+	public function can_run( $request ) {
+		return self::token_valid( WPVibe_Op_Receipts::sanitize_op_id( (string) $request->get_param( 'op_id' ) ), (string) $request->get_param( 'token' ) )
+			? true
+			: new WP_Error( 'wpvibe_detached_forbidden', __( 'Forbidden.', 'vibe-ai' ), array( 'status' => 403 ) );
+	}
+
+	private static function token_valid( $op_id, $token ) {
+		$state = '' !== $op_id ? get_option( self::option_name( $op_id ), array() ) : array();
+		return is_array( $state )
+			&& 'scheduled' === ( $state['status'] ?? '' )
+			&& 'loopback' === ( $state['method'] ?? '' )
+			&& ! empty( $state['token_hash'] )
+			&& '' !== $token
+			&& hash_equals( (string) $state['token_hash'], hash( 'sha256', $token ) )
+			&& ( time() - (int) ( $state['scheduled_at'] ?? 0 ) ) <= self::TOKEN_TTL;
 	}
 
 	/** Only the shapes the Worker cannot chunk and that can run past the relay. */
@@ -194,16 +215,7 @@ class WPVibe_Detached_Ops {
 			return is_array( $request ) && isset( $request[ $key ] ) ? (string) $request[ $key ] : '';
 		};
 		$op_id = WPVibe_Op_Receipts::sanitize_op_id( $param( 'op_id' ) );
-		$token = $param( 'token' );
-		$state = '' !== $op_id ? get_option( self::option_name( $op_id ), array() ) : array();
-		$valid = is_array( $state )
-			&& 'scheduled' === ( $state['status'] ?? '' )
-			&& 'loopback' === ( $state['method'] ?? '' )
-			&& ! empty( $state['token_hash'] )
-			&& '' !== $token
-			&& hash_equals( (string) $state['token_hash'], hash( 'sha256', $token ) )
-			&& ( time() - (int) ( $state['scheduled_at'] ?? 0 ) ) <= self::TOKEN_TTL;
-		if ( ! $valid ) {
+		if ( ! self::token_valid( $op_id, $param( 'token' ) ) ) {
 			return new WP_Error( 'wpvibe_detached_forbidden', __( 'Forbidden.', 'vibe-ai' ), array( 'status' => 403 ) );
 		}
 		$this->run( $op_id );

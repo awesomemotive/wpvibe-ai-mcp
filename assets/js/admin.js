@@ -342,6 +342,13 @@
 		watchLine( 'ai', 'Waiting for your AI to read the site. This page updates on its own.', true );
 		watchTimer = setTimeout( function () { pollState( 'ai' ); }, 5000 );
 	}
+	// The page drew Allow for WPVibe hidden: the check's own REST loopback may be the first WPVibe request to find a block
+	// that applies to the REST API only, or a WPVibe request noted one after the page loaded (the prepare report's
+	// availability row), and either row says to use the button below (#1602).
+	function showRestOffCard( report ) {
+		var card = document.getElementById( 'wpvibe-rest-off-card' );
+		if ( card && report.checks.some( function ( row ) { return ( row.stage === 'Application Passwords for REST requests' || row.stage === 'Application Password availability' ) && row.status === 'failed'; } ) ) card.hidden = false;
+	}
 	showFlow( 'initial' );
 	try {
 		var saved = JSON.parse( root.getAttribute( 'data-last-check' ) || 'null' );
@@ -375,12 +382,14 @@
 			showFlow( 'current' );
 			cooldownUntil = Date.now() + 60000;
 			reports = [ prepared.report ];
+			showRestOffCard( prepared.report );
 			render();
 			progress.textContent = 'Testing this site\u2019s own REST API and login headers…';
 			try {
 				var self = await request( 'wpvibe_connection_self', prepared.challenge, 20000 );
 				if ( self && Array.isArray( self.checks ) ) {
 					reports.push( self );
+					showRestOffCard( self );
 					localBlocked = localBlocked || self.checks.some( function ( row ) { return row.status === 'failed'; } );
 					render();
 				}

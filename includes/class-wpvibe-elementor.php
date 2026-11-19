@@ -47,15 +47,19 @@ class WPVibe_Elementor {
 		if ( is_admin() || wp_doing_ajax() || wp_doing_cron() || defined( 'XMLRPC_REQUEST' ) || defined( 'WP_CLI' ) ) {
 			return;
 		}
-		if ( isset( $_POST['rest_route'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification
-			$route = $_POST['rest_route']; // phpcs:ignore WordPress.Security.NonceVerification, WordPress.Security.ValidatedSanitizedInput
-		} elseif ( isset( $_GET['rest_route'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification
-			$route = $_GET['rest_route']; // phpcs:ignore WordPress.Security.NonceVerification, WordPress.Security.ValidatedSanitizedInput
+		// Reads which route WordPress will serve, as WordPress does; no form is submitted and nothing is saved, so no nonce.
+		// A non-string rest_route (an array) is not a route WordPress serves: it reads as none.
+		// phpcs:disable WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended
+		if ( isset( $_POST['rest_route'] ) ) {
+			$route = is_string( $_POST['rest_route'] ) ? sanitize_text_field( wp_unslash( $_POST['rest_route'] ) ) : '';
+		} elseif ( isset( $_GET['rest_route'] ) ) {
+			$route = is_string( $_GET['rest_route'] ) ? sanitize_text_field( wp_unslash( $_GET['rest_route'] ) ) : '';
 		} else {
-			$path  = (string) wp_parse_url( (string) ( $_SERVER['REQUEST_URI'] ?? '' ), PHP_URL_PATH ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+			$path  = (string) wp_parse_url( esc_url_raw( wp_unslash( (string) ( $_SERVER['REQUEST_URI'] ?? '' ) ) ), PHP_URL_PATH );
 			$home  = rtrim( (string) wp_parse_url( home_url(), PHP_URL_PATH ), '/' );
 			$route = preg_match( '#^' . preg_quote( $home . '/', '#' ) . '(?:index\.php/)?' . preg_quote( rest_get_url_prefix(), '#' ) . '(/.*)$#', $path, $m ) ? $m[1] : '';
 		}
+		// phpcs:enable WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended
 		if ( is_string( $route ) && preg_match( '#^/wpvibe/v1/abilities(?:/|$)#', $route ) ) {
 			add_filter( 'pre_option_elementor_mcp_enabled', array( __CLASS__, 'mcp_switch_on' ) );
 		}
@@ -99,7 +103,7 @@ class WPVibe_Elementor {
 		register_rest_route( $ns, '/elementor/save-page', array(
 			'methods'             => 'POST',
 			'callback'            => array( $this, 'save_page' ),
-			'permission_callback' => array( $this, 'can_edit_posts' ),
+			'permission_callback' => array( $this, 'can_save_page' ),
 			'args'                => array(
 				'id'            => array( 'type' => 'integer', 'required' => false, 'sanitize_callback' => 'absint' ),
 				'title'         => array( 'type' => 'string',  'required' => false, 'sanitize_callback' => 'sanitize_text_field' ),
@@ -115,7 +119,7 @@ class WPVibe_Elementor {
 		register_rest_route( $ns, '/elementor/restore-revision', array(
 			'methods'             => 'POST',
 			'callback'            => array( $this, 'restore_revision' ),
-			'permission_callback' => array( $this, 'can_edit_posts' ),
+			'permission_callback' => array( $this, 'can_restore_revision' ),
 			'args'                => array(
 				'id'          => array( 'type' => 'integer', 'required' => true, 'sanitize_callback' => 'absint' ),
 				'revision_id' => array( 'type' => 'integer', 'required' => true, 'sanitize_callback' => 'absint' ),
@@ -151,6 +155,42 @@ class WPVibe_Elementor {
 
 	public function can_manage_options() {
 		return current_user_can( 'manage_options' ) ? true : $this->missing_capability_error( 'manage_options' );
+	}
+
+	/**
+	 * save-page checks the post it writes, not only edit_posts (WordPress.org review 11-17, #1624): edit_post on an
+	 * existing post, and the publish capability when the request sets a published status; on a new post, the post type's
+	 * create capability, and publish since a new page publishes by default. save_page() checks the same again.
+	 */
+	public function can_save_page( $request ) {
+		$base = $this->can_edit_posts();
+		if ( true !== $base ) {
+			return $base;
+		}
+		$id     = (int) $request->get_param( 'id' );
+		$status = (string) $request->get_param( 'status' );
+		if ( $id ) {
+			$post = get_post( $id );
+			return $post ? $this->check_post_caps( $post->post_type, 'update', $id, '' !== $status ? $status : null ) : self::post_not_found( $id );
+		}
+		$post_type = (string) $request->get_param( 'post_type' );
+		return $this->check_post_caps( '' !== $post_type ? $post_type : 'page', 'create', null, '' !== $status ? $status : 'publish' );
+	}
+
+	/** restore-revision rewrites the post the revision belongs to: edit_post on it, as restore_revision() checks again. */
+	public function can_restore_revision( $request ) {
+		$base = $this->can_edit_posts();
+		if ( true !== $base ) {
+			return $base;
+		}
+		$id   = (int) $request->get_param( 'id' );
+		$post = get_post( $id );
+		return $post ? $this->check_post_caps( $post->post_type, 'update', $id ) : self::post_not_found( $id );
+	}
+
+	private static function post_not_found( $id ) {
+		/* translators: %d: post ID */
+		return new WP_Error( 'not_found', sprintf( __( 'Post #%d does not exist on this site.', 'vibe-ai' ), (int) $id ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
 	}
 
 	/**
@@ -197,11 +237,10 @@ class WPVibe_Elementor {
 	/**
 	 * Per-post-type capability check.
 	 *
-	 * The route-level permission_callback only confirms `edit_posts` — that's
-	 * insufficient for the writes here, because `documents->create()`,
-	 * `wp_insert_post`, and `wp_update_post` do not enforce caps on their own.
-	 * Without this guard a Contributor could create a published `page` despite
-	 * lacking `edit_pages` / `publish_pages`.
+	 * Each write route's permission_callback runs it, and the handler runs it
+	 * again: `documents->create()`, `wp_insert_post`, and `wp_update_post` do
+	 * not enforce caps on their own. Without this guard a Contributor could
+	 * create a published `page` despite lacking `edit_pages` / `publish_pages`.
 	 *
 	 * @param string      $post_type  Slug.
 	 * @param string      $action     'create' | 'update'.
@@ -356,8 +395,8 @@ class WPVibe_Elementor {
 			return new WP_Error(
 				'elementor_save_fatal',
 				sprintf(
-					/* translators: 1: exception message */
-					__( 'Elementor threw a fatal during save (usually while compiling CSS from the element data): %s. Common cause on Elementor 4.x: an atomic style/settings value missing its {"$$type": ...} transformable wrapper (numbers inside the flex prop, for example, must be {"$$type":"number","value":N}). %s', 'vibe-ai' ),
+					/* translators: 1: exception message, 2: what happened to the page. */
+					__( 'Elementor threw a fatal during save (usually while compiling CSS from the element data): %1$s. Common cause on Elementor 4.x: an atomic style/settings value missing its {"$$type": ...} transformable wrapper (numbers inside the flex prop, for example, must be {"$$type":"number","value":N}). %2$s', 'vibe-ai' ),
 					$e->getMessage(),
 					$created_id > 0 ? __( 'The partially created page has been deleted; fix the data and retry.', 'vibe-ai' ) : __( 'The existing page kept its previous saved data.', 'vibe-ai' )
 				),
@@ -484,6 +523,7 @@ class WPVibe_Elementor {
 			$kind    = 'element';
 		}
 		if ( ! $element ) {
+			/* translators: %s: widget or element slug. */
 			return new WP_Error( 'unknown_slug', sprintf( __( 'No widget or element registered for slug "%s".', 'vibe-ai' ), $slug ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
 		}
 
@@ -757,7 +797,7 @@ class WPVibe_Elementor {
 			return self::invalid_elements( $invalid );
 		}
 		if ( $request->get_param( 'dry_run' ) ) {
-			return rest_ensure_response( array( 'dry_run' => true, 'valid' => true, 'errors' => array(), 'message' => __( 'The elements are valid. Nothing was saved. Only the elements were checked: the post, its permissions and a new page\'s title are checked when you send the call without dry_run.', 'vibe-ai' ) ) );
+			return rest_ensure_response( array( 'dry_run' => true, 'valid' => true, 'errors' => array(), 'message' => __( 'The elements are valid. Nothing was saved. Only the elements and your permissions were checked: the post itself and a new page\'s title are checked when you send the call without dry_run.', 'vibe-ai' ) ) );
 		}
 
 		$warnings = array();
@@ -854,6 +894,7 @@ class WPVibe_Elementor {
 			if ( ! in_array( $page_template, $known, true ) ) {
 				$warnings[] = array(
 					'code'    => 'unknown_page_template',
+					/* translators: %s: page template file name. */
 					'message' => sprintf( __( 'Page template "%s" is not registered by the active theme or Elementor; WordPress will render the default template instead.', 'vibe-ai' ), $page_template ),
 					'context' => 'known: ' . implode( ', ', $known ),
 				);
@@ -1002,6 +1043,7 @@ class WPVibe_Elementor {
 		if ( ! in_array( $type, $valid_types, true ) ) {
 			return new WP_Error(
 				'invalid_type',
+				/* translators: %s: comma-separated list of template types. */
 				sprintf( __( 'Template `type` must be one of: %s', 'vibe-ai' ), implode( ', ', $valid_types ) ),
 				WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) )
 			);

@@ -120,7 +120,7 @@ function wpvibe_edit_attr( $post_id, $key ) {
 	if ( ! $post_type || ! WPVibe_Fields::instance()->get_field( $post_type, $key ) ) {
 		return;
 	}
-	printf( ' data-wpvibe-edit="%d:%s"', $post_id, esc_attr( $key ) );
+	printf( ' data-wpvibe-edit="%d:%s"', (int) $post_id, esc_attr( $key ) );
 }
 
 /**

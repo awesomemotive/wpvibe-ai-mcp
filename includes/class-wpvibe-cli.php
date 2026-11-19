@@ -349,6 +349,14 @@ class WPVibe_CLI {
 		'/private[_-]?key/',
 		'/password/',
 	);
+	/**
+	 * USER_META_SECRET_VALUE_PATTERNS as SQL LIKE patterns, for db query's user-meta table (#1624): `_` is LIKE's
+	 * any-one-character, so `two_factor` also covers two-factor. Keep the two lists in step.
+	 */
+	const USER_META_SECRET_LIKE = array(
+		'%secret%', '%totp%', '%two_factor%', '%twofactor%', '%2fa%', '%backup_codes%', '%backupcodes%',
+		'%api_key%', '%apikey%', '%api_token%', '%apitoken%', '%private_key%', '%privatekey%', '%password%',
+	);
 
 	/** WP core default capabilities (populate_roles). Never removable from the administrator role. */
 	const CORE_ADMIN_CAPS = array(
@@ -367,32 +375,10 @@ class WPVibe_CLI {
 
 	const DEFAULT_ROLES = array( 'administrator', 'editor', 'author', 'contributor', 'subscriber' );
 
-	// Write-blocked options that are safe to READ (site identity and security audits need them).
-	const READABLE_BLOCKED_OPTIONS = array(
-		'users_can_register',
-		'default_role',
-		'siteurl',
-		'home',
-		'admin_email',
-		'template',
-		'stylesheet',
-		'active_plugins',
-		'db_version',
-		'initial_db_version',
-		'wpvibe_self_update_state',
-		'wpvibe_detached_*',
-		'wpvibe_bypass_approvals',
-		// WPCode storage (WPVibe_Code_Snippet::STORAGE_OPTIONS): audits read it, only code_snippet writes it.
-		'wpcode_snippets',
-		'ihaf_insert_*',
-		// Update availability: reading it is harmless, only writes choose a package URL.
-		'_site_transient_update_*',
-		'_site_transient_timeout_update_*',
-		'_transient_update_*',
-		'_transient_timeout_update_*',
-		'wpvibe_draft_theme',
-	);
-
+	/**
+	 * Options no AI tool may write (hard-blocked, never approval-gated). Reads are a separate rule: only
+	 * SECRET_OPTIONS are unreadable (#1683), so site identity, roles, cron and the update transients stay readable.
+	 */
 	const BLOCKED_OPTIONS = array(
 		'wpvibe_op_proof_key',
 		'wpvibe_op_proof_required',
@@ -437,6 +423,23 @@ class WPVibe_CLI {
 		// wpvibe_draft_source: draft recovery tells the AI to delete it, and valid_draft()
 		// refuses any pair that isn't <source>-wpvibe-draft.
 		'wpvibe_draft_theme',
+		// Theme backups are sealed with this key (#1651): a write would make every backup unrecoverable, a read would open them.
+		'wpvibe_theme_backup_key',
+		// The theme swap record and the sweep's state (#1691 review): the record names folders the sweep moves and an archive
+		// it deletes, so no command may write it.
+		'wpvibe_theme_swap',
+		'_transient_wpvibe_theme_sweep_*',
+		'_transient_timeout_wpvibe_theme_sweep_*',
+		'_site_transient_wpvibe_theme_sweep_*',
+		'_site_transient_timeout_wpvibe_theme_sweep_*',
+		// The Approval Log and the op-receipt replay guard trust these schema flags and their retry transients (#1688):
+		// a write would turn audit logging or the 409 replay check off silently. Not secrets, so still readable.
+		'wpvibe_audit_log_schema',
+		'wpvibe_op_receipts_schema',
+		'_transient_wpvibe_audit_log_schema_retry',
+		'_transient_timeout_wpvibe_audit_log_schema_retry',
+		'_transient_wpvibe_op_receipts_schema_retry',
+		'_transient_timeout_wpvibe_op_receipts_schema_retry',
 		'auth_key',
 		'secure_auth_key',
 		'logged_in_key',
@@ -451,6 +454,50 @@ class WPVibe_CLI {
 		'connectors_*',
 		'wordpress_api_key',
 	);
+
+	/**
+	 * Options whose whole value is a secret (#1624, #1683). BLOCKED_OPTIONS means "no writes"; this list means "no
+	 * reads": option get, option pluck, transient get and content/search refuse these, option list leaves them out
+	 * and db query masks them. Every other write-blocked option (cron, wp_user_roles, auto_update_plugins, the update
+	 * transients) is readable, with mask_secrets() hiding any secret field inside it. connector_secret_options() adds
+	 * the option each registered WordPress connector keeps its credentials in.
+	 */
+	const SECRET_OPTIONS = array(
+		'wpvibe_op_proof_key',
+		'wpvibe_op_proof_minter',
+		'wpvibe_op_proof_pending_minter',
+		'wpvibe_theme_backup_key',
+		'auth_key',
+		'secure_auth_key',
+		'logged_in_key',
+		'nonce_key',
+		'auth_salt',
+		'secure_auth_salt',
+		'logged_in_salt',
+		'nonce_salt',
+		'connectors_*',
+		'wordpress_api_key',
+	);
+
+	/**
+	 * Parts of a name that mark its value as a secret, for an option's own name and for every key inside its value
+	 * (wp_mail_smtp's smtp.pass, woocommerce_stripe_settings' secret_key, woocommerce_paypal_settings' api_password).
+	 * Matched lowercased with `-` read as `_`, anywhere in the name, plus `pass` alone or at the end (`smtp_pass`).
+	 * Never a bare `key`: cache_key, meta_key and publishable_key are not secrets.
+	 */
+	const SECRET_NAME_PARTS = array(
+		'password', 'passwd', 'secret', 'token', 'api_key', 'apikey', 'private_key', 'privatekey', 'access_key',
+		'accesskey', 'api_signature', 'license_key', 'licence_key', 'licensekey', 'licencekey',
+	);
+
+	/** Names that describe a secret's setting rather than hold it (see is_secret_field). */
+	const SECRET_FIELD_SETTING = '/^(max|min)_|_(endpoint|page|page_id|slug|url|uri|label|text|title|type|mode|method|field|length|len|strength|policy|ttl|expires|expiry|expiration|lifetime|timeout|interval|count|limit|id|enabled|required|min|max|at|time|issued|reset|rule|rules|placeholder|message|hint)$/';
+
+	/** How every masked value starts; a write carrying it is refused, so a read's mask is never stored over the secret. */
+	const SECRET_MASK_MARK = '[wpvibe-masked';
+
+	/** What db query shows for a masked row's value (a secret option, a credential user-meta key). */
+	const SECRET_ROW_MASK = '[wpvibe-masked: credential]';
 
 	/**
 	 * Builder-critical options: writes are approval-gated, not hard-blocked.
@@ -672,7 +719,7 @@ class WPVibe_CLI {
 		'theme status'            => 'theme status <slug>',
 		'theme mod list'          => 'theme mod list',
 		'theme mod get'           => 'theme mod get <mod>... | --all [--field=key|value] (missing mods return null; values keep their stored JSON types)',
-		'option get'              => 'option get <key>',
+		'option get'              => 'option get <key> (passwords, keys and tokens inside the value are shown as [wpvibe-masked: ...]; never write that placeholder back)',
 		'option pluck'            => 'option pluck <option> <key-path>... [--format=json|plaintext] (read one nested key without fetching the whole option; --format=json keeps its type)',
 		'option list'             => 'option list [--search=<pattern>] [--autoload=<on|off>] [--transients] [--format=json|ids|count] (transients are excluded unless --transients; capped at 100 rows)',
 		'user list'               => 'user list [--role=<role>] [--number=<n>] [--paged=<n>|--offset=<n>] [--format=json|ids|count] (defaults to 100 rows, max 1000; page with --paged)',
@@ -707,7 +754,7 @@ class WPVibe_CLI {
 		'rewrite list'            => 'rewrite list',
 		'cache type'              => 'cache type',
 		'cron event list'         => 'cron event list',
-		'db query'                => 'db query "<sql>" [--limit=<n>] (SELECT runs directly; writes need approval; writes to the users, usermeta and options tables are refused, use the user and option commands)',
+		'db query'                => 'db query "<sql>" [--limit=<n>] (SELECT runs directly, with passwords, keys and tokens shown as [wpvibe-masked: ...]; writes need approval; writes to the users, usermeta and options tables are refused, use the user and option commands)',
 		'db tables'               => 'db tables',
 		'db prefix'               => 'db prefix',
 		'core version'            => 'core version [--extra]',
@@ -905,6 +952,167 @@ class WPVibe_CLI {
 			}
 		}
 		return array_values( array_unique( $names ) );
+	}
+
+	/** Whether $name is an option whose whole value is a secret (SECRET_OPTIONS, a connector's option): reads refuse it. */
+	public static function is_secret_option( $name ) {
+		return null !== self::match_option_name( $name, array_merge( self::SECRET_OPTIONS, self::connector_secret_options() ) );
+	}
+
+	/**
+	 * Whether a name (an option's, or a key inside a value) marks a secret: SECRET_NAME_PARTS. Narrower than
+	 * is_secret_name(), the audit-log rule for command flags: a stored setting named auth, cookie or salt is not a secret.
+	 */
+	public static function is_secret_field( $name ) {
+		$name = str_replace( '-', '_', strtolower( trim( (string) $name ) ) );
+		if ( 'pass' === $name || '_pass' === substr( $name, -5 ) ) {
+			return true;
+		}
+		// A name that ends in what it describes names a setting about the secret, not the secret:
+		// lost_password_endpoint, max_tokens, token_ttl, password_reset_page, secret_key_length.
+		if ( preg_match( self::SECRET_FIELD_SETTING, $name ) ) {
+			return false;
+		}
+		foreach ( self::SECRET_NAME_PARTS as $part ) {
+			if ( false !== strpos( $name, $part ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * The value as an AI may read it (#1624). Under a secret name (is_secret_field) the whole value is masked;
+	 * otherwise each value under a secret-named key inside it is, in arrays, objects, JSON text and PHP-serialized
+	 * text, at any depth. Numbers, booleans and flag words (yes, no, on, off, true, false, 0, 1) stay readable. Every
+	 * read path (option get, pluck, list, transient get, content/search, db query) goes through this one function.
+	 *
+	 * @param string $name   Option (or transient) name.
+	 * @param mixed  $value  The value as stored.
+	 * @param int    $masked Set to the number of values masked.
+	 * @return mixed The value unchanged when nothing matched.
+	 */
+	public static function mask_secrets( $name, $value, &$masked = 0 ) {
+		$masked = 0;
+		return self::mask_walk( $value, self::is_secret_field( $name ), 0, $masked );
+	}
+
+	private static function mask_walk( $value, $secret, $depth, &$masked ) {
+		if ( $depth > 32 ) {
+			if ( $secret ) {
+				$masked++;
+				return self::secret_mask( is_scalar( $value ) ? (string) $value : '' );
+			}
+			return $value;
+		}
+		if ( is_array( $value ) ) {
+			$out = $value;
+			foreach ( $value as $key => $item ) {
+				$before = $masked;
+				$walked = self::mask_walk( $item, $secret || ( is_string( $key ) && self::is_secret_field( $key ) ), $depth + 1, $masked );
+				if ( $masked > $before ) {
+					$out[ $key ] = $walked;
+				}
+			}
+			return $out;
+		}
+		if ( is_object( $value ) ) {
+			// An object unserialized without its class (allowed_classes false) only reads through an array cast.
+			$incomplete = $value instanceof __PHP_Incomplete_Class;
+			$vars       = $incomplete ? (array) $value : get_object_vars( $value );
+			$before     = $masked;
+			$walked     = self::mask_walk( $vars, $secret, $depth, $masked );
+			if ( $masked === $before ) {
+				return $value;
+			}
+			unset( $walked['__PHP_Incomplete_Class_Name'] );
+			return $value instanceof stdClass ? (object) $walked : $walked;
+		}
+		if ( ! is_string( $value ) ) {
+			// A number under a secret name (a numeric PIN or key) is masked too; booleans, null, 0 and 1 are flags.
+			if ( $secret && ( is_int( $value ) || is_float( $value ) ) && 0 !== $value && 1 !== $value ) {
+				$masked++;
+				return self::secret_mask( (string) $value );
+			}
+			return $value;
+		}
+		if ( $secret ) {
+			if ( in_array( strtolower( trim( $value ) ), array( '', 'yes', 'no', 'on', 'off', 'true', 'false', '0', '1' ), true ) ) {
+				return $value;
+			}
+			$masked++;
+			return self::secret_mask( $value );
+		}
+		$text = trim( $value );
+		if ( '' !== $text && ( '{' === $text[0] || '[' === $text[0] ) ) {
+			$decoded = json_decode( $text, true );
+			if ( is_array( $decoded ) ) {
+				$before = $masked;
+				$walked = self::mask_walk( $decoded, false, $depth + 1, $masked );
+				if ( $masked > $before ) {
+					return (string) wp_json_encode( $walked, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
+				}
+			}
+			return $value;
+		}
+		if ( is_serialized( $text ) ) {
+			// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_unserialize, WordPress.PHP.NoSilencedErrors.Discouraged -- no classes are instantiated; a malformed string is handled below.
+			$decoded = @unserialize( $text, array( 'allowed_classes' => false ) );
+			if ( false === $decoded && 'b:0;' !== $text ) {
+				// Text that will not unserialize cannot be checked field by field, so none of it is shown.
+				$masked++;
+				return self::secret_mask( $value );
+			}
+			$before = $masked;
+			$walked = self::mask_walk( $decoded, false, $depth + 1, $masked );
+			// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_serialize -- re-encodes the masked copy for display only.
+			return $masked > $before ? serialize( $walked ) : $value;
+		}
+		return $value;
+	}
+
+	/** The text shown instead of a secret: its length, and its last four characters when it is long enough to spare them. */
+	public static function secret_mask( $value ) {
+		$value = (string) $value;
+		$len   = strlen( $value );
+		$tail  = substr( $value, -4 );
+		if ( $len >= 16 && preg_match( '/^[\x21-\x5C\x5E-\x7E]{4}$/', $tail ) ) {
+			return sprintf( '%s: %d characters, ending %s]', self::SECRET_MASK_MARK, $len, $tail );
+		}
+		return sprintf( '%s: %d characters]', self::SECRET_MASK_MARK, $len );
+	}
+
+	/** Whether $value (raw text, or a decoded structure) carries a mask a read put there. */
+	public static function holds_secret_mask( $value, $depth = 0 ) {
+		if ( is_string( $value ) ) {
+			return false !== stripos( $value, self::SECRET_MASK_MARK ) || false !== stripos( $value, '[masked: protected option]' );
+		}
+		if ( ( is_array( $value ) || is_object( $value ) ) && $depth < 64 ) {
+			foreach ( (array) $value as $item ) {
+				if ( self::holds_secret_mask( $item, $depth + 1 ) ) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	/** Why a write carrying a mask is refused, and what to run instead. */
+	public static function secret_mask_write_refusal( $name ) {
+		return sprintf(
+			/* translators: %1$s: option name */
+			__( 'Not written: the value contains "[wpvibe-masked: ...]", the placeholder WPVibe shows in place of a password, API key or token when it reads option \'%1$s\'. Writing it would replace the real secret with that placeholder. Change only the fields you mean to change, one at a time: `option patch update %1$s <key-path> <value>`. To change the secret itself, write the real new value. If the option is stored as JSON text, the user changes it in wp-admin.', 'vibe-ai' ),
+			$name
+		);
+	}
+
+	/** The same refusal for post, term and user meta: the mask comes from a db query read of a credential key. */
+	public static function secret_mask_meta_refusal( $key ) {
+		return sprintf(
+			/* translators: %s: meta key */
+			__( 'Not written: the value for \'%s\' contains "[wpvibe-masked: ...]", the placeholder WPVibe shows in place of a password, API key or token. Writing it would replace the real value with that placeholder. Write the real new value, or leave this key alone.', 'vibe-ai' ),
+			$key
+		);
 	}
 
 	private static function option_name_is( $name, $candidate ) {

@@ -135,7 +135,7 @@ class WPVibe_Content_Ops {
 	public function compute_replacement( $current, $old_content, $new_content, $replace_all = false, $whole_word = false, &$replaced = null ) {
 		$replaced = 0;
 		if ( ! is_string( $current ) ) {
-			return new WP_Error( 'not_text', __( 'Stored value is not editable as text (it is an array or object; content/edit only rewrites strings). For an option, change one key with run_wp_cli `option patch update <option> <key-path> <value>`, or replace the whole value with `option update <option> \'<json>\' --format=json`. For post meta, pass the whole structure as JSON with --format=json so it is stored as an array: `post meta update <id> <key> \'<json>\' --format=json` (a flat scalar value would collapse the array; add --force for underscore-prefixed builder keys such as _elementor_data).', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 422 ) ) );
+			return new WP_Error( 'not_text', __( 'Stored value is not editable as text (it is an array or object; content/edit only rewrites strings). For an option, change one key with run_wp_cli `option patch update <option> <key-path> <value>`, or replace the whole value with `option update <option> \'<json>\' --format=json`. For post meta, pass the whole structure as JSON with --format=json so it is stored as an array: `post meta update <id> <key> \'<json>\' --format=json` (a flat scalar value would collapse the array). For a page builder\'s layout, use that builder\'s save route instead.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 422 ) ) );
 		}
 
 		$old = self::desanitize( $old_content );
@@ -708,10 +708,17 @@ class WPVibe_Content_Ops {
 	// Internal: load / store / labels.
 	// ------------------------------------------------------------------
 
-	/** Map a short post field name (content/title/excerpt) to its column. */
+	/**
+	 * Map a short post field name (content/title/excerpt) to its column. A meta key is unslashed once, since
+	 * update_post_meta() unslashes the key it writes: every check and read then sees that key (#1621), and store()
+	 * slashes it back for the write.
+	 */
 	private static function resolve_field_alias( $type, $args ) {
 		if ( 'post' === $type && isset( self::POST_FIELD_ALIASES[ (string) ( $args['field'] ?? '' ) ] ) ) {
 			$args['field'] = self::POST_FIELD_ALIASES[ (string) $args['field'] ];
+		}
+		if ( 'meta' === $type && isset( $args['key'] ) ) {
+			$args['key'] = wp_unslash( (string) $args['key'] );
 		}
 		return $args;
 	}
@@ -742,8 +749,9 @@ class WPVibe_Content_Ops {
 				}
 				// edit_post is post-level; protected/registered meta keys carry their
 				// own auth boundary (protected-meta rule + auth_callback) that direct
-				// get_post_meta() bypasses. edit_post_meta maps both via map_meta_cap.
-				if ( ! current_user_can( 'edit_post_meta', $post_id, $key ) && ! $this->admin_meta_override( $post_id, $key ) ) {
+				// get_post_meta() bypasses. edit_post_meta maps both via map_meta_cap,
+				// and nothing overrides it for any role (WordPress.org review 11-17, #1624).
+				if ( ! current_user_can( 'edit_post_meta', $post_id, $key ) ) {
 					return $this->meta_forbidden_error( $post_id, $key );
 				}
 				if ( ! metadata_exists( 'post', $post_id, $key ) ) {
@@ -765,24 +773,11 @@ class WPVibe_Content_Ops {
 				if ( $sentinel === $value ) {
 					return new WP_Error( 'option_not_found', __( 'Option not found.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
 				}
-				return $value;
+				return WPVibe_CLI::mask_secrets( $name, $value ); // Search and edit see what option get shows (#1624).
 
 			default:
 				return new WP_Error( 'bad_target', __( 'target_type must be post, meta, or option.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_supported', false, array( 'status' => 400 ) ) );
 		}
-	}
-
-	/**
-	 * Core denies every underscore-prefixed key to every role through edit_post_meta. Administrators get those keys back
-	 * here, matching what `post meta update --force` grants them, but only on a post they can edit_post: the post's own
-	 * and its post type's capabilities still decide (WordPress.org review 11-17, #1624). Never for a key registered with
-	 * an auth_callback, where the owning plugin's own answer stands.
-	 */
-	private function admin_meta_override( $post_id, $key ) {
-		if ( ! current_user_can( 'manage_options' ) || ! current_user_can( 'edit_post', $post_id ) ) {
-			return false;
-		}
-		return ! $this->meta_has_auth_callback( $post_id, $key );
 	}
 
 	/**
@@ -1069,12 +1064,40 @@ class WPVibe_Content_Ops {
 		}
 	}
 
+	// Under each name core's map_meta_cap() applies; register_meta() with an object_subtype (Elementor's _elementor_data) uses `_for_`.
 	private function meta_has_auth_callback( $post_id, $key ) {
-		if ( has_filter( "auth_post_meta_{$key}" ) ) {
+		if ( self::hook_has_owner_auth( "auth_post_meta_{$key}" ) ) {
 			return true;
 		}
 		$post_type = get_post_type( $post_id );
-		return $post_type && has_filter( "auth_post_{$post_type}_meta_{$key}" );
+		return $post_type && ( self::hook_has_owner_auth( "auth_post_meta_{$key}_for_{$post_type}" ) || self::hook_has_owner_auth( "auth_post_{$post_type}_meta_{$key}" ) );
+	}
+
+	/**
+	 * Whether a meta auth hook carries a check the owning plugin supplied. When a plugin registers a key with no
+	 * auth_callback, core's register_meta() hooks '__return_false' (protected key) or '__return_true' itself (Yoast SEO
+	 * registers its _yoast_wpseo_* keys that way): that is core's default, not the owner's answer (#1624). Shared by
+	 * content/edit and the CLI meta commands.
+	 */
+	public static function hook_has_owner_auth( $hook ) {
+		if ( ! has_filter( $hook ) ) {
+			return false;
+		}
+		global $wp_filter;
+		$hooked   = isset( $wp_filter[ $hook ] ) ? $wp_filter[ $hook ] : null;
+		$priority = is_object( $hooked ) && isset( $hooked->callbacks ) ? $hooked->callbacks : ( is_array( $hooked ) ? $hooked : null );
+		if ( ! is_array( $priority ) ) {
+			return true; // Hooked, but out of sight: count it as the owner's check.
+		}
+		foreach ( $priority as $callbacks ) {
+			foreach ( (array) $callbacks as $callback ) {
+				$function = is_array( $callback ) && array_key_exists( 'function', $callback ) ? $callback['function'] : $callback;
+				if ( ! in_array( $function, array( '__return_false', '__return_true' ), true ) ) {
+					return true;
+				}
+			}
+		}
+		return false;
 	}
 
 	private function meta_forbidden_error( $post_id, $key ) {
@@ -1085,10 +1108,13 @@ class WPVibe_Content_Ops {
 				WPVibe_Error_Contract::data( 'meta_protected', false, array( 'status' => 403, 'protected' => true ) )
 			);
 		}
-		if ( is_protected_meta( $key, 'post' ) && ! current_user_can( 'manage_options' ) ) {
+		if ( is_protected_meta( $key, 'post' ) ) {
+			$fallback = current_user_can( 'manage_options' )
+				? __( 'If that plugin has no such path, `post meta get <id> <key>` reads it and `post meta update <id> <key> <value> --force` writes the whole new value.', 'vibe-ai' )
+				: __( 'If that plugin has no such path, this needs an Administrator connection (for `post meta update --force`): run remove_site for this site, then ask the user to run connect_site and approve it while logged in as an Administrator (connect_site alone keeps the same login).', 'vibe-ai' );
 			return new WP_Error(
 				'meta_forbidden',
-				__( 'This meta key is protected (underscore-prefixed). WPVibe lets Administrator accounts read and edit protected keys here, but the connected account is not an Administrator. Read and write it through the plugin that owns the key (an ability via discover_abilities, or its REST namespace). If that plugin has no such path, this needs an Administrator connection: run remove_site for this site, then ask the user to run connect_site and approve it while logged in as an Administrator (connect_site alone keeps the same login). Do not fall back to raw SQL.', 'vibe-ai' ),
+				__( 'This meta key is protected (underscore-prefixed). content/edit and content/search reach a protected key only where the plugin that owns the key allows it: WordPress\'s edit_post_meta check, the same for every role, Administrators included. For Elementor layout data on Elementor older than 3.27, use elementor/save-page. Otherwise read and write it through the plugin that owns the key (an ability via discover_abilities, or its REST namespace).', 'vibe-ai' ) . ' ' . $fallback . ' ' . __( 'Do not fall back to raw SQL.', 'vibe-ai' ),
 				WPVibe_Error_Contract::data( 'meta_protected', false, array( 'status' => 403, 'protected' => true ) )
 			);
 		}
@@ -1137,11 +1163,11 @@ class WPVibe_Content_Ops {
 					return $code_post;
 				}
 				// Same meta-level auth boundary as load(); edit_post alone is not it.
-				if ( ! current_user_can( 'edit_post_meta', $post_id, $key ) && ! $this->admin_meta_override( $post_id, $key ) ) {
+				if ( ! current_user_can( 'edit_post_meta', $post_id, $key ) ) {
 					return $this->meta_forbidden_error( $post_id, $key );
 				}
-				// update_metadata unslashes; slash to preserve backslashes.
-				$ok = update_post_meta( $post_id, $key, wp_slash( $updated ) );
+				// update_metadata unslashes the key and the value; slash both so the write lands on the key checked above.
+				$ok = update_post_meta( $post_id, wp_slash( $key ), wp_slash( $updated ) );
 				if ( false === $ok && (string) get_post_meta( $post_id, $key, true ) !== (string) $updated ) {
 					return new WP_Error( 'update_failed', __( 'Failed to update the meta value.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'wp_core', false, array( 'status' => 500 ) ) );
 				}
@@ -1151,6 +1177,10 @@ class WPVibe_Content_Ops {
 				$blocked = self::blocked_option_error( (string) $args['name'], true );
 				if ( $blocked ) {
 					return $blocked;
+				}
+				// load() masked any secret in the value; an edit that still carries the mask would store it over the secret.
+				if ( WPVibe_CLI::holds_secret_mask( $updated ) ) {
+					return new WP_Error( 'secret_masked', WPVibe_CLI::secret_mask_write_refusal( (string) $args['name'] ), WPVibe_Error_Contract::data( 'security_gate', false, array( 'status' => 403 ) ) );
 				}
 				// content/edit has no approval flow; without this, a gated
 				// builder option stored as JSON text is writable click-free.
@@ -1248,8 +1278,8 @@ class WPVibe_Content_Ops {
 	 * routes, which reach update_option()/get_option() directly and so bypassed it.
 	 * The list is hard-blocked in the CLI (approval cannot lift it) and carries the
 	 * auth keys and salts plus default_role and users_can_register, so without this
-	 * the same keys were writable and readable here. Reads follow the CLI's split:
-	 * READABLE_BLOCKED_OPTIONS stay readable, everything else does not.
+	 * the same keys were writable and readable here. Reads follow the CLI's split
+	 * (#1683): only SECRET_OPTIONS are unreadable, and load() masks secret fields.
 	 *
 	 * @param string $name     Option name.
 	 * @param bool   $is_write True for a write, false for a read.
@@ -1258,10 +1288,10 @@ class WPVibe_Content_Ops {
 	private static function blocked_option_error( $name, $is_write ) {
 		// match_option_name (not in_array) so " siteurl " / "SITEURL" cannot
 		// slip the block: WP trims and resolves case-insensitively to the row.
-		if ( null === WPVibe_CLI::match_option_name( $name, WPVibe_CLI::BLOCKED_OPTIONS ) ) {
-			return null;
-		}
-		if ( ! $is_write && null !== WPVibe_CLI::match_option_name( $name, WPVibe_CLI::READABLE_BLOCKED_OPTIONS ) ) {
+		$blocked = $is_write
+			? null !== WPVibe_CLI::match_option_name( $name, WPVibe_CLI::BLOCKED_OPTIONS )
+			: WPVibe_CLI::is_secret_option( $name );
+		if ( ! $blocked ) {
 			return null;
 		}
 		return new WP_Error(

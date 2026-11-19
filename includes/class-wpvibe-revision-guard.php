@@ -40,7 +40,7 @@ class WPVibe_Revision_Guard {
 		if ( ! self::applies( $post ) || ! is_array( $data ) || isset( self::$seen[ (int) $post->ID ] ) ) {
 			return;
 		}
-		foreach ( array_keys( _wp_post_revision_fields( $post ) ) as $field ) {
+		foreach ( self::revision_fields( $post ) as $field ) {
 			if ( array_key_exists( $field, $data ) && (string) $data[ $field ] !== (string) $post->$field ) {
 				self::$seen[ (int) $post->ID ] = true;
 				if ( wp_revisions_enabled( $post ) ) {
@@ -52,6 +52,28 @@ class WPVibe_Revision_Guard {
 				return;
 			}
 		}
+	}
+
+	/**
+	 * The fields core revisions, as core's _wp_post_revision_fields() returns them (a function marked private, so
+	 * not called here): title, content and excerpt, plus what plugins add through core's filter of the same name,
+	 * minus the fields core protects.
+	 *
+	 * @param WP_Post $post
+	 * @return string[] post field names.
+	 */
+	private static function revision_fields( $post ) {
+		$fields = array( 'post_title' => 'Title', 'post_content' => 'Content', 'post_excerpt' => 'Excerpt' );
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- core's filter.
+		$fields = apply_filters( '_wp_post_revision_fields', $fields, get_post( $post->ID, ARRAY_A ) );
+		if ( ! is_array( $fields ) ) {
+			return array();
+		}
+		// As core does after the filter: fields WordPress uses internally can never be revisioned.
+		foreach ( array( 'ID', 'post_name', 'post_parent', 'post_date', 'post_date_gmt', 'post_status', 'post_type', 'comment_count', 'post_author' ) as $protect ) {
+			unset( $fields[ $protect ] );
+		}
+		return array_keys( $fields );
 	}
 
 	/**

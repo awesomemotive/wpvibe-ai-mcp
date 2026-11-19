@@ -24,6 +24,8 @@ class WPVibe_Connection_Check {
 
 	public static function routes() {
 		register_rest_route( 'wpvibe/v1', '/connection-check-challenge', array(
+			// Public by design: WPVibe's servers read it without credentials. It answers only the random challenge of a check an
+			// Administrator started in the last two minutes, and 404 otherwise.
 			'methods' => 'GET', 'callback' => array( __CLASS__, 'challenge_response' ), 'permission_callback' => '__return_true',
 		) );
 	}
@@ -81,25 +83,39 @@ class WPVibe_Connection_Check {
 			array_merge( array( 'stage' => 'REST API from this site' ), self::rest_gate_probe() ),
 			array_merge( array( 'stage' => 'Authorization header' ), self::auth_header_loopback() ),
 		), 'evidence' => array() );
+		// The loopback above just told WordPress's REST side apart from this wp-admin request (#1602): say so when they differ.
+		$local = array_column( isset( $pending['report']['checks'] ) ? $pending['report']['checks'] : array(), 'status', 'stage' );
+		// The loopback wrote the note in another process: a persistent object cache still holds this request's older copy.
+		wp_cache_delete( 'notoptions', 'options' );
+		wp_cache_delete( WPVibe_App_Password_Policy::REST_OFF, 'options' );
+		if ( 'passed' === ( $local['Application Password availability'] ?? '' ) && WPVibe_App_Password_Policy::rest_reported_off() ) {
+			$report['checks'][] = array_merge( array( 'stage' => 'Application Passwords for REST requests', 'status' => 'failed' ), WPVibe_App_Password_Policy::rest_off_text() );
+		}
 		$pending['self'] = $report;
 		set_transient( self::CHALLENGE, $pending, max( 1, (int) $pending['expires'] - time() ) );
 		return $report;
 	}
 
 	public static function ajax_self() {
-		self::send( self::self_report( isset( $_POST['nonce'] ) ? wp_unslash( $_POST['nonce'] ) : '', isset( $_POST['challenge'] ) ? wp_unslash( $_POST['challenge'] ) : '' ) );
+		self::send( self::self_report( self::post_field( 'nonce' ), self::post_field( 'challenge' ) ) );
 	}
 
 	public static function ajax_state() {
-		self::send( self::state( isset( $_POST['nonce'] ) ? wp_unslash( $_POST['nonce'] ) : '' ) );
+		self::send( self::state( self::post_field( 'nonce' ) ) );
 	}
 
 	public static function ajax_prepare() {
-		self::send( self::prepare( isset( $_POST['nonce'] ) ? wp_unslash( $_POST['nonce'] ) : '' ) );
+		self::send( self::prepare( self::post_field( 'nonce' ) ) );
 	}
 
 	public static function ajax_remote() {
-		self::send( self::remote( isset( $_POST['nonce'] ) ? wp_unslash( $_POST['nonce'] ) : '', isset( $_POST['challenge'] ) ? wp_unslash( $_POST['challenge'] ) : '' ) );
+		self::send( self::remote( self::post_field( 'nonce' ), self::post_field( 'challenge' ) ) );
+	}
+
+	// The nonce and the challenge are hex strings; sanitizing leaves them unchanged and turns anything else into ''.
+	private static function post_field( $key ) {
+		// phpcs:ignore WordPress.Security.NonceVerification.Missing -- reads the nonce itself; every caller passes it to authorized(), which verifies it before anything runs.
+		return isset( $_POST[ $key ] ) ? sanitize_text_field( wp_unslash( $_POST[ $key ] ) ) : '';
 	}
 
 	public static function prepare( $nonce ) {
@@ -119,9 +135,17 @@ class WPVibe_Connection_Check {
 
 	const LOOPBACK = 'wpvibe_connection_loopback';
 
+	// The REST index probe's one-time token: its request may note that WordPress turns Application Passwords off for REST (#1681).
+	const PROBE = 'wpvibe_connection_probe';
+
 	public static function loopback_token_valid( $token ) {
 		$expected = get_transient( self::LOOPBACK );
 		return is_string( $expected ) && '' !== $expected && hash_equals( $expected, $token );
+	}
+
+	public static function probe_token_valid( $token ) {
+		$expected = get_transient( self::PROBE );
+		return is_string( $expected ) && '' !== $expected && hash_equals( $expected, (string) $token );
 	}
 
 	// A host that strips Authorization breaks every app-password request; the fallback header is what WPVibe uses then.
@@ -145,6 +169,7 @@ class WPVibe_Connection_Check {
 		$body = json_decode( wp_remote_retrieve_body( $response ), true );
 		$seen = is_array( $body ) && isset( $body['auth_headers_seen'] ) && is_array( $body['auth_headers_seen'] ) ? $body['auth_headers_seen'] : null;
 		if ( ! $seen ) {
+			/* translators: %d: HTTP status code. */
 			return array( 'status' => 'unknown', 'summary' => sprintf( __( 'The loopback request returned HTTP %d without the plugin echo, so the Authorization header could not be tested here.', 'vibe-ai' ), (int) wp_remote_retrieve_response_code( $response ) ), 'next' => '' );
 		}
 		if ( ! empty( $seen['authorization'] ) ) {
@@ -158,7 +183,12 @@ class WPVibe_Connection_Check {
 
 	// Staging gates and REST-disabling plugins are the two most common site-side blockers in support; both are visible from inside the site.
 	public static function rest_gate_probe() {
-		$response = wp_remote_get( rest_url(), array( 'timeout' => 8, 'sslverify' => apply_filters( 'https_local_ssl_verify', false ), 'headers' => array( 'X-WPVibe-Loopback-Probe' => '1' ) ) );
+		// X-WPVibe: the index request is a WPVibe REST request, so it notes whether WordPress turns Application Passwords off for those (#1602).
+		// It carries no credentials, so a one-time token shows the note it writes is this check's own (#1681).
+		$token = bin2hex( random_bytes( 16 ) );
+		set_transient( self::PROBE, $token, 30 );
+		$response = wp_remote_get( rest_url(), array( 'timeout' => 8, 'sslverify' => apply_filters( 'https_local_ssl_verify', false ), 'headers' => array( 'X-WPVibe-Loopback-Probe' => $token, 'X-WPVibe' => '1' ) ) );
+		delete_transient( self::PROBE );
 		if ( is_wp_error( $response ) ) {
 			return array( 'status' => 'unknown', 'summary' => __( 'This site could not make a request to its own REST API, so a password gate could not be tested here.', 'vibe-ai' ), 'next' => '' );
 		}
@@ -171,11 +201,13 @@ class WPVibe_Connection_Check {
 		}
 		if ( is_array( $body ) && isset( $body['code'] ) && in_array( $body['code'], array( 'rest_disabled', 'rest_forbidden', 'rest_cannot_access', 'rest_login_required', 'rest_not_logged_in' ), true ) ) {
 			$blocker = self::rest_blocker();
+			/* translators: %s: name of the plugin that turns the REST API off. */
 			return array( 'status' => 'limited', 'summary' => $blocker ? sprintf( __( 'The %s plugin turns off the WordPress REST API for logged-out requests. WPVibe signs in with an Application Password, so its requests are logged in and usually pass.', 'vibe-ai' ), $blocker['name'] ) : __( 'A plugin or setting turns off the WordPress REST API for logged-out requests. WPVibe signs in with an Application Password, so its requests are logged in and usually pass.', 'vibe-ai' ), 'next' => __( 'No action needed yet. If Step 3 fails with a REST API or 401/403 error, allow the wp/v2 and wpvibe/v1 routes for logged-in users in that plugin, then run the check again.', 'vibe-ai' ) );
 		}
 		if ( 200 === $code && is_array( $body ) && isset( $body['namespaces'] ) ) {
 			$missing = array_diff( array( 'wp/v2', 'wpvibe/v1' ), (array) $body['namespaces'] );
 			if ( $missing ) {
+				/* translators: %s: comma-separated list of REST namespaces. */
 				return array( 'status' => 'failed', 'summary' => sprintf( __( 'The REST API answers, but these routes are missing: %s.', 'vibe-ai' ), implode( ', ', $missing ) ), 'next' => __( 'Another plugin is removing REST routes. Find the plugin that hides REST routes or namespaces and allow wp/v2 and wpvibe/v1.', 'vibe-ai' ) );
 			}
 			return array( 'status' => 'passed', 'summary' => __( 'The REST API answers from inside this site with the routes WPVibe needs.', 'vibe-ai' ), 'next' => '' );
@@ -183,8 +215,12 @@ class WPVibe_Connection_Check {
 		$raw = (string) wp_remote_retrieve_body( $response );
 		if ( null === $body && '' !== trim( $raw ) ) {
 			$page = self::maintenance_page_owner( $raw );
-			return array( 'status' => 'failed', 'summary' => $page ? sprintf( __( 'The REST API returned a web page instead of JSON (HTTP %1$d). %2$s is in coming soon or maintenance mode and is answering instead of the WordPress API.', 'vibe-ai' ), $code, $page ) : sprintf( __( 'The REST API returned a web page instead of JSON (HTTP %d). A coming soon page, maintenance mode, or firewall page is answering instead of the WordPress API.', 'vibe-ai' ), $code ), 'next' => $page ? __( 'Exclude the REST API from that mode, or turn the mode off while connecting. Then run the check again.', 'vibe-ai' ) : __( 'Turn off maintenance or coming soon mode for REST requests, or ask your host which page is answering /wp-json/. Then run the check again.', 'vibe-ai' ) );
+			/* translators: 1: HTTP status code, 2: name of the plugin in coming soon or maintenance mode. */
+			return array( 'status' => 'failed', 'summary' => $page ? sprintf( __( 'The REST API returned a web page instead of JSON (HTTP %1$d). %2$s is in coming soon or maintenance mode and is answering instead of the WordPress API.', 'vibe-ai' ), $code, $page )
+				/* translators: %d: HTTP status code. */
+				: sprintf( __( 'The REST API returned a web page instead of JSON (HTTP %d). A coming soon page, maintenance mode, or firewall page is answering instead of the WordPress API.', 'vibe-ai' ), $code ), 'next' => $page ? __( 'Exclude the REST API from that mode, or turn the mode off while connecting. Then run the check again.', 'vibe-ai' ) : __( 'Turn off maintenance or coming soon mode for REST requests, or ask your host which page is answering /wp-json/. Then run the check again.', 'vibe-ai' ) );
 		}
+		/* translators: %d: HTTP status code. */
 		return array( 'status' => 'unknown', 'summary' => sprintf( __( 'The REST API returned HTTP %d to a request from this site. The remote check below tells you whether WPVibe can reach it.', 'vibe-ai' ), $code ), 'next' => '' );
 	}
 
@@ -230,9 +266,11 @@ class WPVibe_Connection_Check {
 			|| preg_match( '/\.(local|test|localhost|internal|lan|home)$/', $host )
 			|| ( filter_var( $host, FILTER_VALIDATE_IP ) && ! filter_var( $host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE ) );
 		if ( $local ) {
+			/* translators: %s: the WordPress Address (site URL). */
 			return array( 'stage' => 'WordPress address', 'status' => 'failed', 'summary' => sprintf( __( 'The WordPress address %s is a local or private address that the internet cannot reach.', 'vibe-ai' ), $site ), 'next' => __( 'WPVibe runs in the cloud and needs a public https:// address. For a local site, expose it with a tunnel (for example ngrok or Cloudflare Tunnel) and set the WordPress Address to the tunnel URL, or connect a staging copy instead.', 'vibe-ai' ) );
 		}
-		return array( 'stage' => 'WordPress address', 'status' => 'passed', 'summary' => sprintf( __( 'Checking the WordPress installation at %s. Public homepage: %s. Different addresses can be valid for subdirectory installations.', 'vibe-ai' ), $site, home_url() ) );
+		/* translators: 1: the WordPress Address (site URL), 2: the Site Address (home URL). */
+		return array( 'stage' => 'WordPress address', 'status' => 'passed', 'summary' => sprintf( __( 'Checking the WordPress installation at %1$s. Public homepage: %2$s. Different addresses can be valid for subdirectory installations.', 'vibe-ai' ), $site, home_url() ) );
 	}
 
 	// Who owns the edge in front of this site: the Worker cannot tell a customer's Cloudflare from a host's, but the site can.
@@ -264,16 +302,30 @@ class WPVibe_Connection_Check {
 		$https = 'https' === wp_parse_url( $site, PHP_URL_SCHEME );
 		$can_create = current_user_can( 'create_app_password', get_current_user_id() );
 		$is_admin   = current_user_can( 'manage_options' ) && ( ! is_multisite() || is_super_admin() );
-		$available = WPVibe_App_Password_Policy::available_for_wpvibe( wp_get_current_user() );
-		$blocker   = $available ? null : WPVibe_App_Password_Policy::blocker();
+		$here      = WPVibe_App_Password_Policy::available_for_wpvibe( wp_get_current_user() );
+		// On here, but off for WPVibe's REST requests (#1602): a block that applies to the REST API only.
+		$rest_off  = $here && WPVibe_App_Password_Policy::rest_reported_off();
+		$available = $here && ! $rest_off;
+		$blocker   = $here ? null : WPVibe_App_Password_Policy::blocker();
 		$checks = array(
 			array( 'stage' => 'Plugin installed', 'status' => 'passed', 'summary' => __( 'WPVibe is active on this WordPress installation.', 'vibe-ai' ) ),
 			array( 'stage' => 'WordPress HTTPS', 'status' => $https ? 'passed' : 'failed', 'summary' => $https ? __( 'The WordPress address uses HTTPS.', 'vibe-ai' ) : __( 'The WordPress address does not use HTTPS.', 'vibe-ai' ), 'next' => $https ? '' : __( 'Ask your host to enable a valid HTTPS certificate and confirm the WordPress Address in Settings > General before connecting.', 'vibe-ai' ) ),
-			array( 'stage' => 'Application Password availability', 'status' => $available ? 'passed' : 'failed', 'summary' => $available ? __( 'Application Passwords are available for your current WordPress account. No credential has been tested.', 'vibe-ai' ) : ( $blocker ? sprintf( __( 'Application Passwords are turned off by the %s plugin.', 'vibe-ai' ), $blocker['name'] ) : __( 'WordPress reports that Application Passwords are unavailable for your current account.', 'vibe-ai' ) ), 'next' => $available ? '' : ( $blocker ? sprintf( __( 'Turn that setting off in %s, or use Allow for WPVibe below to permit Application Passwords for WPVibe requests only. Then run the check again.', 'vibe-ai' ), $blocker['name'] ) : __( 'Check Users > Profile > Application Passwords. If that section is missing, check HTTPS and which security setting disables Application Passwords, or use Allow for WPVibe below. Then run the check again.', 'vibe-ai' ) ) ),
+			/* translators: %s: name of the plugin that turns Application Passwords off. */
+			array( 'stage' => 'Application Password availability', 'status' => $available ? 'passed' : 'failed', 'summary' => $available ? __( 'Application Passwords are available for your current WordPress account. No credential has been tested.', 'vibe-ai' ) : ( $blocker ? sprintf( __( 'Application Passwords are turned off by the %s plugin.', 'vibe-ai' ), $blocker['name'] ) : __( 'WordPress reports that Application Passwords are unavailable for your current account.', 'vibe-ai' ) ),
+				/* translators: %s: name of the plugin that turns Application Passwords off. */
+				'next' => $available ? '' : ( $blocker ? sprintf( __( 'Turn that setting off in %s, or use Allow for WPVibe below to permit Application Passwords for WPVibe requests only. Then run the check again.', 'vibe-ai' ), $blocker['name'] ) : __( 'Check Users > Profile > Application Passwords. If that section is missing, check HTTPS and which security setting disables Application Passwords, or use Allow for WPVibe below. Then run the check again.', 'vibe-ai' ) ) ),
 			array( 'stage' => 'Current WordPress account', 'status' => $can_create && $is_admin ? 'passed' : 'failed', 'summary' => $can_create && $is_admin ? __( 'This account is an administrator and can create an Application Password. The account authorized later may have different permissions.', 'vibe-ai' ) : ( ! $can_create ? __( 'This account is not allowed to create an Application Password.', 'vibe-ai' ) : __( 'This account can create an Application Password but is not an administrator here, so your AI would get limited access.', 'vibe-ai' ) ), 'next' => $can_create && $is_admin ? '' : ( ! $can_create ? __( 'Ask your site administrator to review this account’s Application Password permissions, or authorize using an account permitted to create one.', 'vibe-ai' ) : __( 'Sign in as an administrator of this site before connecting. On a multisite network, use a super admin.', 'vibe-ai' ) ) ),
 			self::address_row( $site ),
 			WPVibe_Diagnostics::check_row(),
 		);
+		if ( $rest_off ) {
+			foreach ( $checks as &$row ) {
+				if ( 'Application Password availability' === $row['stage'] ) {
+					$row = array_merge( $row, WPVibe_App_Password_Policy::rest_off_text() );
+				}
+			}
+			unset( $row );
+		}
 		// Core's authorize page wp_die()s with a bare 501 under HTTP Basic Auth, before our beacon can load; this admin request sees the same credentials it would.
 		if ( function_exists( 'wp_is_site_protected_by_basic_auth' ) && wp_is_site_protected_by_basic_auth( 'front' ) ) {
 			$checks[] = array( 'stage' => 'Second login (HTTP Basic Authentication)', 'status' => 'failed', 'summary' => __( 'This site asks for a second username and password before WordPress loads. While that login is on, WordPress refuses to approve Application Passwords, so Step 3 would stop at "Cannot Authorize Application".', 'vibe-ai' ), 'next' => __( 'Turn off the password protection on this site or its wp-admin folder (your host may call it directory privacy or password-protected directories), then run the check again and connect in Step 3. If the protection covers only wp-admin, you can turn it back on after connecting.', 'vibe-ai' ) );
@@ -329,6 +381,7 @@ class WPVibe_Connection_Check {
 		if ( $status < 200 || $status >= 300 || ! is_array( $report ) || ! isset( $report['checks'] ) || ! is_array( $report['checks'] ) || empty( $report['checks'] ) ) {
 			return array( 'site' => site_url(), 'checkedAt' => gmdate( 'c' ), 'checks' => array( array(
 				'stage' => 'Remote readiness check', 'status' => 'unknown',
+				/* translators: %d: HTTP status code. */
 				'summary' => $status ? sprintf( __( 'The remote checker did not return a usable report (HTTP %d). Your local results are still available.', 'vibe-ai' ), $status ) : __( 'WordPress could not receive a response from the WPVibe checker. Your local results are still available.', 'vibe-ai' ),
 				'next' => '' !== $service_error ? $service_error : ( 429 === $status ? __( 'Wait one minute and retry. Repeated checks can be rate limited.', 'vibe-ai' ) : __( 'Retry once after a minute. If it repeats, send this report to support@wpvibe.ai and ask your host to inspect outbound HTTPS to mcp.wpvibe.ai. This result does not identify whether the cause is hosting, networking, or WPVibe.', 'vibe-ai' ) ),
 			) ), 'evidence' => array() );

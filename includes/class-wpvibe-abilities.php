@@ -53,7 +53,7 @@ class WPVibe_Abilities {
 			array(
 				'methods'             => 'POST',
 				'callback'            => array( $this, 'run_ability' ),
-				'permission_callback' => array( $this, 'can_read' ),
+				'permission_callback' => array( $this, 'can_run_ability' ),
 			)
 		);
 		register_rest_route(
@@ -188,8 +188,35 @@ class WPVibe_Abilities {
 		return $ability ? new WP_REST_Response( self::item( $ability ), 200 ) : self::not_found();
 	}
 
+	/**
+	 * The run route's permission_callback checks the ability it runs, not only `read` (WordPress.org review 11-17,
+	 * #1624), as core's own run controller does: the same checks run_ability() makes again before it executes.
+	 */
+	public function can_run_ability( $request ) {
+		if ( true !== $this->can_read() ) {
+			return false;
+		}
+		$checked = self::checked( $request );
+		return is_wp_error( $checked ) ? $checked : true;
+	}
+
 	/** JSON body `{ "input": ... }`; a missing input stays null, the only value an ability without an input schema accepts. */
 	public function run_ability( $request ) {
+		$checked = self::checked( $request );
+		if ( is_wp_error( $checked ) ) {
+			return $checked;
+		}
+		list( $ability, $input ) = $checked;
+		$result = $ability->execute( $input );
+		return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 );
+	}
+
+	/**
+	 * Finds the route's ability and runs every check before execute(), in core's run controller order and statuses.
+	 *
+	 * @return array|WP_Error array( ability, input as sent ), or the refusal.
+	 */
+	private static function checked( $request ) {
 		$ability = self::find( self::route_name( $request ) );
 		if ( ! $ability ) {
 			return self::not_found();
@@ -222,9 +249,7 @@ class WPVibe_Abilities {
 		if ( true !== $allowed ) {
 			return self::cannot_execute();
 		}
-
-		$result = $ability->execute( $input );
-		return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 );
+		return array( $ability, $input );
 	}
 
 	/** Core 7.1's run controller coerces valid input to its schema types ("7" for an integer becomes 7); the same here, and never for input that does not validate. */

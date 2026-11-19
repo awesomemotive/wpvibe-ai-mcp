@@ -92,14 +92,63 @@ class WPVibe_Op_Receipts {
 		// Recorded as installed only once the table exists, and silent with WP_DEBUG on (WordPress.org review 11-17, #1624).
 		$suppress = $wpdb->suppress_errors( true );
 		dbDelta( $sql );
-		// Case-insensitive: a server with lower_case_table_names lists a mixed-case prefix in lower case.
-		$exists = 0 === strcasecmp( (string) $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) ) ), $table );
+		$exists = self::table_exists();
 		$wpdb->suppress_errors( $suppress );
 		if ( ! $exists ) {
 			set_transient( self::OPTION_VERSION . '_retry', 1, HOUR_IN_SECONDS );
 			return;
 		}
 		update_option( self::OPTION_VERSION, self::SCHEMA_VERSION );
+	}
+
+	/**
+	 * Whether the table can be used: its schema is recorded as installed. The option is autoloaded, so this costs no
+	 * query. A site cloned or migrated without its custom tables still carries the flag; the first query that finds the
+	 * table gone clears it (run()). While not ready every request behaves as if it had no receipt, which is what the
+	 * Worker already handles when an insert fails.
+	 */
+	public static function ready() {
+		return get_option( self::OPTION_VERSION ) === self::SCHEMA_VERSION;
+	}
+
+	/** Case-insensitive: a server with lower_case_table_names lists a mixed-case prefix in lower case. */
+	private static function table_exists() {
+		global $wpdb;
+		$table = self::table_name();
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		return 0 === strcasecmp( (string) $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) ) ), $table );
+	}
+
+	/**
+	 * Every query on the table goes through here (#1624). Skipped, returning $fallback, while the table isn't ready.
+	 * Database errors are never printed (WP_DEBUG shows them inside REST JSON, and record_started() reads a receipt on
+	 * every request carrying an op id). When the query failed because the table is gone, the flag is cleared and the
+	 * table created again; if that works the query runs once more.
+	 *
+	 * @param callable $query    function ( wpdb $wpdb ) that runs one query and returns its result.
+	 * @param mixed    $fallback what the caller gets when the table can't be used.
+	 */
+	private static function run( $query, $fallback ) {
+		if ( ! self::ready() ) {
+			return $fallback;
+		}
+		global $wpdb;
+		$suppress = $wpdb->suppress_errors( true );
+		// Restored even when a query throws (strict mysqli reporting), so wpdb errors aren't left hidden for the request.
+		try {
+			$wpdb->last_error = '';
+			$result           = $query( $wpdb );
+			if ( '' !== (string) $wpdb->last_error && ! self::table_exists() ) {
+				delete_option( self::OPTION_VERSION );
+				delete_transient( self::OPTION_VERSION . '_retry' );
+				self::maybe_install();
+				$wpdb->last_error = '';
+				$result           = self::ready() ? $query( $wpdb ) : $fallback;
+			}
+		} finally {
+			$wpdb->suppress_errors( $suppress );
+		}
+		return $result;
 	}
 
 	public static function sanitize_op_id( $value ) {
@@ -116,12 +165,13 @@ class WPVibe_Op_Receipts {
 		if ( '' === $op_id ) {
 			return null;
 		}
-		global $wpdb;
 		$table = self::table_name();
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-		$row = $wpdb->get_row(
-			$wpdb->prepare( "SELECT * FROM {$table} WHERE op_id = %s", $op_id ),
-			ARRAY_A
+		$row   = self::run(
+			function ( $wpdb ) use ( $table, $op_id ) {
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				return $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table} WHERE op_id = %s", $op_id ), ARRAY_A );
+			},
+			null
 		);
 		return is_array( $row ) ? $row : null;
 	}
@@ -161,8 +211,14 @@ class WPVibe_Op_Receipts {
 		if ( null === $existing ) {
 			if ( self::insert_started( $op_id, $route ) ) {
 				self::$started_ops[ $op_id ] = 'new';
+				return $response;
 			}
-			return $response;
+			// The op id is the primary key: an insert that failed with a row there now lost the claim to a concurrent
+			// request, which runs the op (#1630). With no row, the table is in trouble and this runs as if unrecorded.
+			$existing = self::get_receipt( $op_id );
+			if ( null === $existing ) {
+				return $response;
+			}
 		}
 
 		// Receipt contents are manage_options-only. A lower-capability caller
@@ -194,12 +250,16 @@ class WPVibe_Op_Receipts {
 			);
 		}
 
-		// Stale 'started': the earlier attempt died without completing, so this
-		// request becomes the live one and the clock restarts.
-		if ( self::restart_started( $op_id, $route ) ) {
-			self::$started_ops[ $op_id ] = 'restarted';
-		}
-		return $response;
+		// Stale 'started': the earlier run never recorded an outcome. It may have died, applied, or still be going, so the
+		// op never runs a second time (#1630); its receipt stays the earlier run's.
+		return new WP_Error(
+			'wpvibe_op_outcome_unknown',
+			__( 'This operation started on this site over 2 minutes ago and never recorded an outcome, so it may or may not have run. Check its effect on the site before requesting it again.', 'vibe-ai' ),
+			array(
+				'status'  => 409,
+				'receipt' => self::receipt_payload( $existing ),
+			)
+		);
 	}
 
 	/**
@@ -226,7 +286,7 @@ class WPVibe_Op_Receipts {
 		$fresh = 'new' === self::$started_ops[ $op_id ];
 		unset( self::$started_ops[ $op_id ] );
 		// A refused bypass claim ran nothing and the Worker re-opens the same op for a human, so the op id must stay unused.
-		// A reclaimed stale receipt may stand for an earlier run still going, so only this request's own row is released.
+		// Only the request that inserted the row releases it: a receipt it found already there stays as it was.
 		if ( $fresh && is_wp_error( $response ) && 'wpvibe_bypass_off' === $response->get_error_code() ) {
 			self::release( $op_id );
 			return $response;
@@ -236,9 +296,13 @@ class WPVibe_Op_Receipts {
 	}
 
 	private static function release( $op_id ) {
-		global $wpdb;
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		$wpdb->delete( self::table_name(), array( 'op_id' => $op_id, 'state' => 'started' ), array( '%s', '%s' ) );
+		self::run(
+			function ( $wpdb ) use ( $op_id ) {
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+				return $wpdb->delete( self::table_name(), array( 'op_id' => $op_id, 'state' => 'started' ), array( '%s', '%s' ) );
+			},
+			false
+		);
 	}
 
 	private static function request_op_id( $request ) {
@@ -269,58 +333,35 @@ class WPVibe_Op_Receipts {
 	private static function insert_started( $op_id, $route ) {
 		self::cleanup();
 
-		global $wpdb;
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		$result = $wpdb->insert(
-			self::table_name(),
-			array(
-				'op_id'      => $op_id,
-				'state'      => 'started',
-				'route'      => substr( $route, 0, self::MAX_ROUTE ),
-				'created_at' => self::now(),
-			),
-			array( '%s', '%s', '%s', '%s' )
+		$row    = array(
+			'op_id'      => $op_id,
+			'state'      => 'started',
+			'route'      => substr( $route, 0, self::MAX_ROUTE ),
+			'created_at' => self::now(),
 		);
-		return false !== $result;
-	}
-
-	private static function restart_started( $op_id, $route ) {
-		global $wpdb;
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		$result = $wpdb->update(
-			self::table_name(),
-			array(
-				'state'          => 'started',
-				'route'          => substr( $route, 0, self::MAX_ROUTE ),
-				'http_status'    => null,
-				'result_summary' => null,
-				'created_at'     => self::now(),
-				'finished_at'    => null,
-			),
-			array( 'op_id' => $op_id ),
-			array( '%s', '%s', '%d', '%s', '%s', '%s' ),
-			array( '%s' )
+		$result = self::run(
+			function ( $wpdb ) use ( $row ) {
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+				return $wpdb->insert( self::table_name(), $row, array( '%s', '%s', '%s', '%s' ) );
+			},
+			false
 		);
 		return false !== $result;
 	}
 
 	private static function complete( $op_id, $status, $summary ) {
-		global $wpdb;
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		$wpdb->update(
-			self::table_name(),
-			array(
-				'state'          => 'completed',
-				'http_status'    => $status,
-				'result_summary' => $summary,
-				'finished_at'    => self::now(),
-			),
-			array(
-				'op_id' => $op_id,
-				'state' => 'started',
-			),
-			array( '%s', '%d', '%s', '%s' ),
-			array( '%s', '%s' )
+		$row = array(
+			'state'          => 'completed',
+			'http_status'    => $status,
+			'result_summary' => $summary,
+			'finished_at'    => self::now(),
+		);
+		self::run(
+			function ( $wpdb ) use ( $row, $op_id ) {
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+				return $wpdb->update( self::table_name(), $row, array( 'op_id' => $op_id, 'state' => 'started' ), array( '%s', '%d', '%s', '%s' ), array( '%s', '%s' ) );
+			},
+			false
 		);
 	}
 
@@ -329,14 +370,14 @@ class WPVibe_Op_Receipts {
 	 * cadence. Receipts are only written for approved ops, so this is rare.
 	 */
 	private static function cleanup() {
-		global $wpdb;
-		$table = self::table_name();
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-		$wpdb->query(
-			$wpdb->prepare(
-				"DELETE FROM {$table} WHERE created_at < %s",
-				gmdate( 'Y-m-d H:i:s', time() - self::TTL_SECONDS )
-			)
+		$table  = self::table_name();
+		$cutoff = gmdate( 'Y-m-d H:i:s', time() - self::TTL_SECONDS );
+		self::run(
+			function ( $wpdb ) use ( $table, $cutoff ) {
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				return $wpdb->query( $wpdb->prepare( "DELETE FROM {$table} WHERE created_at < %s", $cutoff ) );
+			},
+			false
 		);
 	}
 

@@ -123,6 +123,7 @@ class WPVibe_Content_Files {
 		if ( $is_log && ( null !== $start_line || null !== $end_line ) ) {
 			return $this->error( 'invalid_range', 'Logs return a bounded tail. Omit start_line and end_line.', 400 );
 		}
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- needs a handle: fstat() on it is compared with the path's inode so a swapped or linked file is refused (TOCTOU); WP_Filesystem has no handle API.
 		$handle = @fopen( $full, 'rb' );
 		if ( false === $handle ) {
 			return $this->error( 'read_failed', 'The file could not be opened.', 500 );
@@ -149,7 +150,7 @@ class WPVibe_Content_Files {
 				return $this->error( 'read_failed', 'The file could not be read.', 500 );
 			}
 		} finally {
-			fclose( $handle );
+			fclose( $handle ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- closes the handle opened above.
 		}
 		if ( $offset > 0 ) {
 			// A tail may begin inside a multiline secret: start at a new timestamped record.

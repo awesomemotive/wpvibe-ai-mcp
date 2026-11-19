@@ -139,9 +139,10 @@ class WPVibe_Draft_Theme {
 			return null;
 		}
 		return sprintf(
-			/* translators: %s: theme folder name */
 			$published
+				/* translators: %s: theme folder name */
 				? __( 'The folder name \'%s\' matches a theme that WordPress.org updates, so a WordPress.org update for that theme can replace these files. If this is now your own design, add the line "Update URI: false" to the style.css header in a new draft and publish it.', 'vibe-ai' )
+				/* translators: %s: theme folder name */
 				: __( 'The folder name \'%s\' matches a theme that WordPress.org updates, so after publish a WordPress.org update for that theme can replace these files. If this is now your own design, add the line "Update URI: false" to the draft\'s style.css header before you publish.', 'vibe-ai' ),
 			$slug
 		);
@@ -541,18 +542,24 @@ class WPVibe_Draft_Theme {
 	/** First candidate slug that is actually installed, or '' when none is.
 	 * switch_theme() does no validation, so an unchecked slug white-screens the
 	 * site just as surely as the fatal the rollback is undoing. */
-	private static function first_existing_theme( array $candidates ) {
+	private static function first_existing_theme( array $candidates, $was_active = '' ) {
 		foreach ( $candidates as $slug ) {
 			$slug = (string) $slug;
 			if ( '' === $slug ) {
 				continue;
 			}
 			$theme = wp_get_theme( $slug );
-			if ( $theme && $theme->exists() ) {
+			// The theme the site was running goes back as it was; any other must be one the network allows (#1653).
+			if ( $theme && $theme->exists() && ( $slug === (string) $was_active || self::network_allows( $slug ) ) ) {
 				return $slug;
 			}
 		}
 		return '';
+	}
+
+	/** On multisite, whether the network allows the theme for this site, the rule `theme activate` follows (#1624, #1653). */
+	private static function network_allows( $slug ) {
+		return ! is_multisite() || wp_get_theme( $slug )->is_allowed();
 	}
 
 	/**
@@ -563,8 +570,7 @@ class WPVibe_Draft_Theme {
 	 */
 	private function drop_rollback_folder( $backup_dir ) {
 		if ( is_link( $backup_dir ) ) {
-			// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.unlink_unlink -- our own rollback link.
-			return @unlink( $backup_dir ) || ! is_link( $backup_dir );
+			return WPVibe_Theme_Backup::fs()->delete( $backup_dir, false, 'f' ) || ! is_link( $backup_dir );
 		}
 		return ! is_wp_error( $this->delete_directory( $backup_dir ) ) || ! is_dir( $backup_dir );
 	}
@@ -576,8 +582,22 @@ class WPVibe_Draft_Theme {
 	 * damaged.
 	 */
 	private function rollback_publish( $live_dir, $backup_dir, $draft_dir, $swapped_by_rename, $source_slug, $had_live = true, $previous_active = '', $archived = '' ) {
-		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- failures reported below.
-		$draft_back = @rename( $live_dir, $draft_dir ) || ! is_wp_error( $this->copy_directory( $live_dir, $draft_dir ) );
+		// From here the previous theme goes back live: a rollback that stops or fails part way is finished that way, with the
+		// published tree moved back into the draft slot, never kept as a finished publish (#1691 review).
+		// A draft folder already there (the publish copied it rather than moving it) is whole.
+		$draft_was_there = is_dir( $draft_dir );
+		if ( $had_live ) {
+			WPVibe_Theme_Backup::swap_phase( 'aside', true, $draft_was_there );
+		}
+		$draft_back = WPVibe_Theme_Backup::move( $live_dir, $draft_dir ) || ! is_wp_error( $this->copy_directory( $live_dir, $draft_dir ) );
+		if ( $draft_back && $had_live ) {
+			// The published tree is whole in the draft slot: what stays in the live folder is a copy that can go.
+			WPVibe_Theme_Backup::swap_phase( 'aside', true, true );
+		}
+		if ( ! $draft_back && ! $draft_was_there ) {
+			// A partial copy: the live folder still holds the whole published tree, which a later settle moves back.
+			$this->delete_directory( $draft_dir );
+		}
 		if ( $draft_back && is_dir( $live_dir ) ) {
 			$this->delete_directory( $live_dir );
 		}
@@ -590,7 +610,7 @@ class WPVibe_Draft_Theme {
 			// would point the site at nothing. Go back to whatever was active
 			// before the publish, and only to a theme that is really on disk.
 			wp_clean_themes_cache();
-			$target = self::first_existing_theme( array( $previous_active === $source_slug ? '' : $previous_active, WP_DEFAULT_THEME ) );
+			$target = self::first_existing_theme( array( $previous_active === $source_slug ? '' : $previous_active, WP_DEFAULT_THEME ), $previous_active );
 			if ( '' !== $target ) {
 				switch_theme( $target );
 			}
@@ -601,16 +621,24 @@ class WPVibe_Draft_Theme {
 				}
 			}
 			if ( '' === $target ) {
-				return __( 'no installed theme could be activated in its place, so the site is still on the failed theme. Install or restore a working theme from the host file manager.', 'vibe-ai' );
+				return __( 'no installed theme the network allows could be activated in its place, so the site is still on the failed theme. Install or restore a working theme from the host file manager.', 'vibe-ai' );
 			}
 			return $draft_back
 				? sprintf( /* translators: %s: theme slug */ __( '\'%s\' is live again and the draft is intact for editing.', 'vibe-ai' ), $target )
 				: sprintf( /* translators: %s: theme slug */ __( '\'%s\' is live again, but the draft could not be restored; recreate it.', 'vibe-ai' ), $target );
 		}
-		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
-		$live_back = @rename( $backup_dir, $live_dir ) || ! is_wp_error( $this->copy_directory( $backup_dir, $live_dir ) );
+		// The published tree could not leave the live folder and has no other whole copy: nothing is copied over it (#1691
+		// review). The swap record stays at "aside", so the next settle moves it into the draft slot, then the previous
+		// theme back.
+		$hold = ! $draft_back && ! $draft_was_there;
+		if ( ! $draft_back && $draft_was_there ) {
+			// The draft is whole in its own folder: the live copy of it goes, so the previous theme moves in cleanly.
+			$this->delete_directory( $live_dir );
+		}
+		$live_back = ! $hold && ( WPVibe_Theme_Backup::move( $backup_dir, $live_dir ) || ! is_wp_error( $this->copy_directory( $backup_dir, $live_dir ) ) );
 		// Copied back, the rollback folder is redundant, and no -wpvibe-backup theme folder may stay (#1624).
 		if ( $live_back ) {
+			WPVibe_Theme_Backup::swap_phase( 'archived' );
 			$this->drop_rollback_folder( $backup_dir );
 			WPVibe_Theme_Backup::discard( $archived );
 		}
@@ -618,7 +646,7 @@ class WPVibe_Draft_Theme {
 		// Back to the theme the site was actually running: publishing activates
 		// the source, so when the site was on a different theme a failed publish
 		// must not leave that switch in place.
-		$restore = self::first_existing_theme( array( $previous_active, $source_slug ) );
+		$restore = self::first_existing_theme( array( $previous_active, $source_slug ), $previous_active );
 		if ( '' !== $restore ) {
 			switch_theme( $restore );
 		}
@@ -634,18 +662,39 @@ class WPVibe_Draft_Theme {
 		if ( $live_back ) {
 			return __( 'the previous theme is live again, but the draft could not be restored; recreate it from the live theme.', 'vibe-ai' );
 		}
+		if ( $hold ) {
+			return sprintf(
+				/* translators: 1: live dir, 2: backup dir, 3: theme slug */
+				__( 'ROLLBACK FAILED: the server refused to move the published theme out of \'%1$s\', so it is still live, and the previous theme is whole at \'%2$s\'. WPVibe moves the published theme back into the draft and the previous one back to \'%1$s\' the next time an administrator opens wp-admin. To recover the site now, rename \'%1$s\' to \'%1$s-wpvibe-draft\' and \'%2$s\' to \'%1$s\' with SFTP or the host file manager; if that folder is gone, run the WP-CLI command "theme restore-backup %3$s".', 'vibe-ai' ),
+				$live_dir,
+				$backup_dir,
+				$source_slug
+			);
+		}
 		return sprintf(
-			/* translators: 1: backup dir, 2: live dir */
-			__( 'RESTORE FAILED: the previous theme is at \'%1$s\'. Move it to \'%2$s\' by hand (SFTP or the host file manager) to recover the site.', 'vibe-ai' ),
+			/* translators: 1: backup dir, 2: live dir, 3: theme slug */
+			__( 'RESTORE FAILED: the previous theme is at \'%1$s\'. WPVibe moves it back to \'%2$s\' the next time an administrator opens wp-admin. To recover the site now, move it there by hand (SFTP or the host file manager); if that folder is gone, run the WP-CLI command "theme restore-backup %3$s".', 'vibe-ai' ),
 			$backup_dir,
-			$live_dir
+			$live_dir,
+			$source_slug
 		);
 	}
 
 	/** @param string|null $saved "keep" leaves clashing live Site Editor rows in place; anything else sets them aside. */
 	public function publish( $saved = null ) {
 		return WPVibe_Draft_Lock::run( function () use ( $saved ) {
-			return $this->publish_locked( $saved );
+			$result = $this->publish_locked( $saved );
+			// Whatever path returned, the swap record now says where the previous theme is: a rollback that could not put it
+			// back is tried once more here, and a request that dies before this line is put right by the next admin load.
+			$settled = WPVibe_Theme_Backup::settle_swap();
+			if ( 'healed' === $settled && is_wp_error( $result ) ) {
+				$result = new WP_Error(
+					$result->get_error_code(),
+					$result->get_error_message() . ' ' . __( 'WPVibe then put the previous theme back in place, so the live theme is as it was before this publish.', 'vibe-ai' ),
+					$result->get_error_data()
+				);
+			}
+			return $result;
 		} );
 	}
 
@@ -664,6 +713,10 @@ class WPVibe_Draft_Theme {
 		$draft_dir  = $theme_root . '/' . $draft_slug;
 		$live_dir   = $theme_root . '/' . $source_slug;
 		$backup_dir = $theme_root . '/' . $source_slug . '-wpvibe-backup';
+
+		// A publish or restore that died part way left this theme's folder aside, or the live one missing: put it right
+		// first. A leftover beside the live theme is kept as a backup zip before it goes; one the theme lost is moved back.
+		WPVibe_Theme_Backup::settle( $source_slug );
 
 		if ( file_exists( $live_dir ) && ! is_dir( $live_dir ) ) {
 			return WPVibe_Draft_Lock::conflict();
@@ -689,6 +742,27 @@ class WPVibe_Draft_Theme {
 		$previous_active = (string) get_option( 'stylesheet' );
 		$had_live        = is_dir( $live_dir );
 
+		// Publishing activates the source theme, so on multisite it must be one the network allows for this site, as for
+		// `theme activate` (WordPress.org review finding 3, #1653); refused before anything moves. Publishing over the active
+		// theme switches nothing.
+		if ( $previous_active !== $source_slug && ! self::network_allows( $source_slug ) ) {
+			return new WP_Error(
+				'theme_not_allowed',
+				$had_live
+					? sprintf(
+						/* translators: %s: theme slug */
+						__( 'Publishing this draft would activate the theme \'%s\', which is not enabled for this site, so nothing was changed and the draft is kept. On a multisite network, a network administrator enables it in Network Admin > Themes, or for this site in Network Admin > Sites > Edit > Themes.', 'vibe-ai' ),
+						$source_slug
+					)
+					: sprintf(
+						/* translators: %s: theme slug */
+						__( 'This draft is a new theme, \'%s\', and publishing it would make it the active theme. On a multisite network a site can only activate a theme the network has enabled, and the network can\'t enable one that isn\'t installed yet, so nothing was changed and the draft is kept. A network administrator can install the theme for the network, enable it in Network Admin > Themes, and then the draft can be published over it.', 'vibe-ai' ),
+						$source_slug
+					),
+				WPVibe_Error_Contract::data( 'capability_role', false, array( 'status' => 403 ) )
+			);
+		}
+
 		// Capture the clean original name BEFORE the live dir is overwritten; strips any accumulated draft suffix.
 		$original_name = preg_replace( '/(\s*\((?:WPVibe )?Draft\))+$/', '', wp_get_theme( $had_live ? $source_slug : $draft_slug )->get( 'Name' ) );
 
@@ -697,20 +771,18 @@ class WPVibe_Draft_Theme {
 		if ( ! $had_live && ( file_exists( $backup_dir ) || is_link( $backup_dir ) ) ) {
 			return WPVibe_Draft_Lock::conflict();
 		}
+		// What settle() could not keep as a zip and remove (it holds symbolic links, a site runs on it, the archive could not
+		// be written) may be the only copy of a theme: never deleted here (#1624).
 		if ( is_dir( $backup_dir ) ) {
-			$cleared = $this->delete_directory( $backup_dir );
-			if ( is_wp_error( $cleared ) ) {
-				return new WP_Error(
-					'cleanup_failed',
-					sprintf(
-						/* translators: 1: directory path, 2: error message */
-						__( 'Could not clear the previous backup directory \'%1$s\': %2$s Aborting publish; live theme untouched.', 'vibe-ai' ),
-						$backup_dir,
-						$cleared->get_error_message()
-					),
-					WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) )
-				);
-			}
+			return new WP_Error(
+				'cleanup_failed',
+				sprintf(
+					/* translators: %s: directory path */
+					__( 'The folder \'%s\' from an earlier publish is still in the themes folder, and WPVibe could not keep it as a backup zip and remove it (it holds symbolic links, a site uses it as its theme, or the backup could not be written under uploads). Nothing was changed; the live theme is untouched. Move that folder out of wp-content/themes with SFTP or the host file manager (it may be the only copy of an earlier version), then publish again.', 'vibe-ai' ),
+					$backup_dir
+				),
+				WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) )
+			);
 		}
 
 		// The live theme's backup is a zip under uploads, not a theme folder (WordPress.org review 11-17, #1624). It is
@@ -742,13 +814,17 @@ class WPVibe_Draft_Theme {
 		// but allow the rename), and the swap window is near-atomic.
 		$swapped_by_rename = false;
 		if ( is_dir( $live_dir ) ) {
-			// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- rename failure falls back to copy+delete below.
-			if ( @rename( $live_dir, $backup_dir ) ) {
+			// From here until the publish returns, the record says where the previous theme is, so a request that dies part
+			// way is finished or undone by the next admin load (WPVibe_Theme_Backup::settle_swap).
+			WPVibe_Theme_Backup::swap_begin( 'publish', $source_slug, $archived, $draft_slug );
+			if ( WPVibe_Theme_Backup::move( $live_dir, $backup_dir ) ) {
 				$swapped_by_rename = true;
+				WPVibe_Theme_Backup::swap_phase( 'aside' );
 			} else {
 				$backup_result = $this->copy_directory( $live_dir, $backup_dir );
 				if ( is_wp_error( $backup_result ) ) {
-					// The live theme is untouched: the archive just written would be a newer copy of it (see rollback_publish).
+					// The live theme is untouched: the archive just written would be a newer copy of it (see rollback_publish),
+					// and the partial copy goes once the publish returns.
 					WPVibe_Theme_Backup::discard( $archived );
 					return new WP_Error(
 						'backup_failed',
@@ -761,16 +837,34 @@ class WPVibe_Draft_Theme {
 					);
 				}
 
+				// The previous theme is whole in the rollback folder now, before any of the live folder goes.
+				WPVibe_Theme_Backup::swap_phase( 'aside' );
 				$deleted_live = $this->delete_directory( $live_dir );
 				if ( is_wp_error( $deleted_live ) ) {
+					// Part of the live theme may be gone: copy the whole previous version back over it now.
+					if ( ! is_wp_error( $this->copy_directory( $backup_dir, $live_dir ) ) ) {
+						WPVibe_Theme_Backup::swap_phase( 'archived' );
+						WPVibe_Theme_Backup::discard( $archived );
+						return new WP_Error(
+							'delete_live_failed',
+							sprintf(
+								/* translators: 1: live dir, 2: error message */
+								__( 'Could not delete the live theme directory \'%1$s\' before replacing it: %2$s WPVibe copied the previous version back over it, so the live theme is as it was and nothing was published. Fix the folder permissions, then publish again.', 'vibe-ai' ),
+								$live_dir,
+								$deleted_live->get_error_message()
+							),
+							WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) )
+						);
+					}
 					return new WP_Error(
 						'delete_live_failed',
 						sprintf(
-							/* translators: 1: live dir, 2: error message, 3: backup dir */
-							__( 'Could not delete the live theme directory \'%1$s\' before replacing it: %2$s A complete backup is at \'%3$s\'. To recover, manually remove \'%1$s\' and rename the backup.', 'vibe-ai' ),
+							/* translators: 1: live dir, 2: error message, 3: backup dir, 4: theme slug */
+							__( 'Could not delete the live theme directory \'%1$s\' before replacing it: %2$s and copying the previous version back failed too. A complete copy is at \'%3$s\', which WPVibe moves back the next time an administrator opens wp-admin. To recover now, remove \'%1$s\' and rename that folder to it with SFTP or the host file manager; if it is gone, run the WP-CLI command "theme restore-backup %4$s".', 'vibe-ai' ),
 							$live_dir,
 							$deleted_live->get_error_message(),
-							$backup_dir
+							$backup_dir,
+							$source_slug
 						),
 						WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) )
 					);
@@ -779,32 +873,36 @@ class WPVibe_Draft_Theme {
 		}
 
 		// Move draft to live: rename first, copy as fallback.
-		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- rename failure falls back to copy below.
-		$result = @rename( $draft_dir, $live_dir ) ? true : $this->copy_directory( $draft_dir, $live_dir );
+		$result = WPVibe_Theme_Backup::move( $draft_dir, $live_dir ) ? true : $this->copy_directory( $draft_dir, $live_dir );
+		if ( ! is_wp_error( $result ) ) {
+			WPVibe_Theme_Backup::swap_phase( 'live' );
+		}
 		if ( is_wp_error( $result ) ) {
 			// Rollback. A rename-swap rolls back with the reverse rename (same
 			// permission envelope as the swap that just succeeded); the copy
 			// path rolls back by copying. If rollback itself fails the site is
 			// in an unrecoverable state by automation; we have to tell the
 			// user precisely how to fix it by hand.
+			// A move never lands on an existing folder: what the failed copy made there is part of the draft, which is still whole.
 			$rollback_ok = $swapped_by_rename
-				// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- failure handled below.
-				? @rename( $backup_dir, $live_dir )
+				? ! is_wp_error( $this->delete_directory( $live_dir ) ) && WPVibe_Theme_Backup::move( $backup_dir, $live_dir )
 				: ! is_wp_error( $this->copy_directory( $backup_dir, $live_dir ) );
 			if ( ! $rollback_ok ) {
 				return new WP_Error(
 					'publish_and_rollback_failed',
 					sprintf(
-						/* translators: 1: publish error, 2: rollback error, 3: backup dir, 4: live dir */
-						__( 'Publish failed (%1$s) AND rollback failed (%2$s). The live theme directory may be empty or incomplete; a full copy of the previous theme is at \'%3$s\'. To recover, manually move \'%3$s\' to \'%4$s\'.', 'vibe-ai' ),
+						/* translators: 1: publish error, 2: rollback error, 3: backup dir, 4: live dir, 5: theme slug */
+						__( 'Publish failed (%1$s) AND rollback failed (%2$s). The live theme directory may be empty or incomplete; a full copy of the previous theme is at \'%3$s\', which WPVibe moves back to \'%4$s\' the next time an administrator opens wp-admin. To recover now, move it there by hand (SFTP or the host file manager); if that folder is gone, run the WP-CLI command "theme restore-backup %5$s".', 'vibe-ai' ),
 						$result->get_error_message(),
 						__( 'restoring the backup also failed', 'vibe-ai' ),
 						$backup_dir,
-						$live_dir
+						$live_dir,
+						$source_slug
 					),
 					WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) )
 				);
 			}
+			WPVibe_Theme_Backup::swap_phase( 'archived' );
 			if ( ! $swapped_by_rename ) {
 				$this->delete_directory( $backup_dir );
 			}
@@ -940,7 +1038,7 @@ class WPVibe_Draft_Theme {
 		}
 		if ( $leftover ) {
 			/* translators: %s: folder */
-			$message .= ' ' . sprintf( __( 'WPVibe could not delete the temporary folder \'%s\' the publish used; delete it with SFTP or the host file manager (the backup is the zip, not this folder).', 'vibe-ai' ), $backup_dir );
+			$message .= ' ' . sprintf( __( 'WPVibe could not delete the temporary folder \'%s\' the publish used, and tries again the next time an administrator opens wp-admin; you can also delete it with SFTP or the host file manager (the backup is the zip, not this folder).', 'vibe-ai' ), $backup_dir );
 		}
 		if ( $settled['set_aside'] ) {
 			$message .= ' ' . sprintf(
@@ -1075,13 +1173,13 @@ class WPVibe_Draft_Theme {
 			$updated = wp_update_post( wp_slash( array( 'ID' => $row['id'] ) + $fields ), true );
 			// Logged only once something changed, so a rollback never names a row that did not move.
 			if ( is_wp_error( $updated ) ) {
-				throw new RuntimeException( sprintf( 'post #%d: %s', $row['id'], $updated->get_error_message() ) );
+				throw new RuntimeException( esc_html( sprintf( 'post #%d: %s', $row['id'], $updated->get_error_message() ) ) );
 			}
 		}
 		$this->settle_log[] = $undo;
 		if ( ! self::set_theme_term( $row['id'], $slug ) ) {
 			self::set_theme_term( $row['id'], $from );
-			throw new RuntimeException( sprintf( 'post #%d: could not move it to theme %s (its themes now: %s)', $row['id'], $slug, implode( ', ', self::theme_terms( $row['id'] ) ) ) );
+			throw new RuntimeException( esc_html( sprintf( 'post #%d: could not move it to theme %s (its themes now: %s)', $row['id'], $slug, implode( ', ', self::theme_terms( $row['id'] ) ) ) ) );
 		}
 	}
 
@@ -1509,7 +1607,7 @@ class WPVibe_Draft_Theme {
 			return false;
 		}
 		$dir = dirname( $dest_path );
-		if ( ! is_dir( $dir ) || ! is_writable( $dir ) ) {
+		if ( ! is_dir( $dir ) || ! WPVibe_Theme_Backup::fs()->is_writable( $dir ) ) {
 			return false;
 		}
 		$probe_path = $dir . '/.wpvibe-write-probe-' . substr( md5( uniqid( '', true ) ), 0, 12 ) . '.txt';

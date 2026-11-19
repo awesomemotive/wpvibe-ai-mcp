@@ -132,6 +132,7 @@ class WPVibe_Connection_Status {
 		} else {
 			// Conditional SQL prevents a slower request replacing a newer cached observation.
 			global $wpdb;
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- the conditional UPDATE is the compare-and-swap; the options cache is cleared below.
 			$saved = 1 === $wpdb->query( $wpdb->prepare( "UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND BINARY option_value = %s", maybe_serialize( $records ), self::OPTION, maybe_serialize( $previous ) ) );
 			wp_cache_delete( self::OPTION, 'options' );
 		}
@@ -167,11 +168,14 @@ class WPVibe_Connection_Status {
 		foreach ( static::records() as $record ) {
 			$stamp = gmdate( 'Y-m-d H:i', (int) floor( $record['observed_at'] / 1000 ) ) . ' UTC';
 			if ( 'verified' === $record['state'] ) {
+				/* translators: %s: date and time (UTC). */
 				return sprintf( __( 'Connected. Verified %s.', 'vibe-ai' ), $stamp );
 			}
 			if ( 'limited' === $record['state'] ) {
+				/* translators: %s: date and time (UTC). */
 				return sprintf( __( 'Connected with limited access. Verified %s.', 'vibe-ai' ), $stamp );
 			}
+			/* translators: %s: date and time (UTC). */
 			return sprintf( __( 'Connection needs attention (checked %s).', 'vibe-ai' ), $stamp );
 		}
 		if ( self::awaiting_confirmation() ) {
@@ -179,6 +183,7 @@ class WPVibe_Connection_Status {
 		}
 		$last_active = static::last_active();
 		if ( static::recently_active() ) {
+			/* translators: %s: how long ago, e.g. "5 mins". */
 			return sprintf( __( 'Connected. Your AI used this site %s ago.', 'vibe-ai' ), human_time_diff( $last_active ) );
 		}
 		return __( 'Not connected yet', 'vibe-ai' );

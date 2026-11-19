@@ -204,7 +204,7 @@ trait WPVibe_CLI_Core {
 		// down until someone deletes it by hand; clean it up on every outcome.
 		$maintenance_note = null;
 		if ( file_exists( ABSPATH . '.maintenance' ) ) {
-			@unlink( ABSPATH . '.maintenance' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+			wp_delete_file( ABSPATH . '.maintenance' );
 			$maintenance_note = __( 'A leftover .maintenance file was found after the update attempt and removed, so the site is not stuck in maintenance mode.', 'vibe-ai' );
 		}
 

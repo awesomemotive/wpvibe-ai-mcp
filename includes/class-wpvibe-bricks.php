@@ -45,7 +45,7 @@ class WPVibe_Bricks {
 		register_rest_route( $ns, '/bricks/save-page', array(
 			'methods'             => 'POST',
 			'callback'            => array( $this, 'save_page' ),
-			'permission_callback' => array( $this, 'can_edit_posts' ),
+			'permission_callback' => array( $this, 'can_save_page' ),
 			'args'                => array(
 				'id'        => array( 'type' => 'integer', 'required' => false, 'sanitize_callback' => 'absint' ),
 				'title'     => array( 'type' => 'string',  'required' => false, 'sanitize_callback' => 'sanitize_text_field' ),
@@ -56,10 +56,20 @@ class WPVibe_Bricks {
 			),
 		) );
 
+		register_rest_route( $ns, '/bricks/restore-revision', array(
+			'methods'             => 'POST',
+			'callback'            => array( $this, 'restore_revision' ),
+			'permission_callback' => array( $this, 'can_edit_post' ),
+			'args'                => array(
+				'id'          => array( 'type' => 'integer', 'required' => true, 'sanitize_callback' => 'absint' ),
+				'revision_id' => array( 'type' => 'integer', 'required' => true, 'sanitize_callback' => 'absint' ),
+			),
+		) );
+
 		register_rest_route( $ns, '/bricks/get-page', array(
 			'methods'             => 'GET',
 			'callback'            => array( $this, 'get_page' ),
-			'permission_callback' => array( $this, 'can_edit_posts' ),
+			'permission_callback' => array( $this, 'can_edit_post' ),
 			'args'                => array(
 				'id' => array( 'type' => 'integer', 'required' => true, 'sanitize_callback' => 'absint' ),
 			),
@@ -74,7 +84,48 @@ class WPVibe_Bricks {
 	}
 
 	public function can_edit_posts() {
-		return current_user_can( 'edit_posts' );
+		return current_user_can( 'edit_posts' ) ? true : new WP_Error(
+			'wpvibe_missing_capability',
+			__( 'This action requires the WordPress capability "edit_posts", which the connected account does not have. Administrators have it by default; reconnect with an account that has this capability for full access.', 'vibe-ai' ),
+			WPVibe_Error_Contract::data( 'capability_role', false, array( 'status' => rest_authorization_required_code(), 'capability' => 'edit_posts' ) )
+		);
+	}
+
+	/**
+	 * The save routes check the post they write in their permission_callback, not only edit_posts (WordPress.org review
+	 * 11-17, #1624): edit_post on an existing post plus the publish capability when the save publishes; on a new post,
+	 * the post type's create and publish capabilities. The handler checks the same again before it writes.
+	 */
+	public function can_save_page( $request ) {
+		$base = $this->can_edit_posts();
+		if ( true !== $base ) {
+			return $base;
+		}
+		$id     = (int) $request->get_param( 'id' );
+		$status = (string) $request->get_param( 'status' );
+		$status = '' !== $status ? $status : 'publish';
+		if ( $id ) {
+			$post = get_post( $id );
+			return $post ? $this->check_post_caps( $post->post_type, 'update', $id, $status ) : self::post_not_found( $id );
+		}
+		$post_type = (string) $request->get_param( 'post_type' );
+		return $this->check_post_caps( '' !== $post_type ? $post_type : 'page', 'create', null, $status );
+	}
+
+	/** restore-revision and get-page work on one post: edit_post on it. */
+	public function can_edit_post( $request ) {
+		$base = $this->can_edit_posts();
+		if ( true !== $base ) {
+			return $base;
+		}
+		$id   = (int) $request->get_param( 'id' );
+		$post = get_post( $id );
+		return $post ? $this->check_post_caps( $post->post_type, 'update', $id ) : self::post_not_found( $id );
+	}
+
+	private static function post_not_found( $id ) {
+		/* translators: %d: post ID */
+		return new WP_Error( 'not_found', sprintf( __( 'Post #%d does not exist on this site.', 'vibe-ai' ), (int) $id ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
 	}
 
 	// ------------------------------------------------------------------
@@ -206,9 +257,10 @@ class WPVibe_Bricks {
 			return new WP_Error( 'bricks_no_builder_access', __( 'The connected account does not have Bricks builder access for this post, so Bricks blocks the layout write. Connect as an administrator or grant the role builder access in Bricks → Settings → Builder Access.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'capability_role', false, array( 'status' => 403 ) ) );
 		}
 
-		$result = $this->write_layout( $id, $elements, $status, $title, $created_id, $warnings, $template_type );
+		$undo_id = $created_id ? null : $this->snapshot_layout( $existing, $warnings );
+		$result  = $this->write_layout( $id, $elements, $status, $title, $created_id, $warnings, $template_type );
 		if ( is_wp_error( $result ) ) {
-			return $result;
+			return self::with_undo_id( $result, $undo_id );
 		}
 
 		$out = array(
@@ -220,7 +272,123 @@ class WPVibe_Bricks {
 		if ( '' !== $template_type ) {
 			$out['template_type'] = $template_type;
 		}
+		return self::with_undo_result( $out, $undo_id );
+	}
+
+	/**
+	 * Before a save overwrites a Bricks layout (#1293): WordPress revisions don't carry Bricks' meta, so keep the post as a
+	 * revision holding a copy of its layout, which restore-revision puts back. The revision id, or null: none when there
+	 * is no layout to keep, and a warning when revisions are off for the post.
+	 */
+	private function snapshot_layout( $post, array &$warnings ) {
+		// Every area key: an older plugin kept header and footer layouts under the content key, which the save then removes.
+		$keys = array_values( array_unique( array( $this->data_key( 'content' ), $this->data_key( 'header' ), $this->data_key( 'footer' ) ) ) );
+		if ( ! $this->holds_layout( $post->ID, $keys ) ) {
+			return null;
+		}
+		$revision_id = WPVibe_Revision_Guard::snapshot( $post, array_merge( $keys, array( $this->template_type_key() ) ) );
+		// Bricks' metadata filter can no-op a layout write, the revision's copy included.
+		if ( ! $revision_id || ! $this->holds_layout( $revision_id, $keys ) ) {
+			$warnings[] = __( 'WordPress kept no copy of this layout as it was before the save (revisions are off for this post type, or WordPress refused the revision or its layout), so this save cannot be undone with bricks/restore-revision.', 'vibe-ai' );
+			return null;
+		}
+		return $revision_id;
+	}
+
+	private function holds_layout( $post_id, array $keys ) {
+		foreach ( $keys as $key ) {
+			$value = get_post_meta( $post_id, $key, true );
+			if ( ! empty( $value ) && is_array( $value ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** An error after the snapshot still hands back the way to undo what was written before it. */
+	private static function with_undo_id( $error, $undo_id ) {
+		// A revision limit of 1 can already have pruned the copy by the time the save fails.
+		if ( $undo_id && get_post( $undo_id ) ) {
+			$data = $error->get_error_data();
+			$error->add_data( array_merge( is_array( $data ) ? $data : array(), array( 'undo_revision_id' => (int) $undo_id ) ) );
+		}
+		return $error;
+	}
+
+	private static function with_undo_result( array $out, $undo_id ) {
+		// A low revision limit can prune the copy as soon as the save's own revision lands.
+		if ( $undo_id && get_post( $undo_id ) ) {
+			$out['undo_revision_id'] = (int) $undo_id;
+		} elseif ( $undo_id ) {
+			$out['warnings'][] = __( 'The copy of this layout from before the save was removed by the site\'s revision limit, so this save cannot be undone with bricks/restore-revision.', 'vibe-ai' );
+		}
 		return $out;
+	}
+
+	// ------------------------------------------------------------------
+	// restore-revision
+	// ------------------------------------------------------------------
+
+	public function restore_revision( $request ) {
+		$result = $this->do_restore( (int) $request->get_param( 'id' ), (int) $request->get_param( 'revision_id' ) );
+		return is_wp_error( $result ) ? $result : rest_ensure_response( $result );
+	}
+
+	/**
+	 * Puts back the layout a revision holds, through the same write as save-page: Bricks' builder-access and element
+	 * security checks, then its CSS. The layout it replaces is kept as a revision too, so a restore can be undone.
+	 */
+	public function do_restore( $id, $revision_id ) {
+		$check = $this->bricks_check();
+		if ( is_wp_error( $check ) ) {
+			return $check;
+		}
+		$post = get_post( $id );
+		if ( ! $post ) {
+			return new WP_Error( 'not_found', __( 'Post not found.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
+		}
+		$code_post = WPVibe_Code_Snippet::code_post_write_error( $post->post_type, $id );
+		if ( $code_post ) {
+			return $code_post;
+		}
+		$caps = $this->check_post_caps( $post->post_type, 'update', $id );
+		if ( is_wp_error( $caps ) ) {
+			return $caps;
+		}
+		$revision = get_post( $revision_id );
+		// An autosave is the editor's unsaved draft, not a version of the page.
+		if ( ! $revision || 'revision' !== $revision->post_type || (int) $revision->post_parent !== (int) $id || wp_is_post_autosave( $revision ) ) {
+			/* translators: 1: revision ID, 2: post ID */
+			return new WP_Error( 'revision_not_found', sprintf( __( 'Revision %1$d is not a revision of post %2$d.', 'vibe-ai' ), $revision_id, $id ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
+		}
+		$type     = $this->stored_template_type( $post );
+		$elements = get_post_meta( $revision_id, $this->data_key( $this->template_area( $type ) ), true );
+		// A header or footer copied before it had its own key (an older plugin, or no stored type yet) is under the content key.
+		if ( ( empty( $elements ) || ! is_array( $elements ) ) && 'content' !== $this->template_area( $type ) ) {
+			$elements = get_post_meta( $revision_id, $this->data_key( 'content' ), true );
+		}
+		if ( empty( $elements ) || ! is_array( $elements ) ) {
+			/* translators: %d: revision ID */
+			return new WP_Error( 'no_bricks_data', sprintf( __( 'Revision %d holds no Bricks layout, so it cannot restore the page. Nothing was changed.', 'vibe-ai' ), $revision_id ), WPVibe_Error_Contract::data( 'invalid_input', false, array( 'status' => 400 ) ) );
+		}
+		if ( is_callable( array( '\Bricks\Capabilities', 'current_user_can_use_builder' ) )
+			&& ! \Bricks\Capabilities::current_user_can_use_builder( $id ) ) {
+			return new WP_Error( 'bricks_no_builder_access', __( 'The connected account does not have Bricks builder access for this post, so Bricks blocks the layout write. Connect as an administrator or grant the role builder access in Bricks → Settings → Builder Access.', 'vibe-ai' ), WPVibe_Error_Contract::data( 'capability_role', false, array( 'status' => 403 ) ) );
+		}
+
+		$warnings = array();
+		$undo_id  = $this->snapshot_layout( $post, $warnings );
+		$result   = $this->write_layout( $id, $elements, $post->post_status, '', 0, $warnings, $type );
+		if ( is_wp_error( $result ) ) {
+			return self::with_undo_id( $result, $undo_id );
+		}
+		return self::with_undo_result( array(
+			'id'                   => $id,
+			'restored_revision_id' => (int) $revision_id,
+			'url'                  => get_permalink( $id ),
+			'edit_url'             => $this->builder_edit_url( $id ),
+			'warnings'             => $warnings,
+		), $undo_id );
 	}
 
 	/**

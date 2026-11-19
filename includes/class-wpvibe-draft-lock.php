@@ -10,7 +10,11 @@ class WPVibe_Draft_Lock {
 	/** Seconds a theme operation waits for another one to finish before returning draft_busy. */
 	const WAIT_SECONDS = 5;
 
-	public static function run( $callback ) {
+	/**
+	 * @param callable   $callback Runs while the lock is held.
+	 * @param float|null $wait     Seconds to wait for another theme operation; null for the default (a sweep passes 0).
+	 */
+	public static function run( $callback, $wait = null ) {
 		$root = realpath( get_theme_root() );
 		if ( false === $root ) {
 			return self::error( 'theme_root_missing', get_theme_root() );
@@ -23,22 +27,22 @@ class WPVibe_Draft_Lock {
 		if ( is_link( $path ) ) {
 			return self::error( 'lock_file_symlink', $root );
 		}
-		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen, WordPress.PHP.NoSilencedErrors.Discouraged -- flock() needs a real handle; a failure is reported below.
 		$handle = @fopen( $path, 'c' );
 		if ( ! $handle ) {
 			return self::error( 'lock_file_unwritable', $root );
 		}
 		// Parallel edits on one draft queue briefly instead of the loser failing outright.
-		$wait     = max( 0.0, min( 10.0, (float) apply_filters( 'wpvibe_draft_lock_wait', self::WAIT_SECONDS ) ) );
+		$wait     = max( 0.0, min( 10.0, (float) ( null === $wait ? apply_filters( 'wpvibe_draft_lock_wait', self::WAIT_SECONDS ) : $wait ) ) );
 		$deadline = microtime( true ) + $wait;
 		while ( ! flock( $handle, LOCK_EX | LOCK_NB, $would_block ) ) {
 			// A refusal that is not contention (NFS without lockd, ENOLCK) will not clear by waiting.
 			if ( ! $would_block ) {
-				fclose( $handle );
+				fclose( $handle ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- flock() needs a real handle.
 				return self::error( 'lock_unsupported', $root );
 			}
 			if ( microtime( true ) >= $deadline ) {
-				fclose( $handle );
+				fclose( $handle ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- flock() needs a real handle.
 				return self::error( 'lock_held', $root, $wait );
 			}
 			usleep( 50000 );
@@ -55,7 +59,7 @@ class WPVibe_Draft_Lock {
 		} finally {
 			unset( self::$held[ $root ] );
 			flock( $handle, LOCK_UN );
-			fclose( $handle );
+			fclose( $handle ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- flock() needs a real handle.
 		}
 	}
 

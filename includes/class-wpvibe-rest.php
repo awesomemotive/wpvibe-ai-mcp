@@ -781,8 +781,21 @@ class WPVibe_REST {
 		register_rest_route( $namespace, '/upload-media', array(
 			'methods'             => 'POST',
 			'callback'            => array( $this, 'upload_media' ),
-			'permission_callback' => function () {
-				return current_user_can( 'upload_files' ) ? true : $this->missing_capability_error( 'upload_files' );
+			// The file is attached to post_id, so the account must be able to edit that post, as core's media endpoint
+			// requires (WordPress.org review 11-17, #1624).
+			'permission_callback' => function ( $request ) {
+				if ( ! current_user_can( 'upload_files' ) ) {
+					return $this->missing_capability_error( 'upload_files' );
+				}
+				$post_id = (int) $request->get_param( 'post_id' );
+				if ( $post_id <= 0 ) {
+					return true;
+				}
+				if ( ! get_post( $post_id ) ) {
+					/* translators: %d: post ID */
+					return new WP_Error( 'not_found', sprintf( __( 'Post #%d does not exist on this site, so the file cannot be attached to it. Check the ID, or upload without post_id.', 'vibe-ai' ), $post_id ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
+				}
+				return current_user_can( 'edit_post', $post_id ) ? true : $this->missing_capability_error( 'edit_post', $post_id );
 			},
 			'args'                => array(
 				'url' => array(
@@ -1451,8 +1464,8 @@ class WPVibe_REST {
 		} elseif ( null === $old || null === $new ) {
 			// What the route's `required` answered before the edits form existed.
 			$missing = array_keys( array_filter( array( 'old_content' => null === $old, 'new_content' => null === $new ) ) );
-			/* translators: %s: list of missing parameters (WordPress core's string) */
-			return new WP_Error( 'rest_missing_callback_param', sprintf( __( 'Missing parameter(s): %s' ), implode( ', ', $missing ) ), array( 'status' => 400, 'params' => $missing ) );
+			/* translators: %s: list of missing parameters (WordPress core's string, in core's text domain so it reads as core's REST error does) */
+			return new WP_Error( 'rest_missing_callback_param', sprintf( __( 'Missing parameter(s): %s', 'default' ), implode( ', ', $missing ) ), array( 'status' => 400, 'params' => $missing ) );
 		}
 		add_filter( 'wp_php_error_message', array( __CLASS__, 'edit_fatal_message' ), 10, 2 );
 		try {
@@ -1742,6 +1755,11 @@ class WPVibe_REST {
 
 	public function op_receipt_get( $request ) {
 		$receipt = WPVibe_Op_Receipts::get_receipt( (string) $request->get_param( 'op_id' ) );
+		if ( null === $receipt && ! WPVibe_Op_Receipts::ready() ) {
+			// No receipts table (#1624): an op may have run without a receipt, so no found flag. The Worker reads a
+			// missing flag as unknown; found:false would tell it the op never ran and is safe to resubmit.
+			return rest_ensure_response( array( 'available' => false ) );
+		}
 		if ( null === $receipt ) {
 			return rest_ensure_response( array( 'found' => false ) );
 		}
@@ -1936,7 +1954,8 @@ class WPVibe_REST {
 	 */
 	public static function sideload_failure_error( $inner, $refused = false ) {
 		$message = $inner->get_error_message();
-		if ( $refused || __( 'Sorry, you are not allowed to upload this file type.' ) === $message ) {
+		// Core's own message in core's text domain ('default'), translated as core translated it, so the comparison holds on every site language.
+		if ( $refused || __( 'Sorry, you are not allowed to upload this file type.', 'default' ) === $message ) {
 			return new WP_Error(
 				'invalid_file_type',
 				sprintf(
@@ -2014,6 +2033,7 @@ class WPVibe_REST {
 			$ips = WPVibe_REST::resolve_public_ips( $host );
 			// Fail closed: with no validated public IP, pin to TEST-NET-1 (RFC 5737, unroutable).
 			$target = $ips ? $ips[0] : '192.0.2.1';
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.curl_curl_setopt -- sets CURLOPT_RESOLVE on WordPress's HTTP API handle via the http_api_curl hook (SSRF: pins the validated IP); no direct cURL request.
 			curl_setopt( $handle, CURLOPT_RESOLVE, array( "{$host}:{$port}:{$target}" ) );
 		};
 		add_action( 'http_api_curl', $pin_dns, 10, 3 );

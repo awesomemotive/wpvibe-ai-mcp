@@ -15,15 +15,8 @@ trait WPVibe_CLI_Option {
 			return $this->error_result( __( 'Option key required.', 'vibe-ai' ) );
 		}
 
-		$readable = null !== self::match_option_name( $positional[0], self::READABLE_BLOCKED_OPTIONS );
-		if ( ! $readable && null !== self::match_option_name( $positional[0], self::BLOCKED_OPTIONS ) ) {
-			return $this->error_result(
-				sprintf(
-					/* translators: %s: option key */
-					__( 'Option \'%s\' is blocked for security.', 'vibe-ai' ),
-					$positional[0]
-				)
-			);
+		if ( self::is_secret_option( $positional[0] ) ) {
+			return $this->error_result( $this->secret_option_refusal( $positional[0] ) );
 		}
 
 		// Collation-independent backstop: match_option_name canonicalizes a
@@ -42,7 +35,9 @@ trait WPVibe_CLI_Option {
 			/* translators: %s: option key */
 			return $this->error_result( sprintf( __( 'Option \'%s\' not found.', 'vibe-ai' ), $positional[0] ) );
 		}
-		$note = '';
+		$masked = 0;
+		$value  = self::mask_secrets( $positional[0], $value, $masked );
+		$note   = '';
 		if ( is_string( $value ) ) {
 			$trimmed = trim( $value );
 			if ( '' !== $trimmed && ( '[' === $trimmed[0] || '{' === $trimmed[0] ) && null !== json_decode( $trimmed, true ) ) {
@@ -54,7 +49,7 @@ trait WPVibe_CLI_Option {
 		return array(
 			'exit_code' => 0,
 			'stdout'    => is_scalar( $value ) ? (string) $value : wp_json_encode( $value, JSON_PRETTY_PRINT ),
-			'stderr'    => $note,
+			'stderr'    => trim( $this->secret_mask_note( $positional[0], $masked ) . ' ' . $note ),
 		);
 	}
 
@@ -72,14 +67,8 @@ trait WPVibe_CLI_Option {
 		}
 
 		$key = $positional[0];
-		if ( null === self::match_option_name( $key, self::READABLE_BLOCKED_OPTIONS ) && null !== self::match_option_name( $key, self::BLOCKED_OPTIONS ) ) {
-			return $this->error_result(
-				sprintf(
-					/* translators: %s: option key */
-					__( 'Option \'%s\' is blocked for security.', 'vibe-ai' ),
-					$key
-				)
-			);
+		if ( self::is_secret_option( $key ) ) {
+			return $this->error_result( $this->secret_option_refusal( $key ) );
 		}
 
 		// Collation-independent backstop (see handle_option_get): the non-ASCII
@@ -95,6 +84,8 @@ trait WPVibe_CLI_Option {
 			/* translators: %s: option key */
 			return $this->error_result( sprintf( __( 'Option \'%s\' not found.', 'vibe-ai' ), $key ) );
 		}
+		// Masked as a whole before the path is walked, so a path to a secret field reaches the mask, never the secret.
+		$value = self::mask_secrets( $key, $value );
 
 		$node  = $value;
 		$trail = '';
@@ -200,16 +191,18 @@ trait WPVibe_CLI_Option {
 		foreach ( $rows as $row ) {
 			// Canonicalize rather than strict compare: a stored row name that
 			// differs only by case from a blocked one must still be filtered out.
-			if ( null === self::match_option_name( $row['option_name'], self::READABLE_BLOCKED_OPTIONS ) && null !== self::match_option_name( $row['option_name'], self::BLOCKED_OPTIONS ) ) {
+			if ( self::is_secret_option( $row['option_name'] ) ) {
 				continue;
 			}
+			// The raw (serialized) text: mask_secrets() unserializes it without classes, and masks it whole if it cannot.
+			$row['option_value'] = (string) self::mask_secrets( $row['option_name'], (string) $row['option_value'] );
 			if ( strlen( $row['option_value'] ) > 200 ) {
 				$row['option_value'] = mb_substr( $row['option_value'], 0, 200 ) . '...[truncated]';
 			}
 			$results[] = $row;
 		}
 
-		// Notice keys off the raw row count: BLOCKED_OPTIONS filtering can drop
+		// Notice keys off the raw row count: SECRET_OPTIONS filtering can drop
 		// rows below the cap while more still matched in the database.
 		return $this->success_result(
 			$this->format_rows( $results, $flags, 'option_name' ),
@@ -286,6 +279,9 @@ trait WPVibe_CLI_Option {
 			return $this->error_result( $parsed['error'] );
 		}
 		$value = $parsed['value'];
+		if ( self::holds_secret_mask( $positional[1] ) || self::holds_secret_mask( $value ) ) {
+			return $this->error_result( self::secret_mask_write_refusal( $key ) );
+		}
 
 		// Type-shape guard: silently flipping an option between scalar and
 		// array/object corrupts the owning plugin (LiteSpeed newline lists,
@@ -360,6 +356,9 @@ trait WPVibe_CLI_Option {
 			return $this->error_result( $parsed['error'] );
 		}
 		$value = $parsed['value'];
+		if ( self::holds_secret_mask( $positional[1] ) || self::holds_secret_mask( $value ) ) {
+			return $this->error_result( self::secret_mask_write_refusal( $key ) );
+		}
 
 		$autoload = 'yes';
 		if ( isset( $flags['autoload'] ) ) {
@@ -375,8 +374,8 @@ trait WPVibe_CLI_Option {
 			'summary'      => "Option added: {$key}",
 			'action_label' => 'Refresh',
 		) );
-		/* translators: %s: option key */
-		return $this->success_result( array( 'message' => sprintf( __( 'Added option \'%s\' (autoload=%s).', 'vibe-ai' ), $key, $autoload ) ) );
+		/* translators: 1: option key, 2: autoload value (yes or no). */
+		return $this->success_result( array( 'message' => sprintf( __( 'Added option \'%1$s\' (autoload=%2$s).', 'vibe-ai' ), $key, $autoload ) ) );
 	}
 
 
@@ -617,6 +616,9 @@ trait WPVibe_CLI_Option {
 				return $this->error_result( $parsed['error'] );
 			}
 			$value = $parsed['value'];
+			if ( self::holds_secret_mask( $raw ) || self::holds_secret_mask( $value ) ) {
+				return $this->error_result( self::secret_mask_write_refusal( $key ) );
+			}
 		}
 
 		if ( 'update' === $action ) {
@@ -847,9 +849,8 @@ trait WPVibe_CLI_Option {
 		if ( $network && ! $this->has_network_scope() ) {
 			return $this->error_result( __( 'Refused: on a multisite network, --network reads the network\'s own transients, which a site administrator account cannot read. Drop --network to read this site\'s transient, or use a Super Admin account.', 'vibe-ai' ) );
 		}
-		$name     = ( $network ? '_site_transient_' : '_transient_' ) . $positional[0];
-		$readable = null !== self::match_option_name( $name, self::READABLE_BLOCKED_OPTIONS );
-		if ( ! $readable && null !== self::match_option_name( $name, self::BLOCKED_OPTIONS ) ) {
+		$name = ( $network ? '_site_transient_' : '_transient_' ) . $positional[0];
+		if ( self::is_secret_option( $name ) ) {
 			/* translators: %s: transient key */
 			return $this->error_result( sprintf( __( 'Transient \'%s\' is blocked for security.', 'vibe-ai' ), $positional[0] ) );
 		}
@@ -858,10 +859,12 @@ trait WPVibe_CLI_Option {
 			/* translators: %s: transient key */
 			return $this->error_result( sprintf( __( 'Transient \'%s\' is not set (or has expired).', 'vibe-ai' ), $positional[0] ) );
 		}
+		$masked = 0;
+		$value  = self::mask_secrets( $positional[0], $value, $masked );
 		return array(
 			'exit_code' => 0,
 			'stdout'    => is_scalar( $value ) ? (string) $value : wp_json_encode( $value, JSON_PRETTY_PRINT ),
-			'stderr'    => '',
+			'stderr'    => $this->secret_mask_note( $name, $masked ),
 		);
 	}
 
@@ -893,6 +896,33 @@ trait WPVibe_CLI_Option {
 		) );
 	}
 
+
+	/** Refusal for a read of an option whose whole value is a secret (SECRET_OPTIONS). */
+	private function secret_option_refusal( $key ) {
+		return sprintf(
+			/* translators: %s: option key */
+			__( 'Option \'%s\' is blocked for security: it holds a key, salt or credential, which WPVibe never returns. The user can see it in wp-admin.', 'vibe-ai' ),
+			$key
+		);
+	}
+
+	/** The note a read carries when it masked values, so the AI neither reports nor writes back the placeholder. */
+	private function secret_mask_note( $key, $masked ) {
+		if ( $masked < 1 ) {
+			return '';
+		}
+		return sprintf(
+			/* translators: 1: number of values, 2: option key */
+			_n(
+				'Note: %1$d value in \'%2$s\' is shown as [wpvibe-masked: ...] because it looks like a password, API key or token; WPVibe does not return those. Writing the placeholder back is refused: to change other fields use `option patch update %2$s <key-path> <value>`.',
+				'Note: %1$d values in \'%2$s\' are shown as [wpvibe-masked: ...] because they look like passwords, API keys or tokens; WPVibe does not return those. Writing the placeholders back is refused: to change other fields use `option patch update %2$s <key-path> <value>`.',
+				$masked,
+				'vibe-ai'
+			),
+			$masked,
+			$key
+		);
+	}
 
 	private function blocked_option_message( $key, $verb ) {
 		return implode( "\n", array(

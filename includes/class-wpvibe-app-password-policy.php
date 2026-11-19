@@ -13,6 +13,13 @@ class WPVibe_App_Password_Policy {
 
 	const OPTION = 'wpvibe_allow_app_passwords';
 
+	// When a WPVibe REST request found Application Passwords off, though wp-admin may see them on (#1602). Refreshed at most
+	// daily while they stay off, so a site that stays blocked keeps the note.
+	const REST_OFF = 'wpvibe_rest_app_passwords_off';
+
+	// A note older than this no longer decides the admin card: the site may have changed with no WPVibe request since.
+	const REST_OFF_TTL = 7 * DAY_IN_SECONDS;
+
 	private static $forced = false;
 
 	// True once allow() turned the site-level answer from false to true for this request:
@@ -23,6 +30,7 @@ class WPVibe_App_Password_Policy {
 	private static $wp2fa_wpvibe_user = 0;
 
 	public static function init() {
+		add_filter( 'rest_pre_dispatch', array( __CLASS__, 'note_rest_availability' ), 10, 1 );
 		if ( ! self::enabled() ) {
 			return;
 		}
@@ -122,6 +130,95 @@ class WPVibe_App_Password_Policy {
 		$script = isset( $_SERVER['SCRIPT_NAME'] ) ? basename( wp_unslash( $_SERVER['SCRIPT_NAME'] ) ) : '';
 		$app    = isset( $_REQUEST['app_name'] ) ? wp_unslash( $_REQUEST['app_name'] ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only match against our own app name
 		return 'authorize-application.php' === $script && is_string( $app ) && 0 === strpos( $app, 'WPVibe' );
+	}
+
+	/**
+	 * Some blocks apply to REST requests only, so wp-admin sees Application Passwords on while every WPVibe request gets
+	 * application_passwords_disabled (#1602). On a WPVibe REST request over HTTPS (core turns them off over plain HTTP
+	 * anyway), note what WordPress answers that very request, as its REST index will. Written when the answer changes, and
+	 * at most daily while it stays off. The header is public, so only a request that shows it is WPVibe's writes (#1681).
+	 * Passes the result through.
+	 */
+	public static function note_rest_availability( $result ) {
+		if ( ! isset( $_SERVER['HTTP_X_WPVIBE'] ) || '1' !== $_SERVER['HTTP_X_WPVIBE'] || ! is_ssl() || ! function_exists( 'wp_is_application_passwords_available' ) ) {
+			return $result;
+		}
+		$noted = (int) get_option( self::REST_OFF, 0 );
+		$off   = ! wp_is_application_passwords_available();
+		if ( ( $off ? time() - $noted < DAY_IN_SECONDS : ! $noted ) || ! self::request_is_wpvibes() ) {
+			return $result;
+		}
+		if ( $off ) {
+			update_option( self::REST_OFF, time(), false );
+		} else {
+			delete_option( self::REST_OFF );
+		}
+		return $result;
+	}
+
+	/**
+	 * Whether this REST request is WPVibe's own, not a stranger's with the public header (#1681): signed in, or carrying
+	 * one of the account's WPVibe Application Passwords (checked against its stored hash here, since WordPress checks none
+	 * while it turns them off), or the connection check's own loopback with its one-time token.
+	 */
+	private static function request_is_wpvibes() {
+		if ( is_user_logged_in() ) {
+			return true;
+		}
+		$probe = isset( $_SERVER['HTTP_X_WPVIBE_LOOPBACK_PROBE'] ) ? (string) wp_unslash( $_SERVER['HTTP_X_WPVIBE_LOOPBACK_PROBE'] ) : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- compared with hash_equals only
+		if ( '' !== $probe && class_exists( 'WPVibe_Connection_Check' ) && WPVibe_Connection_Check::probe_token_valid( $probe ) ) {
+			return true;
+		}
+		return self::carries_wpvibe_password();
+	}
+
+	private static function carries_wpvibe_password() {
+		if ( ! isset( $_SERVER['PHP_AUTH_USER'], $_SERVER['PHP_AUTH_PW'] ) || ! class_exists( 'WP_Application_Passwords' ) ) {
+			return false;
+		}
+		$login = (string) wp_unslash( $_SERVER['PHP_AUTH_USER'] ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- a login looked up as is, as core does
+		// As core does: generated passwords are alphanumeric, and the groupings' spaces are optional.
+		$pass = preg_replace( '/[^a-z\d]/i', '', (string) wp_unslash( $_SERVER['PHP_AUTH_PW'] ) ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- a password, only hashed
+		$user = get_user_by( 'login', $login );
+		if ( ! $user && is_email( $login ) ) {
+			$user = get_user_by( 'email', $login );
+		}
+		if ( ! $user || '' === $pass ) {
+			return false;
+		}
+		foreach ( (array) WP_Application_Passwords::get_user_application_passwords( (int) $user->ID ) as $item ) {
+			if ( ! self::is_wpvibe_password( $item ) || empty( $item['password'] ) ) {
+				continue;
+			}
+			$match = method_exists( 'WP_Application_Passwords', 'check_password' )
+				? WP_Application_Passwords::check_password( $pass, $item['password'] )
+				: wp_check_password( $pass, $item['password'], (int) $user->ID );
+			if ( $match ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** A WPVibe REST request found Application Passwords off within the last week. */
+	public static function rest_reported_off() {
+		$at = (int) get_option( self::REST_OFF, 0 );
+		return $at > 0 && time() - $at < self::REST_OFF_TTL;
+	}
+
+	/** The connection check's and the admin card's words when a WPVibe REST request found them off but wp-admin sees them on. */
+	public static function rest_off_text() {
+		return array(
+			'summary' => __( 'Application Passwords are on for this wp-admin page, but WordPress turns them off for WPVibe\'s REST requests: a plugin or setting turns them off for the REST API only.', 'vibe-ai' ),
+			'next'    => self::enabled()
+				? __( 'Allow for WPVibe is already on and does not get through this block. Turn off the setting that disables Application Passwords for the REST API (usually in a security plugin\'s login or REST API options), then run the check again.', 'vibe-ai' )
+				: __( 'Use Allow for WPVibe below to permit Application Passwords for WPVibe requests only, or turn off the setting that disables them for the REST API (usually in a security plugin\'s login or REST API options). Then run the check again.', 'vibe-ai' ),
+		);
+	}
+
+	/** Whether WPVibe can use Application Passwords: this request's answer, and what its REST requests were told (#1602). */
+	public static function usable_for_wpvibe( $user ) {
+		return self::available_for_wpvibe( $user ) && ! self::rest_reported_off();
 	}
 
 	// The browser approval routes (cookie + nonce, never an app password) carry no WPVibe header, so they evaluate here too.

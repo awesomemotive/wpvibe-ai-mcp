@@ -121,6 +121,11 @@ trait WPVibe_CLI_Post {
 			return $this->error_result( sprintf( __( 'Post %s not found.', 'vibe-ai' ), $positional[0] ) );
 		}
 
+		$allowed = $this->meta_read_permission( 'post', $post_id, empty( $positional[1] ) ? null : (string) $positional[1] );
+		if ( true !== $allowed ) {
+			return $allowed;
+		}
+
 		// Single key mode.
 		if ( ! empty( $positional[1] ) ) {
 			$value = get_post_meta( $post_id, $positional[1], true );
@@ -137,9 +142,14 @@ trait WPVibe_CLI_Post {
 		// Values stay raw — upstream emits the serialized string too, unmodified.
 		$meta    = get_post_meta( $post_id );
 		$results = array();
+		$hidden  = 0;
 		foreach ( $meta as $key => $values ) {
 			// Hide internal meta unless --all flag is set.
 			if ( empty( $flags['all'] ) && strpos( $key, '_' ) === 0 ) {
+				continue;
+			}
+			if ( ! $this->meta_key_readable( 'post', $post_id, (string) $key ) ) {
+				$hidden++;
 				continue;
 			}
 			foreach ( (array) $values as $value ) {
@@ -151,7 +161,7 @@ trait WPVibe_CLI_Post {
 			}
 		}
 
-		return $this->success_result( $results );
+		return $this->success_result( $results, self::meta_hidden_note( $hidden ) );
 	}
 
 
@@ -371,7 +381,11 @@ trait WPVibe_CLI_Post {
 		if ( is_array( $term ) ) {
 			return $term;
 		}
-		$key   = (string) $positional[1];
+		$key     = (string) $positional[1];
+		$allowed = $this->meta_read_permission( 'term', (int) $term->term_id, $key );
+		if ( true !== $allowed ) {
+			return $allowed;
+		}
 		$value = get_term_meta( (int) $term->term_id, $key, true );
 		if ( '' === $value ) {
 			// Upstream exits 1 with no output; say why.
@@ -415,11 +429,20 @@ trait WPVibe_CLI_Post {
 			return $term;
 		}
 		$term_id = (int) $term->term_id;
+		$allowed = $this->meta_read_permission( 'term', $term_id );
+		if ( true !== $allowed ) {
+			return $allowed;
+		}
 		$only    = isset( $flags['keys'] ) ? array_filter( array_map( 'trim', explode( ',', (string) $flags['keys'] ) ) ) : array();
 		$rows    = array();
+		$hidden  = 0;
 		// One row per termmeta row, values raw like upstream unless --unserialize.
 		foreach ( (array) get_term_meta( $term_id ) as $key => $values ) {
 			if ( $only && ! in_array( (string) $key, $only, true ) ) {
+				continue;
+			}
+			if ( ! $this->meta_key_readable( 'term', $term_id, (string) $key ) ) {
+				$hidden++;
 				continue;
 			}
 			foreach ( (array) $values as $value ) {
@@ -431,9 +454,9 @@ trait WPVibe_CLI_Post {
 			}
 		}
 		if ( 'count' === $format ) {
-			return $this->success_result( count( $rows ) );
+			return $this->success_result( count( $rows ), self::meta_hidden_note( $hidden ) );
 		}
-		return $this->success_result( $this->filter_fields( $rows, $flags ) );
+		return $this->success_result( $this->filter_fields( $rows, $flags ), self::meta_hidden_note( $hidden ) );
 	}
 
 
@@ -477,9 +500,11 @@ trait WPVibe_CLI_Post {
 			return $term;
 		}
 		$term_id = (int) $term->term_id;
-		$key     = (string) $positional[1];
-		if ( empty( $flags['force'] ) && is_protected_meta( $key, 'term' ) ) {
-			return $this->protected_meta_refusal( $key, false );
+		// The key as core stores it: update_metadata() and friends unslash it (#1617).
+		$key     = wp_unslash( (string) $positional[1] );
+		$allowed = $this->meta_write_permission( 'term', 'update' === $mode ? 'edit' : $mode, $term_id, $key, ! empty( $flags['force'] ) );
+		if ( true !== $allowed ) {
+			return $allowed;
 		}
 		// edit_term maps to the term's own taxonomy edit cap, which core's REST term meta writes check too.
 		if ( ! current_user_can( 'edit_term', $term_id ) ) {
@@ -491,7 +516,7 @@ trait WPVibe_CLI_Post {
 			// The optional value matches a row as given, like post meta delete.
 			$value = isset( $positional[2] ) ? (string) $positional[2] : '';
 			// delete_metadata() unslashes the value it matches on.
-			if ( ! delete_term_meta( $term_id, $key, wp_slash( $value ) ) ) {
+			if ( ! delete_term_meta( $term_id, wp_slash( $key ), wp_slash( $value ) ) ) {
 				/* translators: 1: meta key, 2: term ID */
 				return $this->error_result( sprintf( __( 'Failed to delete \'%1$s\' meta from term %2$d (key or value not found).', 'vibe-ai' ), $key, $term_id ) );
 			}
@@ -515,8 +540,8 @@ trait WPVibe_CLI_Post {
 			}
 			// update_metadata()/add_metadata() unslash on the way in.
 			$result = ( 'update' === $mode )
-				? update_term_meta( $term_id, $key, wp_slash( $value ) )
-				: add_term_meta( $term_id, $key, wp_slash( $value ) );
+				? update_term_meta( $term_id, wp_slash( $key ), wp_slash( $value ) )
+				: add_term_meta( $term_id, wp_slash( $key ), wp_slash( $value ) );
 			if ( is_wp_error( $result ) ) {
 				return $this->error_result( $result->get_error_message() );
 			}
@@ -938,6 +963,12 @@ trait WPVibe_CLI_Post {
 		if ( is_wp_error( $cap_check ) ) {
 			return $cap_check;
 		}
+		if ( isset( $meta_input['meta'] ) ) {
+			$meta_cap = $this->meta_input_permission( 0, $args['post_type'], $meta_input['meta'] );
+			if ( true !== $meta_cap ) {
+				return $meta_cap;
+			}
+		}
 
 		// Core writes meta_input through update_post_meta before save_post and the publish hooks, as upstream WP-CLI does;
 		// update_metadata() unslashes, so the values go in slashed like `post meta update`'s.
@@ -1037,6 +1068,12 @@ trait WPVibe_CLI_Post {
 				$results[] = array( 'id' => $post_id, 'status' => 'error', 'error' => $cap_check->get_error_message() );
 				continue;
 			}
+			if ( isset( $meta_input['meta'] ) ) {
+				$meta_cap = $this->meta_input_permission( $post_id, $post->post_type, $meta_input['meta'] );
+				if ( true !== $meta_cap ) {
+					return $meta_cap;
+				}
+			}
 			$res = wp_update_post( WPVibe_Content_Ops::keep_page_template( array_merge( array( 'ID' => $post_id ), $fields ) ), true );
 			if ( is_wp_error( $res ) ) {
 				$results[] = array( 'id' => $post_id, 'status' => 'error', 'error' => $res->get_error_message() );
@@ -1123,11 +1160,12 @@ trait WPVibe_CLI_Post {
 			return $this->wpcode_write_refusal();
 		}
 
-		$key = $positional[1];
-		// Block protected meta keys (all '_'-prefixed, plus registered protected) unless --force, checked as core
-		// stores the key: update_metadata() unslashes it, so `\_secret` lands as `_secret`.
-		if ( empty( $flags['force'] ) && is_protected_meta( wp_unslash( $key ), 'post' ) ) {
-			return $this->protected_meta_refusal( wp_unslash( $key ) );
+		// The key as core stores it (update_metadata() unslashes it, so `\_secret` lands as `_secret`): every check and
+		// the write use this one key.
+		$key = wp_unslash( (string) $positional[1] );
+		$allowed = $this->meta_write_permission( 'post', 'edit', $post_id, $key, ! empty( $flags['force'] ) );
+		if ( true !== $allowed ) {
+			return $allowed;
 		}
 
 		$cap_check = $this->check_post_caps( $post->post_type, 'update', $post_id );
@@ -1142,8 +1180,8 @@ trait WPVibe_CLI_Post {
 		}
 		$value = $parsed['value'];
 
-		// update_metadata() unslashes on the way in, as WP-CLI's own handler accounts for.
-		update_post_meta( $post_id, $key, wp_slash( $value ) );
+		// update_metadata() unslashes the key and the value on the way in, as WP-CLI's own handler accounts for.
+		update_post_meta( $post_id, wp_slash( $key ), wp_slash( $value ) );
 
 		WPVibe_Change_Tracker::mark( array(
 			'summary'      => "Post meta updated: #{$post_id} → {$key}",
@@ -1158,6 +1196,10 @@ trait WPVibe_CLI_Post {
 	// Unflagged JSON follows the stored shape (null = no row; '' has none): plugins differ on JSON text vs array.
 	private function parse_meta_value( $raw, $flags, $key, $stored ) {
 		$raw    = (string) $raw;
+		// Post, term and user meta writes all parse here: a value carrying a read's mask is never stored (#1624).
+		if ( self::holds_secret_mask( $raw ) ) {
+			return array( 'error' => self::secret_mask_meta_refusal( $key ) );
+		}
 		$format = isset( $flags['format'] ) ? strtolower( (string) $flags['format'] ) : '';
 		if ( '' !== $format && ! in_array( $format, array( 'json', 'plaintext' ), true ) ) {
 			return array( 'error' => __( 'Unknown --format. Use --format=json for structured values or --format=plaintext for literal strings.', 'vibe-ai' ) );
@@ -1210,9 +1252,11 @@ trait WPVibe_CLI_Post {
 			return $this->wpcode_write_refusal();
 		}
 
-		$key = $positional[1];
-		if ( empty( $flags['force'] ) && is_protected_meta( $key, 'post' ) ) {
-			return $this->protected_meta_refusal( $key );
+		// The key as core stores it: add_metadata() unslashes it (#1617).
+		$key     = wp_unslash( (string) $positional[1] );
+		$allowed = $this->meta_write_permission( 'post', 'add', $post_id, $key, ! empty( $flags['force'] ) );
+		if ( true !== $allowed ) {
+			return $allowed;
 		}
 
 		$cap_check = $this->check_post_caps( $post->post_type, 'update', $post_id );
@@ -1227,7 +1271,7 @@ trait WPVibe_CLI_Post {
 		}
 		$value = $parsed['value'];
 
-		add_post_meta( $post_id, $key, wp_slash( $value ) );
+		add_post_meta( $post_id, wp_slash( $key ), wp_slash( $value ) );
 
 		WPVibe_Change_Tracker::mark( array(
 			'summary'      => "Post meta added: #{$post_id} → {$key}",
@@ -1265,12 +1309,44 @@ trait WPVibe_CLI_Post {
 				$refusal['stderr'] .= ' ' . __( 'Nothing was written: --meta_input takes no protected keys, so handle this key on its own with `post meta update` as the note above says, and pass the other keys in --meta_input.', 'vibe-ai' );
 				return array( 'refusal' => $refusal );
 			}
+			if ( self::holds_secret_mask( $value ) ) {
+				return array( 'refusal' => $this->error_result( self::secret_mask_meta_refusal( $key ) ) );
+			}
 			if ( is_string( $value ) && is_serialized( trim( $value ) ) ) {
 				/* translators: %s: meta key */
 				return array( 'refusal' => $this->error_result( sprintf( __( 'Value for \'%s\' looks like a PHP-serialized string. WordPress serializes values automatically, so writing this would store the serialized text inside another serialized string. Pass the structured value as JSON inside --meta_input instead.', 'vibe-ai' ), $key ) ) );
 			}
 		}
 		return array( 'meta' => $meta );
+	}
+
+	/**
+	 * --meta_input writes through wp_insert_post(), which checks no meta capability, so each key gets the check
+	 * `post meta update` makes (#1624). parse_meta_input() already refused protected keys. On an existing post that is
+	 * edit_post_meta for the key; a new post has no ID to ask about yet, so a key whose plugin registered its own auth
+	 * callback is refused there and written with `post meta update` once the post exists, where that callback runs.
+	 *
+	 * @return true|array|WP_Error
+	 */
+	private function meta_input_permission( $post_id, $post_type, array $meta ) {
+		foreach ( array_keys( $meta ) as $key ) {
+			$key = wp_unslash( (string) $key );
+			if ( $post_id ) {
+				$allowed = $this->meta_write_permission( 'post', 'edit', $post_id, $key, false );
+				if ( true !== $allowed ) {
+					return $allowed;
+				}
+				continue;
+			}
+			if ( WPVibe_Content_Ops::hook_has_owner_auth( "auth_post_meta_{$key}" ) || WPVibe_Content_Ops::hook_has_owner_auth( "auth_post_meta_{$key}_for_{$post_type}" ) || WPVibe_Content_Ops::hook_has_owner_auth( "auth_post_{$post_type}_meta_{$key}" ) ) {
+				return $this->error_result( sprintf(
+					/* translators: %s: meta key */
+					__( 'Nothing was written: the plugin that registered meta key \'%s\' checks who may edit it on each post, and a new post has no ID to check yet. Create the post without that key in --meta_input, then set it with `post meta update <id> <key> <value>`.', 'vibe-ai' ),
+					$key
+				) );
+			}
+		}
+		return true;
 	}
 
 	/** Core's update_post_meta() writes a revision's meta to its parent, which the revision's checks never covered. */
@@ -1310,6 +1386,151 @@ trait WPVibe_CLI_Post {
 		return $this->error_result( $message );
 	}
 
+	/**
+	 * Whether the plugin that registered this meta key gave it its own permission check (an auth_callback it supplied,
+	 * or a hand-added auth filter), under any of the three names core's map_meta_cap() applies. Core's own default
+	 * ('__return_false' / '__return_true' for a key registered without one, as Yoast SEO's are) does not count.
+	 *
+	 * @param string $type 'post', 'term' or 'user'.
+	 */
+	private static function meta_has_auth_filter( $type, $object_id, $key ) {
+		if ( WPVibe_Content_Ops::hook_has_owner_auth( "auth_{$type}_meta_{$key}" ) ) {
+			return true;
+		}
+		$subtype = self::meta_object_subtype( $type, $object_id );
+		return '' !== $subtype && ( WPVibe_Content_Ops::hook_has_owner_auth( "auth_{$type}_meta_{$key}_for_{$subtype}" ) || WPVibe_Content_Ops::hook_has_owner_auth( "auth_{$type}_{$subtype}_meta_{$key}" ) );
+	}
+
+	/** The object subtype core keys meta registration on: the post type, the taxonomy, or 'user'. */
+	private static function meta_object_subtype( $type, $object_id ) {
+		if ( function_exists( 'get_object_subtype' ) ) {
+			return (string) get_object_subtype( $type, (int) $object_id );
+		}
+		if ( 'post' === $type ) {
+			return (string) get_post_type( (int) $object_id );
+		}
+		if ( 'term' === $type ) {
+			$term = get_term( (int) $object_id );
+			return is_object( $term ) && isset( $term->taxonomy ) ? (string) $term->taxonomy : '';
+		}
+		return 'user';
+	}
+
+	/** Builder layout keys: the builder filters their HTML on its own save, so a raw write needs unfiltered_html. */
+	private static function is_builder_layout_meta( $key ) {
+		return (bool) preg_match( '/^(?:_elementor_data|_elementor_page_settings|_bricks_page_(?:content|header|footer)(?:_\d+)?|_fl_builder_(?:data|draft)(?:_settings)?|_breakdance_data|_oxygen_data)$/', (string) $key );
+	}
+
+	/**
+	 * Reads of post, term and user meta check the object and the key, as WordPress decides who sees them (#1624):
+	 * - the object: read_post on the post; edit_term on the term and edit_user on the user, since WordPress shows their
+	 *   meta only on those edit screens;
+	 * - a protected key: where its plugin registered an auth callback, that callback's answer (the same meta capability
+	 *   writes check); otherwise edit rights on the object, the edit screen where plugins show their own fields. Never
+	 *   stricter than wp-admin, and manage_options never stands in for the object.
+	 *
+	 * @param string      $type 'post', 'term' or 'user'.
+	 * @param string|null $key  Null checks the object only (a list, which then filters keys with meta_key_readable()).
+	 * @return true|WP_Error
+	 */
+	private function meta_read_permission( $type, $object_id, $key = null ) {
+		$object_cap = 'post' === $type ? 'read_post' : "edit_{$type}";
+		if ( ! current_user_can( $object_cap, (int) $object_id ) ) {
+			return $this->meta_read_error( $type, $object_id, $object_cap, '' );
+		}
+		if ( null !== $key && ! $this->meta_key_readable( $type, $object_id, (string) $key ) ) {
+			return $this->meta_read_error( $type, $object_id, self::meta_has_auth_filter( $type, $object_id, (string) $key ) ? "edit_{$type}_meta" : "edit_{$type}", (string) $key );
+		}
+		return true;
+	}
+
+	/** The key half of meta_read_permission(), for an object the account may already read. */
+	private function meta_key_readable( $type, $object_id, $key ) {
+		if ( ! is_protected_meta( $key, $type ) ) {
+			return true;
+		}
+		return self::meta_has_auth_filter( $type, $object_id, $key )
+			? current_user_can( "edit_{$type}_meta", (int) $object_id, $key )
+			: current_user_can( "edit_{$type}", (int) $object_id );
+	}
+
+	private function meta_read_error( $type, $object_id, $capability, $key ) {
+		$message = '' === $key
+			/* translators: 1: WordPress capability, 2: object type (post, term or user), 3: object ID */
+			? sprintf( __( 'You do not have the required capability (%1$s) to read the meta of %2$s %3$d.', 'vibe-ai' ), $capability, $type, (int) $object_id )
+			/* translators: 1: WordPress capability, 2: meta key, 3: object type (post, term or user), 4: object ID */
+			: sprintf( __( 'You do not have the required capability (%1$s) to read meta \'%2$s\' on %3$s %4$d: it is a protected key, readable by accounts that can edit this %3$s, or where its plugin\'s own permission check allows it.', 'vibe-ai' ), $capability, $key, $type, (int) $object_id );
+		return new WP_Error( 'insufficient_cap', $message, WPVibe_Error_Contract::data( 'capability_cpt_mapping', false, array( 'status' => 403, 'capability' => $capability ) ) );
+	}
+
+	/** Note for a meta list that left out keys this account may not read. */
+	private static function meta_hidden_note( $hidden ) {
+		/* translators: %d: number of meta keys */
+		return $hidden ? sprintf( _n( '%d protected key was left out: this account may not read it.', '%d protected keys were left out: this account may not read them.', $hidden, 'vibe-ai' ), $hidden ) : '';
+	}
+
+	/**
+	 * The one permission rule for `post meta`, `term meta` and `user meta` writes and post --meta_input (WordPress.org
+	 * review 11-17, #1624). The key is the one core will store (already unslashed).
+	 * - Without --force: WordPress's own meta capability for this object and key (edit_post_meta, add_post_meta,
+	 *   delete_post_meta and the term and user equivalents), as core's REST meta writes check it. A protected key needs
+	 *   --force on top.
+	 * - With --force on a protected key: when the owning plugin registered an auth callback, its answer stands and
+	 *   --force does not pass it; otherwise manage_options plus edit rights on this very object. manage_options never
+	 *   stands in for the object's own capability.
+	 * - A builder layout key written raw needs unfiltered_html, forced or not: the builder's own save filters its HTML.
+	 *
+	 * @param string $type   'post', 'term' or 'user'.
+	 * @param string $action 'edit', 'add' or 'delete'.
+	 * @return true|array|WP_Error True, or the refusal to return.
+	 */
+	private function meta_write_permission( $type, $action, $object_id, $key, $force ) {
+		$object_id = (int) $object_id;
+		$key       = (string) $key;
+		$cap       = "{$action}_{$type}_meta";
+		$protected = is_protected_meta( $key, $type );
+		$owned     = self::meta_has_auth_filter( $type, $object_id, $key );
+		$denied    = function ( $capability ) use ( $type, $object_id, $key ) {
+			return new WP_Error( 'insufficient_cap', sprintf(
+				/* translators: 1: WordPress capability, 2: meta key, 3: object type (post, term or user), 4: object ID */
+				__( 'You do not have the required capability (%1$s) to change meta \'%2$s\' on %3$s %4$d.', 'vibe-ai' ),
+				$capability, $key, $type, $object_id
+			), WPVibe_Error_Contract::data( 'capability_cpt_mapping', false, array( 'status' => 403, 'capability' => $capability ) ) );
+		};
+
+		if ( 'post' === $type && self::is_builder_layout_meta( $key ) && ! current_user_can( 'unfiltered_html' ) ) {
+			return $this->error_result( sprintf(
+				/* translators: %s: meta key */
+				__( 'Refused: \'%s\' is a page builder\'s layout, and the connected account lacks the unfiltered_html capability, so the builder filters the HTML it may save. A raw meta write would skip that filter. Save the layout through the builder\'s own route instead (elementor/save-page, bricks/save-page, beaver/save-page or breakdance/save-page).', 'vibe-ai' ),
+				$key
+			) );
+		}
+
+		if ( $protected && $owned && ! current_user_can( $cap, $object_id, $key ) ) {
+			return $this->error_result( sprintf(
+				/* translators: %s: meta key */
+				__( 'Refused: the plugin that registered meta key \'%s\' refused this edit for the connected account (its auth callback said no). That answer stands for every role, and --force does not pass it. Write the value through that plugin\'s own path (an ability via discover_abilities, or its REST namespace).', 'vibe-ai' ),
+				$key
+			) );
+		}
+		if ( $protected && ! $owned && ! current_user_can( 'manage_options' ) ) {
+			return $this->error_result( sprintf(
+				/* translators: %s: meta key */
+				__( 'Refused: meta key \'%s\' is protected (internal), and only an Administrator connection can write a protected key that its plugin registered no permission check for (with --force). Write it through the plugin that owns it (an ability via discover_abilities, or its REST namespace).', 'vibe-ai' ),
+				$key
+			) );
+		}
+		if ( $protected && ! $force ) {
+			return $this->protected_meta_refusal( $key, 'post' === $type && 'delete' !== $action );
+		}
+		if ( $protected && ! $owned ) {
+			// --force by an Administrator: the object's own edit capability still decides.
+			$object_cap = "edit_{$type}";
+			return current_user_can( $object_cap, $object_id ) ? true : $denied( $object_cap );
+		}
+		return current_user_can( $cap, $object_id, $key ) ? true : $denied( $cap );
+	}
+
 	private function handle_post_meta_delete( $positional, $flags ) {
 		if ( count( $positional ) < 2 ) {
 			return $this->error_result( __( 'Usage: post meta delete <post_id> <key>', 'vibe-ai' ) );
@@ -1325,9 +1546,11 @@ trait WPVibe_CLI_Post {
 			return $this->wpcode_write_refusal();
 		}
 
-		$key = $positional[1];
-		if ( empty( $flags['force'] ) && is_protected_meta( $key, 'post' ) ) {
-			return $this->protected_meta_refusal( $key, false );
+		// The key as core matches it: delete_metadata() unslashes it (#1617).
+		$key     = wp_unslash( (string) $positional[1] );
+		$allowed = $this->meta_write_permission( 'post', 'delete', $post_id, $key, ! empty( $flags['force'] ) );
+		if ( true !== $allowed ) {
+			return $allowed;
 		}
 
 		$cap_check = $this->check_post_caps( $post->post_type, 'update', $post_id );
@@ -1337,7 +1560,7 @@ trait WPVibe_CLI_Post {
 
 		// Optional third positional = meta value: delete only the matching row of a multi-value meta.
 		$value = isset( $positional[2] ) ? $positional[2] : '';
-		delete_post_meta( $post_id, $key, $value );
+		delete_post_meta( $post_id, wp_slash( $key ), $value );
 
 		WPVibe_Change_Tracker::mark( array(
 			'summary'      => "Post meta deleted: #{$post_id} → {$key}",

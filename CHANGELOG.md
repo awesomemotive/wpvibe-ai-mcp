@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.24.1] - 2026-11-19
+
+- Security: WPVibe's settings commands and database queries keep passwords, API keys, salts and tokens out of what they show your AI. Option and transient reads mask secret fields inside a setting, such as an SMTP password or a payment gateway key. Database queries read this site's options, users and user meta tables with those values masked, and search-replace skips secrets: it does not search, count or name them. Reading WooCommerce API keys through a database query needs your approval.
+- Security: An Author connected through WPVibe can no longer write protected custom fields, such as Elementor's page data, by adding a backslash to the field name. The post, term and user meta commands check the key the same way.
+- Hardening: Protected custom fields follow WordPress's own permission checks for every role, Administrators included, unless an Administrator forces the write on a post they can edit. Writing a page builder's raw layout needs the unfiltered_html capability.
+- Hardening: The page builder save routes, media uploads, ability runs and WPVibe's background update and job routes check the post, ability or one-time token they act on before running.
+- Hardening: Theme backups are encrypted with a key kept in your database and tied to their theme, so a backup downloaded from uploads is useless on any server, nginx included. Backups made by 1.24.0 are encrypted the next time wp-admin loads.
+- Fix: A theme publish or restore that stops part way is finished or undone the next time an administrator opens wp-admin. Theme folders a publish left behind are kept as backups before they go, on multisite too.
+- Fix: Publishing a draft theme on multisite follows the network's allowed themes, as switching themes does.
+- Fix: An approved operation whose first run never recorded an outcome is no longer run a second time; WPVibe asks your AI to check its effect first.
+- Fix: Bricks saves keep the layout they overwrite as a revision, and restoring that revision puts the layout back.
+- Fix: The Approval Log and operation records no longer query a missing table or print database errors, and create their tables again when they go missing.
+- Fix: When a plugin or setting turns off Application Passwords for the REST API only, the WPVibe page and connection check say so and offer Allow for WPVibe, instead of passing the check while every connection failed.
+- Fix: White label turns on WPVibe auto-updates only where your account may change plugin updates.
+- Fix: The readme lists the outside services that receive your site's content, from the plugin or from the WPVibe service, with what is sent and when, and says WPVibe is not affiliated with the WordPress Foundation, Anthropic, OpenAI or the other third-party products it names.
+
 ## [1.24.0] - 2026-11-18
 
 - Feature: Each user can now turn off live reload for themselves, on the WPVibe page or on their own Profile page. With it off, your browser stays on the page you are viewing while your AI edits the site, instead of jumping to each post it changes.

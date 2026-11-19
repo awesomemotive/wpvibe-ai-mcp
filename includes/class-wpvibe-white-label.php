@@ -169,9 +169,10 @@ class WPVibe_White_Label {
 		if ( ! self::truthy( $value ) || ! defined( 'WPVIBE_PLUGIN_BASENAME' ) ) {
 			return;
 		}
-		// On multisite the auto-update list is a network setting: only someone who can manage network plugins changes it
-		// (WordPress.org review 11-17, #1624). A site administrator's white label still hides WPVibe on their own site.
-		if ( is_multisite() && ! current_user_can( 'manage_network_plugins' ) ) {
+		// Only someone who may change plugin updates changes the auto-update list (WordPress.org review 11-17, #1624): on
+		// multisite it is a network setting, so manage_network_plugins; on a single site update_plugins, which
+		// DISALLOW_FILE_MODS or a security plugin can take from Administrators. The white label still hides WPVibe.
+		if ( ! current_user_can( is_multisite() ? 'manage_network_plugins' : 'update_plugins' ) ) {
 			return;
 		}
 		// Shared helper with the CLI verb: core's auto-updater reads the SITE

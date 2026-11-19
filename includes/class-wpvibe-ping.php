@@ -35,6 +35,7 @@ class WPVibe_Ping {
 			register_rest_route( 'wpvibe/v1', $route, array(
 				'methods'             => 'GET',
 				'callback'            => array( $this, 'ping' ),
+				// Public by design: the reachability probe, answering only the plugin and WordPress versions and feature flags.
 				'permission_callback' => '__return_true',
 				'args'                => array(),
 			) );
@@ -61,7 +62,7 @@ class WPVibe_Ping {
 
 	// Only the site's own connectivity check (holding the loopback token) learns which auth headers survive the host; values are never echoed.
 	private function loopback_echo() {
-		$token = isset( $_SERVER['HTTP_X_WPVIBE_LOOPBACK'] ) ? (string) $_SERVER['HTTP_X_WPVIBE_LOOPBACK'] : '';
+		$token = isset( $_SERVER['HTTP_X_WPVIBE_LOOPBACK'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_X_WPVIBE_LOOPBACK'] ) ) : '';
 		if ( '' === $token || ! class_exists( 'WPVibe_Connection_Check' ) || ! WPVibe_Connection_Check::loopback_token_valid( $token ) ) {
 			return null;
 		}

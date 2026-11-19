@@ -67,13 +67,36 @@ class WPVibe_Self_Update {
 		register_rest_route( 'wpvibe/v1', '/self-update/health', array(
 			'methods'             => 'GET',
 			'callback'            => array( $this, 'handle_ping_endpoint' ),
+			// Public by design: the site's own loopback probe, answered with {"ok":true} and nothing else.
 			'permission_callback' => '__return_true',
 		) );
 		register_rest_route( 'wpvibe/v1', '/self-update/run', array(
 			'methods'             => 'POST',
 			'callback'            => array( $this, 'handle_run_endpoint' ),
-			'permission_callback' => '__return_true',
+			'permission_callback' => array( $this, 'can_run' ),
 		) );
+	}
+
+	/**
+	 * /self-update/run is the site calling itself, so its credential is the single-use token schedule() stored, checked
+	 * here before the handler runs (WordPress.org review 11-17, #1624). This only verifies: the handler checks again and
+	 * burns the token, since it is also called directly with an array.
+	 */
+	public function can_run( $request ) {
+		return $this->token_valid( (string) $request->get_param( 'token' ) )
+			? true
+			: new WP_Error( 'wpvibe_self_update_forbidden', __( 'Forbidden.', 'vibe-ai' ), array( 'status' => 403 ) );
+	}
+
+	private function token_valid( $token ) {
+		$state = get_option( self::OPTION, array() );
+		return is_array( $state )
+			&& 'scheduled' === ( $state['status'] ?? '' )
+			&& 'loopback' === ( $state['method'] ?? '' )
+			&& ! empty( $state['token_hash'] )
+			&& '' !== $token
+			&& hash_equals( (string) $state['token_hash'], hash( 'sha256', $token ) )
+			&& ( time() - (int) ( $state['scheduled_at'] ?? 0 ) ) <= self::TOKEN_TTL;
 	}
 
 	public function handle_ping_endpoint() {
@@ -188,17 +211,10 @@ class WPVibe_Self_Update {
 			$token = (string) $request['token'];
 		}
 
-		$state = get_option( self::OPTION, array() );
-		$valid = is_array( $state )
-			&& 'scheduled' === ( $state['status'] ?? '' )
-			&& 'loopback' === ( $state['method'] ?? '' )
-			&& ! empty( $state['token_hash'] )
-			&& '' !== $token
-			&& hash_equals( (string) $state['token_hash'], hash( 'sha256', $token ) )
-			&& ( time() - (int) ( $state['scheduled_at'] ?? 0 ) ) <= self::TOKEN_TTL;
-		if ( ! $valid ) {
+		if ( ! $this->token_valid( $token ) ) {
 			return new WP_Error( 'wpvibe_self_update_forbidden', __( 'Forbidden.', 'vibe-ai' ), array( 'status' => 403 ) );
 		}
+		$state = get_option( self::OPTION, array() );
 
 		if ( function_exists( 'ignore_user_abort' ) ) {
 			ignore_user_abort( true );
@@ -422,7 +438,7 @@ class WPVibe_Self_Update {
 
 	private function remove_own_maintenance() {
 		if ( is_array( $this->run_guard ) && ! $this->run_guard['maintenance_before'] && file_exists( ABSPATH . '.maintenance' ) ) {
-			@unlink( ABSPATH . '.maintenance' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+			wp_delete_file( ABSPATH . '.maintenance' );
 		}
 	}
 

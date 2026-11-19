@@ -493,9 +493,17 @@ trait WPVibe_CLI_Misc {
 
 	private function handle_widget_list( $positional, $flags ) {
 		global $wp_registered_sidebars;
-		// Not the raw option: core strips the legacy array_version key and
-		// applies the sidebars_widgets filter (what the theme actually renders).
-		$sidebars = wp_get_sidebars_widgets();
+		// Not the raw option: as core's wp_get_sidebars_widgets() does (a function marked private, so not
+		// called here), strip the legacy array_version key and apply the sidebars_widgets filter, which is
+		// what the theme actually renders.
+		// Outside wp-admin core reads its in-memory copy, which may hold old-format widgets it converted this request.
+		global $_wp_sidebars_widgets;
+		$sidebars = ! is_admin() && ! empty( $_wp_sidebars_widgets ) ? $_wp_sidebars_widgets : get_option( 'sidebars_widgets', array() );
+		if ( is_array( $sidebars ) ) {
+			unset( $sidebars['array_version'] );
+		}
+		$sidebars = apply_filters( 'sidebars_widgets', $sidebars ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- core's filter.
+		$sidebars = is_array( $sidebars ) ? $sidebars : array();
 		$results  = array();
 		foreach ( $sidebars as $sidebar_id => $widgets ) {
 			if ( 'wp_inactive_widgets' === $sidebar_id ) continue;

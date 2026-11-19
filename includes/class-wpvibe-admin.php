@@ -66,6 +66,8 @@ class WPVibe_Admin {
 		}
 		check_admin_referer( 'wpvibe_app_passwords' );
 		update_option( WPVibe_App_Password_Policy::OPTION, empty( $_POST['disable'] ), false );
+		// The next WPVibe request notes again whether the allowance got through (#1602).
+		delete_option( WPVibe_App_Password_Policy::REST_OFF );
 		delete_transient( WPVibe_Connection_Check::COOLDOWN );
 		wp_safe_redirect( admin_url( 'admin.php?page=vibe-ai&wpvibe_recheck=1' ) );
 		exit;
@@ -193,9 +195,12 @@ class WPVibe_Admin {
 		$check_state   = $check_result ? $check_result['state'] : ( $authorized || $legacy_live || WPVibe_Connection_Status::awaiting_confirmation() ? '' : 'current' );
 		$site_url      = site_url();
 		$https         = 'https' === wp_parse_url( $site_url, PHP_URL_SCHEME );
-		$app_pw_ok     = WPVibe_App_Password_Policy::available_for_wpvibe( wp_get_current_user() );
+		$app_pw_ok     = WPVibe_App_Password_Policy::usable_for_wpvibe( wp_get_current_user() );
 		$app_pw_block  = $app_pw_ok ? null : WPVibe_App_Password_Policy::blocker();
 		$app_pw_allow  = WPVibe_App_Password_Policy::enabled();
+		// No WPVibe request may have noted a REST-only block yet (a fresh install): the check's own loopback can find one, so
+		// draw the Allow card hidden for admin.js to show when it does (#1602).
+		$app_pw_maybe  = $app_pw_ok && ! $app_pw_allow;
 		$mcp_url       = 'https://mcp.wpvibe.ai/mcp';
 		$connect_cta   = $this->utm( 'https://wpvibe.ai/docs/ai-client-setup/', 'cta_connect', 'cta' );
 		$chatgpt_app   = WPVibe_Dashboard_Widget::CHATGPT_APP_URL;
@@ -205,7 +210,9 @@ class WPVibe_Admin {
 		$footer_supp   = $this->utm( 'https://wpvibe.ai/support/', 'footer_support' );
 		$footer_security = $this->utm( 'https://wpvibe.ai/security/', 'footer_security' );
 		$footer_dpa    = $this->utm( 'https://wpvibe.ai/dpa/', 'footer_dpa' );
+		/* translators: %s: this site's address. */
 		$ai_prompt     = sprintf( __( 'Connect my site at %s', 'vibe-ai' ), $site_url );
+		/* translators: %s: this site's address. */
 		$verify_prompt = sprintf( __( 'Use WPVibe to read my site at %s (the site_info tool). Tell me the site name and address it returns. If it fails, show me the error and what to do next. Do not change anything.', 'vibe-ai' ), $site_url );
 		?>
 		<div class="wpvibe-admin-wrap">
@@ -259,7 +266,7 @@ class WPVibe_Admin {
 				<?php if ( ! $https ) : ?>
 				<div class="wpvibe-https-notice" role="alert">
 					<strong><?php esc_html_e( 'This site needs HTTPS before it can connect.', 'vibe-ai' ); ?></strong>
-					<p><?php echo esc_html( sprintf( __( 'Your WordPress Address is %s. WPVibe only connects to https:// sites, so it can never send your login over an unencrypted link. Ask your host to turn on HTTPS, update the WordPress Address and Site Address in Settings > General to https://, then come back to this page.', 'vibe-ai' ), $site_url ) ); ?></p>
+					<p><?php /* translators: %s: the WordPress Address (site URL). */ echo esc_html( sprintf( __( 'Your WordPress Address is %s. WPVibe only connects to https:// sites, so it can never send your login over an unencrypted link. Ask your host to turn on HTTPS, update the WordPress Address and Site Address in Settings > General to https://, then come back to this page.', 'vibe-ai' ), $site_url ) ); ?></p>
 				</div>
 				<?php endif; ?>
 
@@ -281,8 +288,8 @@ class WPVibe_Admin {
 							<small id="wpvibe-check-retry-status" aria-live="polite"></small>
 							<small class="wpvibe-step-hint" id="wpvibe-check-privacy-hint"<?php echo $check_result ? ' hidden' : ''; ?>><?php esc_html_e( 'Sends your site address and a temporary verification code to WPVibe. No passwords are sent and no security settings are changed.', 'vibe-ai' ); ?></small>
 							<p id="wpvibe-check-progress" role="status" aria-live="polite"></p>
-							<?php if ( $https && ( ! $app_pw_ok || $app_pw_allow ) ) : ?>
-							<div class="wpvibe-fix-card<?php echo $app_pw_ok ? ' wpvibe-fix-card--ok' : ''; ?>">
+							<?php if ( $https && ( ! $app_pw_ok || $app_pw_allow || $app_pw_maybe ) ) : ?>
+							<div class="wpvibe-fix-card<?php echo $app_pw_ok && ! $app_pw_maybe ? ' wpvibe-fix-card--ok' : ''; ?>"<?php echo $app_pw_maybe ? ' id="wpvibe-rest-off-card" hidden' : ''; ?>>
 								<?php if ( ! $app_pw_ok && ! is_ssl() ) : ?>
 								<strong><?php esc_html_e( 'WordPress does not see this site as HTTPS.', 'vibe-ai' ); ?></strong>
 								<p><?php esc_html_e( 'Your address uses https://, but a proxy or CDN terminates SSL before WordPress, so WordPress turns Application Passwords off. Add this line to wp-config.php above the "That\'s all, stop editing" comment, then run the check again:', 'vibe-ai' ); ?></p>
@@ -290,9 +297,12 @@ class WPVibe_Admin {
 									<code class="wpvibe-copy-text">if ( isset( $_SERVER['HTTP_X_FORWARDED_PROTO'] ) &amp;&amp; 'https' === $_SERVER['HTTP_X_FORWARDED_PROTO'] ) { $_SERVER['HTTPS'] = 'on'; }</code>
 									<button type="button" class="wpvibe-copy-btn" data-wpvibe-copy="if ( isset( $_SERVER['HTTP_X_FORWARDED_PROTO'] ) &amp;&amp; 'https' === $_SERVER['HTTP_X_FORWARDED_PROTO'] ) { $_SERVER['HTTPS'] = 'on'; }"><?php esc_html_e( 'Copy', 'vibe-ai' ); ?></button>
 								</div>
-								<?php elseif ( ! $app_pw_ok ) : ?>
-								<strong><?php echo $app_pw_block ? esc_html( sprintf( __( 'Application Passwords are turned off by %s.', 'vibe-ai' ), $app_pw_block['name'] ) ) : esc_html__( 'Application Passwords are turned off on this site.', 'vibe-ai' ); ?></strong>
-								<p><?php echo $app_pw_block ? esc_html( sprintf( __( 'WPVibe connects with a WordPress Application Password. Turn that off in %1$s (%2$s), or allow Application Passwords for WPVibe only: approving a WPVibe connection, and requests that identify as WPVibe from accounts that authorized one. Everything else stays under your security plugin\'s policy.', 'vibe-ai' ), $app_pw_block['name'], isset( $app_pw_block['setting'] ) ? $app_pw_block['setting'] : __( 'its settings', 'vibe-ai' ) ) ) : esc_html__( 'WPVibe connects with a WordPress Application Password. Allow them for WPVibe only: requests that identify as WPVibe, from accounts that authorized WPVibe. Everything else stays under your security settings.', 'vibe-ai' ); ?></p>
+								<?php elseif ( ! $app_pw_ok && $app_pw_allow ) : ?>
+								<strong><?php esc_html_e( 'Allow for WPVibe is on, but WordPress still turns Application Passwords off for WPVibe\'s requests.', 'vibe-ai' ); ?></strong>
+								<p><?php esc_html_e( 'A plugin or setting turns them off for the REST API in a way this allowance does not get through. Turn that setting off (usually in a security plugin\'s login or REST API options), then run the check again.', 'vibe-ai' ); ?></p>
+								<?php elseif ( ! $app_pw_ok || $app_pw_maybe ) : ?>
+								<strong><?php /* translators: %s: name of the plugin that turns Application Passwords off. */ echo $app_pw_block ? esc_html( sprintf( __( 'Application Passwords are turned off by %s.', 'vibe-ai' ), $app_pw_block['name'] ) ) : esc_html__( 'Application Passwords are turned off on this site.', 'vibe-ai' ); ?></strong>
+								<p><?php /* translators: 1: name of the plugin that turns Application Passwords off, 2: where its setting is. */ echo $app_pw_block ? esc_html( sprintf( __( 'WPVibe connects with a WordPress Application Password. Turn that off in %1$s (%2$s), or allow Application Passwords for WPVibe only: approving a WPVibe connection, and requests that identify as WPVibe from accounts that authorized one. Everything else stays under your security plugin\'s policy.', 'vibe-ai' ), $app_pw_block['name'], isset( $app_pw_block['setting'] ) ? $app_pw_block['setting'] : __( 'its settings', 'vibe-ai' ) ) ) : esc_html__( 'WPVibe connects with a WordPress Application Password. Allow them for WPVibe only: requests that identify as WPVibe, from accounts that authorized WPVibe. Everything else stays under your security settings.', 'vibe-ai' ); ?></p>
 								<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" class="wpvibe-inline-form">
 									<input type="hidden" name="action" value="wpvibe_app_passwords" />
 									<?php wp_nonce_field( 'wpvibe_app_passwords' ); ?>
@@ -354,7 +364,7 @@ class WPVibe_Admin {
 							<?php if ( $awaiting ) : ?>
 							<span><?php esc_html_e( 'WordPress approved the connection, but WPVibe could not confirm access in time. Run Step 4; a successful read confirms it and turns both steps green.', 'vibe-ai' ); ?></span>
 							<?php elseif ( $legacy_connected ) : ?>
-							<span><?php echo esc_html( sprintf( __( 'Your AI used this site %s ago. No reconnect is needed unless your AI reports an error.', 'vibe-ai' ), human_time_diff( $last_active ) ) ); ?></span>
+							<span><?php /* translators: %s: how long ago, e.g. "5 mins". */ echo esc_html( sprintf( __( 'Your AI used this site %s ago. No reconnect is needed unless your AI reports an error.', 'vibe-ai' ), human_time_diff( $last_active ) ) ); ?></span>
 							<?php elseif ( $failing_auth ) : ?>
 							<span><?php esc_html_e( 'Your saved connection is kept. Use Check authorized access to see what failed and the next step.', 'vibe-ai' ); ?></span>
 							<?php endif; ?>
@@ -406,9 +416,9 @@ class WPVibe_Admin {
 						<div class="wpvibe-step-content">
 							<strong id="wpvibe-step-title-4"><?php echo $step4_done ? esc_html__( 'Your AI has used this site', 'vibe-ai' ) : esc_html__( 'Confirm your AI can read this site', 'vibe-ai' ); ?></strong>
 							<?php if ( $ai_read ) : ?>
-							<span><?php echo esc_html( sprintf( __( 'Confirmed at %s UTC.', 'vibe-ai' ), gmdate( 'Y-m-d H:i:s', (int) floor( $ai_read['observed_at'] / 1000 ) ) ) ); ?><?php if ( ! empty( $ai_read['client'] ) ) : ?> <?php echo esc_html( sprintf( __( 'Client: %s.', 'vibe-ai' ), $ai_read['client'] ) ); ?><?php endif; ?></span>
+							<span><?php /* translators: %s: date and time. */ echo esc_html( sprintf( __( 'Confirmed at %s UTC.', 'vibe-ai' ), gmdate( 'Y-m-d H:i:s', (int) floor( $ai_read['observed_at'] / 1000 ) ) ) ); ?><?php if ( ! empty( $ai_read['client'] ) ) : ?> <?php /* translators: %s: name of the AI client. */ echo esc_html( sprintf( __( 'Client: %s.', 'vibe-ai' ), $ai_read['client'] ) ); ?><?php endif; ?></span>
 							<?php elseif ( $step4_done ) : ?>
-							<span><?php echo esc_html( sprintf( __( 'Your AI used this site %s ago.', 'vibe-ai' ), human_time_diff( $last_active ) ) ); ?></span>
+							<span><?php /* translators: %s: how long ago, e.g. "5 mins". */ echo esc_html( sprintf( __( 'Your AI used this site %s ago.', 'vibe-ai' ), human_time_diff( $last_active ) ) ); ?></span>
 							<?php endif; ?>
 							<?php if ( $step4_done ) : ?>
 							<details class="wpvibe-check-details">
@@ -434,7 +444,7 @@ class WPVibe_Admin {
 				<div class="wpvibe-white-label">
 					<strong><?php esc_html_e( 'White label', 'vibe-ai' ); ?></strong>
 					<p><?php esc_html_e( 'Hide WPVibe everywhere in this WordPress dashboard: the admin menu, dashboard widget, Plugins list entry, and editor sidebar. For agencies managing this site for a client. The site stays connected and fully manageable through your AI.', 'vibe-ai' ); ?></p>
-					<p class="wpvibe-white-label-warning"><?php esc_html_e( 'Once hidden, this page is gone too. To bring WPVibe back, ask your AI to disable white label mode (or delete the wpvibe_hide_from_admins option via WP-CLI). If the site goes 30 days without WPVibe activity, the plugin reappears on its own. WordPress auto-updates are turned on for WPVibe so it stays current while hidden.', 'vibe-ai' ); ?></p>
+					<p class="wpvibe-white-label-warning"><?php esc_html_e( 'Once hidden, this page is gone too. To bring WPVibe back, ask your AI to disable white label mode (or delete the wpvibe_hide_from_admins option via WP-CLI). If the site goes 30 days without WPVibe activity, the plugin reappears on its own. WordPress auto-updates are turned on for WPVibe, if your account may change plugin updates, so it stays current while hidden.', 'vibe-ai' ); ?></p>
 					<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 						<input type="hidden" name="action" value="wpvibe_white_label" />
 						<input type="hidden" name="enable" value="1" />
@@ -508,6 +518,8 @@ class WPVibe_Admin {
 		$offset  = ( $page - 1 ) * $per;
 		$total   = WPVibe_Audit_Log::count();
 		$entries = WPVibe_Audit_Log::get_recent( $per, $offset );
+		// Read after the queries: one that found the table gone has cleared the flag and tried to create it again (#1624).
+		$ready   = WPVibe_Audit_Log::ready();
 		$pages   = max( 1, (int) ceil( $total / $per ) );
 		$base    = admin_url( 'admin.php?page=vibe-ai-activity' );
 		?>
@@ -517,7 +529,11 @@ class WPVibe_Admin {
 				<?php esc_html_e( 'Every destructive operation WPVibe has run on this site, whether you approved it or it ran with approvals bypassed, plus every time bypass was turned on or off. Append-only: entries cannot be changed or deleted from the dashboard.', 'vibe-ai' ); ?>
 			</p>
 
-			<?php if ( empty( $entries ) ) : ?>
+			<?php if ( ! $ready ) : ?>
+				<div class="notice notice-warning" style="margin-top:1em;">
+					<p><?php esc_html_e( 'The Approval Log table could not be created on this database; WPVibe will try again.', 'vibe-ai' ); ?></p>
+				</div>
+			<?php elseif ( empty( $entries ) ) : ?>
 				<div class="notice notice-info" style="margin-top:1em;">
 					<p><?php esc_html_e( 'No destructive operations have been executed yet.', 'vibe-ai' ); ?></p>
 				</div>
@@ -558,12 +574,14 @@ class WPVibe_Admin {
 					<div class="tablenav" style="margin-top:1em;">
 						<div class="tablenav-pages">
 							<?php
-							echo paginate_links( array(
-								'base'    => add_query_arg( 'paged', '%#%', $base ),
-								'format'  => '',
-								'current' => $page,
-								'total'   => $pages,
-							) ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+							echo wp_kses_post(
+								(string) paginate_links( array(
+									'base'    => add_query_arg( 'paged', '%#%', $base ),
+									'format'  => '',
+									'current' => $page,
+									'total'   => $pages,
+								) )
+							);
 							?>
 						</div>
 					</div>
