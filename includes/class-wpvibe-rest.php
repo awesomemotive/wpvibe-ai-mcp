@@ -1228,6 +1228,24 @@ class WPVibe_REST {
 			return new WP_Error( 'not_found', sprintf( __( 'Post #%d does not exist on this site. Check the ID (search or list the posts first); the connection and its permissions are fine.', 'vibe-ai' ), $post_id ), WPVibe_Error_Contract::data( 'not_found', false, array( 'status' => 404 ) ) );
 		}
 		if ( $post_id > 0 ) {
+			// Additional CSS: core maps custom_css's edit_post to a primitive edit_css no role has. Its own editors (the
+			// Customizer, global styles) need edit_theme_options and the edit_css meta cap (unfiltered_html), so do we (#1722).
+			if ( 'post' === $type && 'custom_css' === get_post_type( $post_id ) ) {
+				foreach ( array( 'edit_theme_options', 'edit_css' ) as $cap ) {
+					if ( ! current_user_can( $cap ) ) {
+						return new WP_Error(
+							'wpvibe_missing_capability',
+							sprintf(
+								/* translators: %s: WordPress capability name */
+								__( 'Editing this site\'s Additional CSS needs the WordPress capabilities edit_theme_options and edit_css, as WordPress\'s own Customizer does, and the connected account lacks "%s". An Administrator has both on a single site; on multisite only network super admins have edit_css, and nobody has it when DISALLOW_UNFILTERED_HTML is set.', 'vibe-ai' ),
+								$cap
+							),
+							WPVibe_Error_Contract::data( 'capability_role', false, array( 'status' => rest_authorization_required_code(), 'capability' => $cap, 'post_type' => 'custom_css' ) )
+						);
+					}
+				}
+				return true;
+			}
 			// The post's own edit_post, with no manage_options override: a post type's capabilities decide for every role
 			// (WordPress.org review 11-17, #1624).
 			return current_user_can( 'edit_post', $post_id ) ? true : $this->missing_capability_error( 'edit_post', $post_id );

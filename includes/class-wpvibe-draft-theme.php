@@ -282,7 +282,8 @@ class WPVibe_Draft_Theme {
 		// Store the draft theme slug and original theme for rollback.
 		$registered = WPVibe_Draft_Lock::register( $draft_slug, $active_slug );
 		if ( is_wp_error( $registered ) ) {
-			return $registered;
+			// The copy is whole but unrecorded: left in place, the retry the error suggests would stop at it (#1370).
+			return $this->abandon_partial_dir( $dest, $registered );
 		}
 
 		list( $parked, $stuck ) = self::park_draft_rows( $draft_slug, $active_slug );
@@ -850,8 +851,8 @@ class WPVibe_Draft_Theme {
 							sprintf(
 								/* translators: 1: live dir, 2: error message */
 								__( 'Could not delete the live theme directory \'%1$s\' before replacing it: %2$s WPVibe copied the previous version back over it, so the live theme is as it was and nothing was published. Fix the folder permissions, then publish again.', 'vibe-ai' ),
-								$live_dir,
-								$deleted_live->get_error_message()
+								self::site_relative( $live_dir ),
+								self::site_relative( $deleted_live->get_error_message() )
 							),
 							WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) )
 						);
@@ -861,9 +862,9 @@ class WPVibe_Draft_Theme {
 						sprintf(
 							/* translators: 1: live dir, 2: error message, 3: backup dir, 4: theme slug */
 							__( 'Could not delete the live theme directory \'%1$s\' before replacing it: %2$s and copying the previous version back failed too. A complete copy is at \'%3$s\', which WPVibe moves back the next time an administrator opens wp-admin. To recover now, remove \'%1$s\' and rename that folder to it with SFTP or the host file manager; if it is gone, run the WP-CLI command "theme restore-backup %4$s".', 'vibe-ai' ),
-							$live_dir,
-							$deleted_live->get_error_message(),
-							$backup_dir,
+							self::site_relative( $live_dir ),
+							self::site_relative( $deleted_live->get_error_message() ),
+							self::site_relative( $backup_dir ),
 							$source_slug
 						),
 						WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) )
@@ -893,10 +894,10 @@ class WPVibe_Draft_Theme {
 					sprintf(
 						/* translators: 1: publish error, 2: rollback error, 3: backup dir, 4: live dir, 5: theme slug */
 						__( 'Publish failed (%1$s) AND rollback failed (%2$s). The live theme directory may be empty or incomplete; a full copy of the previous theme is at \'%3$s\', which WPVibe moves back to \'%4$s\' the next time an administrator opens wp-admin. To recover now, move it there by hand (SFTP or the host file manager); if that folder is gone, run the WP-CLI command "theme restore-backup %5$s".', 'vibe-ai' ),
-						$result->get_error_message(),
+						self::site_relative( $result->get_error_message() ),
 						__( 'restoring the backup also failed', 'vibe-ai' ),
-						$backup_dir,
-						$live_dir,
+						self::site_relative( $backup_dir ),
+						self::site_relative( $live_dir ),
 						$source_slug
 					),
 					WPVibe_Error_Contract::data( 'filesystem', false, array( 'status' => 500 ) )
@@ -1639,7 +1640,16 @@ class WPVibe_Draft_Theme {
 			}
 			$text = str_replace( $abs, $short, $text );
 		}
-		return $text;
+		// An absolute path still here is outside the WordPress tree (an open_basedir list, say): its folders are a server
+		// detail the reply never needs, so only its last part stays, which keeps a file's name (#1370). URLs and HTML
+		// tags stay as they are.
+		return (string) preg_replace_callback(
+			'#[a-z][a-z0-9+.-]*://[^\s\'"()<>]+|(?<![\w.~<>/-])/[\w.~-][^\s:;,()\'"<>]*#i',
+			function ( $m ) {
+				return false !== strpos( $m[0], '://' ) ? $m[0] : '[server path]/' . basename( $m[0] );
+			},
+			$text
+		);
 	}
 
 	/**
@@ -1657,6 +1667,10 @@ class WPVibe_Draft_Theme {
 		$data    = is_array( $data ) ? $data : array();
 		$message = $error->get_error_message();
 		$data['partial_dir_removed'] = $removed;
+		if ( ! $removed ) {
+			// The same call would stop at the folder left behind (#1370).
+			$data['retry_ok'] = false;
+		}
 		if ( $removed ) {
 			$message .= ' ' . __( 'The partial draft folder was removed, and the live theme is unchanged.', 'vibe-ai' );
 		} else {

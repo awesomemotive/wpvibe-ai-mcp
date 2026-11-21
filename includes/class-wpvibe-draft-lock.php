@@ -161,9 +161,9 @@ class WPVibe_Draft_Lock {
 	}
 
 	/** A draft_conflict that names its cause (#1059): the same code and 409, plus a reason the Worker can tell apart. */
-	public static function conflict_because( $reason, $message, $cause = 'invalid_input', $extra = array() ) {
+	public static function conflict_because( $reason, $message, $cause = 'invalid_input', $extra = array(), $retry_ok = false ) {
 		$data = array( 'status' => 409, 'draft_slug' => get_option( 'wpvibe_draft_theme' ), 'source_slug' => get_option( 'wpvibe_draft_source' ), 'reason' => $reason ) + $extra;
-		return new WP_Error( 'draft_conflict', $message, WPVibe_Error_Contract::data( $cause, false, $data ) );
+		return new WP_Error( 'draft_conflict', $message, WPVibe_Error_Contract::data( $cause, $retry_ok, $data ) );
 	}
 
 	/** Register source first; a failed write leaves a conflict, never an editable partial draft. */
@@ -174,6 +174,10 @@ class WPVibe_Draft_Lock {
 		}
 		update_option( 'wpvibe_draft_theme', $draft );
 		if ( get_option( 'wpvibe_draft_theme' ) !== $draft ) {
+			// Undo both halves (callers hold the lock and checked no draft was recorded): a source with no draft, or a draft an
+			// object cache kept while reading back the old value, reads as existing draft state and stops the retry (#1370).
+			delete_option( 'wpvibe_draft_source' );
+			delete_option( 'wpvibe_draft_theme' );
 			return self::record_write_failed();
 		}
 		return true;
@@ -183,7 +187,9 @@ class WPVibe_Draft_Lock {
 		return self::conflict_because(
 			'draft_record_write_failed',
 			__( 'WordPress did not keep WPVibe\'s draft record: the options table refused the write, or another request changed it at the same moment. Retry the same call once; if it fails again, the host needs to check the site\'s options table (database writes, or an object cache that will not update).', 'vibe-ai' ),
-			'host_environment'
+			'host_environment',
+			array(),
+			true // The callers remove the draft folder they made, so the same call can run again (#1370).
 		);
 	}
 }

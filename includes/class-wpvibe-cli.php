@@ -997,7 +997,37 @@ class WPVibe_CLI {
 		return self::mask_walk( $value, self::is_secret_field( $name ), 0, $masked );
 	}
 
+	/** While set, the microtime after which mask_walk() masks whatever it has not reached yet (#1752). */
+	private static $mask_deadline = 0.0;
+
+	/** mask_walk() calls since mask_deadline() was set, and whether the deadline has passed. */
+	private static $mask_steps   = 0;
+	private static $mask_tripped = false;
+
+	/**
+	 * Bound mask_walk()'s work by a time (#1752): a serialized value whose objects point back to their parent is walked
+	 * again at every level up to depth 32, so one 570-byte option could run until PHP's time limit. Past the deadline
+	 * every value not yet walked is masked, so the call fails closed. 0 turns it off.
+	 */
+	public static function mask_deadline( $deadline ) {
+		self::$mask_deadline = (float) $deadline;
+		self::$mask_steps    = 0;
+		self::$mask_tripped  = false;
+	}
+
+	/** Whether mask_walk() hit the deadline mask_deadline() set. */
+	public static function mask_tripped() {
+		return self::$mask_tripped;
+	}
+
 	private static function mask_walk( $value, $secret, $depth, &$masked ) {
+		if ( self::$mask_deadline > 0 && ! self::$mask_tripped && 0 === ( ++self::$mask_steps & 63 ) && microtime( true ) > self::$mask_deadline ) {
+			self::$mask_tripped = true;
+		}
+		if ( self::$mask_tripped ) {
+			$masked++;
+			return self::secret_mask( is_scalar( $value ) ? (string) $value : '' );
+		}
 		if ( $depth > 32 ) {
 			if ( $secret ) {
 				$masked++;
@@ -1024,6 +1054,9 @@ class WPVibe_CLI {
 			$walked     = self::mask_walk( $vars, $secret, $depth, $masked );
 			if ( $masked === $before ) {
 				return $value;
+			}
+			if ( ! is_array( $walked ) ) {
+				return $walked; // The walk's deadline passed: the whole object is masked.
 			}
 			unset( $walked['__PHP_Incomplete_Class_Name'] );
 			return $value instanceof stdClass ? (object) $walked : $walked;

@@ -102,7 +102,8 @@ class WPVibe_Classic_Theme {
 		// Set as the active draft, so file-editing tools target this draft.
 		$registered = WPVibe_Draft_Lock::register( $draft_slug, $slug );
 		if ( is_wp_error( $registered ) ) {
-			return $registered;
+			// Left in place, the new folder would stop the retry the error suggests (#1370).
+			return ( new WPVibe_Draft_Theme() )->abandon_partial_dir( $draft_dir, $registered );
 		}
 
 		// Generate a preview token so live reload can redirect to the preview immediately.

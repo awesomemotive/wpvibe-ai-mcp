@@ -1,10 +1,10 @@
-=== WPVibe – MCP Server for WordPress, works with Claude, ChatGPT & other AI MCP agents ===
+=== Vibe AI – MCP Server for WordPress, works with Claude, ChatGPT & other AI MCP agents ===
 Contributors: seedprod, smub
 Tags: mcp, claude, chatgpt, ai-assistant, mcp-server
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.24.1
+Stable tag: 1.24.2
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -183,6 +183,15 @@ Yes. Connected sites are unlimited on every plan, including the free plan. Conne
 No. You ask in plain words and your AI does the work, including writing theme code.
 
 == Changelog ==
+
+= 1.24.2 =
+* Fix: Administrators can edit Advanced Custom Fields values through WPVibe again, on posts they can edit, as they can in wp-admin. Since 1.24.1 these edits were refused with Advanced Custom Fields 6.8.11 and later. The account needs the unfiltered_html capability, so on multisite only Super Admins can; taxonomy fields that save to the post's terms stay with wp-admin. Other roles are pointed to the post's editor in wp-admin.
+* Fix: Administrators can edit the site's Additional CSS through WPVibe again, refused since 1.24.0. As in the Customizer, on multisite only Super Admins can.
+* Fix: A database query on a large options table answers in seconds instead of running on the server for minutes. When checking every candidate row for secrets takes too long, those rows are masked instead.
+* Fix: The connection check's Second login row says where the HTTP Basic login came from: your host's password protection, a login your browser saved for this site, or a plugin or custom code that tells WordPress the site is behind one. It no longer always blames your host.
+* Fix: On Appearance > Themes, a WPVibe draft theme says it is a working copy and how to preview or publish it.
+* Hardening: Draft theme error messages show fewer server folder paths, and a draft whose record failed to save can be retried.
+* Fix: The plugin's display name is now Vibe AI, as the WordPress.org Plugins Team asked. The plugin, its slug and its updates are unchanged.
 
 = 1.24.1 =
 * Security: WPVibe's settings commands and database queries keep passwords, API keys, salts and tokens out of what they show your AI. Option and transient reads mask secret fields inside a setting, such as an SMTP password or a payment gateway key. Database queries read this site's options, users and user meta tables with those values masked, and search-replace skips secrets: it does not search, count or name them. Reading WooCommerce API keys through a database query needs your approval.

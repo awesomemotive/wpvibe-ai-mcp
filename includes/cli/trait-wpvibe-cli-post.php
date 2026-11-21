@@ -1506,7 +1506,12 @@ trait WPVibe_CLI_Post {
 			) );
 		}
 
-		if ( $protected && $owned && ! current_user_can( $cap, $object_id, $key ) ) {
+		// Post meta: WordPress's rule, with ACF's exception for its administrators, as content/edit (#1751).
+		$can_meta = function () use ( $type, $cap, $object_id, $key ) {
+			return 'post' === $type ? WPVibe_Content_Ops::can_post_meta( $cap, $object_id, $key ) : current_user_can( $cap, $object_id, $key );
+		};
+
+		if ( $protected && $owned && ! $can_meta() ) {
 			return $this->error_result( sprintf(
 				/* translators: %s: meta key */
 				__( 'Refused: the plugin that registered meta key \'%s\' refused this edit for the connected account (its auth callback said no). That answer stands for every role, and --force does not pass it. Write the value through that plugin\'s own path (an ability via discover_abilities, or its REST namespace).', 'vibe-ai' ),
@@ -1528,7 +1533,17 @@ trait WPVibe_CLI_Post {
 			$object_cap = "edit_{$type}";
 			return current_user_can( $object_cap, $object_id ) ? true : $denied( $object_cap );
 		}
-		return current_user_can( $cap, $object_id, $key ) ? true : $denied( $cap );
+		if ( $can_meta() ) {
+			return true;
+		}
+		if ( 'post' === $type && WPVibe_Content_Ops::acf_guards_meta_key( $object_id, $key ) && current_user_can( 'edit_post', $object_id ) ) {
+			return $this->error_result( sprintf(
+				/* translators: %s: meta key */
+				__( 'Refused: \'%s\' holds an Advanced Custom Fields field.', 'vibe-ai' ),
+				$key
+			) . ' ' . WPVibe_Content_Ops::acf_refusal_note() );
+		}
+		return $denied( $cap );
 	}
 
 	private function handle_post_meta_delete( $positional, $flags ) {

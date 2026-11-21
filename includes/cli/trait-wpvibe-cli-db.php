@@ -505,6 +505,10 @@ trait WPVibe_CLI_Db {
 					);
 				}
 
+				if ( $this->secret_scan_degraded ) {
+					$output['masked_rows'] = __( 'WPVibe could not check every options row this read touches for secrets in time, so each options row whose name or value mentions a password, key, token or secret was read as [wpvibe-masked: ...]. On those rows LENGTH(), comparisons and searches on the value see the placeholder, not the stored value, so counts and matches can be wrong. Read one option with `option get <name>` instead.', 'vibe-ai' );
+				}
+
 				return array(
 					'exit_code' => 0,
 					'stdout'    => wp_json_encode( $output, JSON_PRETTY_PRINT ),
@@ -633,7 +637,8 @@ trait WPVibe_CLI_Db {
 				return array( 'sql' => $sql, 'hold' => true );
 			}
 		}
-		$derived = array();
+		$derived                    = array();
+		$this->secret_scan_degraded = false;
 		for ( $i = count( $refs ) - 1; $i >= 0; $i-- ) {
 			$ref = $refs[ $i ];
 			$key = strtolower( $ref['name'] );
@@ -828,10 +833,19 @@ trait WPVibe_CLI_Db {
 	}
 
 	/**
+	 * Set when a read's secret lookup fell back to masking every candidate row (past the row cap or the time budget),
+	 * so the result can say its values on those rows are not the real ones (#1752).
+	 *
+	 * @var bool
+	 */
+	private $secret_scan_degraded = false;
+
+	/**
 	 * Names of the rows in an options-shaped table that a read must mask: SECRET_OPTIONS and connector options, and
 	 * every row option get would show with a masked field (WPVibe_CLI::mask_secrets, run on the stored text). A
-	 * LIKE prefilter finds the candidates. Returns ['names' => [...], 'all_candidates' => null], or past the row cap
-	 * ['names' => [], 'all_candidates' => <the prefilter SQL>] to mask every candidate; null when the lookup failed.
+	 * LIKE prefilter finds the candidates. Returns ['names' => [...], 'all_candidates' => null], or past the row cap or
+	 * the time budget ['names' => [], 'all_candidates' => <the prefilter SQL>] to mask every candidate (and the read
+	 * says so); null when the lookup failed.
 	 */
 	private function secret_option_names( $table, $name_col, $value_col ) {
 		global $wpdb;
@@ -871,20 +885,38 @@ trait WPVibe_CLI_Db {
 			$wpdb->last_error = '';
 			return null;
 		}
+		$all = array( 'names' => array(), 'all_candidates' => $prefilter );
 		if ( count( $rows ) > $cap ) {
-			return array( 'names' => array(), 'all_candidates' => $prefilter );
+			$this->secret_scan_degraded = true;
+			return $all;
 		}
-		$names = array();
-		foreach ( $rows as $row ) {
-			$name   = (string) ( is_array( $row ) && isset( $row['n'] ) ? $row['n'] : '' );
-			$value  = (string) ( is_array( $row ) && isset( $row['v'] ) ? $row['v'] : '' );
-			$masked = strlen( $value ) >= $max_bytes ? 1 : 0;
-			if ( ! $masked && null === WPVibe_CLI::match_option_name( $name, $secret ) ) {
-				WPVibe_CLI::mask_secrets( $name, $value, $masked );
+		// Seconds the PHP check of candidate rows may take (#1752); past it every candidate is masked, as past the row cap.
+		$budget   = max( 0.0, (float) apply_filters( 'wpvibe_db_query_secret_scan_seconds', 5.0 ) );
+		$deadline = microtime( true ) + $budget;
+		$names    = array();
+		WPVibe_CLI::mask_deadline( $deadline );
+		try {
+			foreach ( $rows as $row ) {
+				if ( microtime( true ) > $deadline ) {
+					$this->secret_scan_degraded = true;
+					return $all;
+				}
+				$name   = (string) ( is_array( $row ) && isset( $row['n'] ) ? $row['n'] : '' );
+				$value  = (string) ( is_array( $row ) && isset( $row['v'] ) ? $row['v'] : '' );
+				$masked = strlen( $value ) >= $max_bytes ? 1 : 0;
+				if ( ! $masked && null === WPVibe_CLI::match_option_name( $name, $secret ) ) {
+					WPVibe_CLI::mask_secrets( $name, $value, $masked );
+					if ( WPVibe_CLI::mask_tripped() ) {
+						$this->secret_scan_degraded = true;
+						return $all;
+					}
+				}
+				if ( '' !== $name && ( $masked > 0 || null !== WPVibe_CLI::match_option_name( $name, $secret ) ) ) {
+					$names[ $name ] = true;
+				}
 			}
-			if ( '' !== $name && ( $masked > 0 || null !== WPVibe_CLI::match_option_name( $name, $secret ) ) ) {
-				$names[ $name ] = true;
-			}
+		} finally {
+			WPVibe_CLI::mask_deadline( 0 );
 		}
 		return array( 'names' => array_keys( $names ), 'all_candidates' => null );
 	}

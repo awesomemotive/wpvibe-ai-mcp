@@ -30,12 +30,22 @@ class WPVibe_Draft_Activation_Guard {
 		return '' !== $slug && ( ( '' !== $draft && $draft === $slug ) || '-wpvibe-draft' === substr( $slug, -13 ) );
 	}
 
-	/** Themes screen (themes.php): a draft keeps its other actions, but not Activate or Live Preview. */
+	/**
+	 * Themes screen (themes.php): a draft keeps its other actions, but not Activate or Live Preview, and its description
+	 * leads with what it is and how to see or publish it, since the switch-back notice is never reached from here (#1368).
+	 */
 	public static function themes_for_js( $themes ) {
+		$note = esc_html__( 'This is a WPVibe working copy. To see it, ask your AI for a preview link; to put it live, ask your AI to publish the draft theme.', 'vibe-ai' );
 		foreach ( (array) $themes as $slug => $theme ) {
-			if ( is_array( $theme ) && self::is_draft( $theme['id'] ?? $slug ) && isset( $theme['actions'] ) && is_array( $theme['actions'] ) ) {
+			if ( ! is_array( $theme ) || ! self::is_draft( $theme['id'] ?? $slug ) ) {
+				continue;
+			}
+			if ( isset( $theme['actions'] ) && is_array( $theme['actions'] ) ) {
 				unset( $themes[ $slug ]['actions']['activate'], $themes[ $slug ]['actions']['customize'] );
 			}
+			$own = isset( $theme['description'] ) ? (string) $theme['description'] : '';
+			// Core passes the description through wp_kses and prints it as HTML; the note is escaped text ahead of it.
+			$themes[ $slug ]['description'] = '' === $own ? $note : $note . ' ' . $own;
 		}
 		return $themes;
 	}

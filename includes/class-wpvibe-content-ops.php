@@ -750,8 +750,9 @@ class WPVibe_Content_Ops {
 				// edit_post is post-level; protected/registered meta keys carry their
 				// own auth boundary (protected-meta rule + auth_callback) that direct
 				// get_post_meta() bypasses. edit_post_meta maps both via map_meta_cap,
-				// and nothing overrides it for any role (WordPress.org review 11-17, #1624).
-				if ( ! current_user_can( 'edit_post_meta', $post_id, $key ) ) {
+				// with no override for any role (WordPress.org review 11-17, #1624) except
+				// ACF's own guard for its administrators (can_post_meta, #1751).
+				if ( ! self::can_post_meta( 'edit_post_meta', $post_id, $key ) ) {
 					return $this->meta_forbidden_error( $post_id, $key );
 				}
 				if ( ! metadata_exists( 'post', $post_id, $key ) ) {
@@ -1074,6 +1075,75 @@ class WPVibe_Content_Ops {
 	}
 
 	/**
+	 * current_user_can() for a post meta capability (edit_post_meta, add_post_meta or delete_post_meta), with one
+	 * exception for ACF (#1751). ACF 6.8.11 adds do_not_allow to these capabilities for every key that holds an ACF
+	 * field's value, whoever the user, so meta writers outside ACF's own save (core's Custom Fields box, XML-RPC) can't
+	 * set fields ACF doesn't show that user. For an account with ACF's own admin capability (acf_get_setting(
+	 * 'capability'), manage_options by default) and unfiltered_html, which sees and edits every field group, WordPress
+	 * is asked again with only ACF's filter unhooked for that one check, and it is hooked again after. Every other
+	 * refusal still stands: edit rights on the post, an owner's auth filter, any other map_meta_cap or user_has_cap
+	 * filter. Every other account gets ACF's answer.
+	 *
+	 * @param string $cap 'edit_post_meta', 'add_post_meta' or 'delete_post_meta'.
+	 */
+	public static function can_post_meta( $cap, $post_id, $key ) {
+		$post_id = (int) $post_id;
+		$key     = (string) $key;
+		if ( current_user_can( $cap, $post_id, $key ) ) {
+			return true;
+		}
+		if ( ! self::acf_guards_meta_key( $post_id, $key ) || ! self::acf_admin_can_write() || self::acf_field_saves_elsewhere( $post_id, $key ) ) {
+			return false;
+		}
+		$priority = has_filter( 'map_meta_cap', 'acf_map_post_meta_caps' );
+		if ( ! is_int( $priority ) ) {
+			return false;
+		}
+		remove_filter( 'map_meta_cap', 'acf_map_post_meta_caps', $priority );
+		try {
+			return current_user_can( $cap, $post_id, $key );
+		} finally {
+			add_filter( 'map_meta_cap', 'acf_map_post_meta_caps', $priority, 4 );
+		}
+	}
+
+	/**
+	 * Whether the ACF field behind this key keeps its value somewhere besides this meta row: a taxonomy field with Save
+	 * Terms or Load Terms reads and writes the post's terms, so a meta write would report success and change nothing.
+	 */
+	public static function acf_field_saves_elsewhere( $post_id, $key ) {
+		if ( ! function_exists( 'acf_get_field' ) ) {
+			return false;
+		}
+		$reference = (string) get_post_meta( (int) $post_id, '_' . $key, true );
+		$field     = 0 === strpos( $reference, 'field_' ) ? acf_get_field( $reference ) : null;
+		return is_array( $field ) && 'taxonomy' === ( $field['type'] ?? '' ) && ( ! empty( $field['save_terms'] ) || ! empty( $field['load_terms'] ) );
+	}
+
+	/** Whether ACF 6.8.11's map_meta_cap guard refuses this post meta key: an ACF field's, not protected, not registered. */
+	public static function acf_guards_meta_key( $post_id, $key ) {
+		if ( ! function_exists( 'acf_map_post_meta_caps' ) || ! function_exists( '_acf_is_field_meta_key' ) || false === has_filter( 'map_meta_cap', 'acf_map_post_meta_caps' ) ) {
+			return false;
+		}
+		$post_type = (string) get_post_type( (int) $post_id );
+		if ( is_protected_meta( (string) $key, 'post' ) || registered_meta_key_exists( 'post', (string) $key, $post_type ) || registered_meta_key_exists( 'post', (string) $key ) ) {
+			return false;
+		}
+		return (bool) _acf_is_field_meta_key( (int) $post_id, (string) $key );
+	}
+
+	/** ACF's admin capability plus unfiltered_html: the accounts that may write an ACF field outside ACF's own save. */
+	private static function acf_admin_can_write() {
+		$capability = function_exists( 'acf_get_setting' ) ? (string) acf_get_setting( 'capability' ) : '';
+		return current_user_can( '' !== $capability ? $capability : 'manage_options' ) && current_user_can( 'unfiltered_html' );
+	}
+
+	/** The refusal's note for an ACF field this account may not write outside ACF. */
+	public static function acf_refusal_note() {
+		return __( 'Advanced Custom Fields 6.8.11 and later (and Secure Custom Fields) refuse direct changes to their fields outside ACF\'s own save, for every role. Through WPVibe only an account with ACF\'s admin capability and unfiltered_html can change one (on a single site an Administrator; on multisite a Super Admin), and never a taxonomy field that saves to the post\'s terms. Otherwise ask the user to make the change in the post\'s editor in wp-admin, where ACF saves its own fields, repeater and flexible-content rows included. Do not write the field through the REST acf object (one row sent replaces a whole repeater) or fall back to raw SQL.', 'vibe-ai' );
+	}
+
+	/**
 	 * Whether a meta auth hook carries a check the owning plugin supplied. When a plugin registers a key with no
 	 * auth_callback, core's register_meta() hooks '__return_false' (protected key) or '__return_true' itself (Yoast SEO
 	 * registers its _yoast_wpseo_* keys that way): that is core's default, not the owner's answer (#1624). Shared by
@@ -1116,6 +1186,13 @@ class WPVibe_Content_Ops {
 				'meta_forbidden',
 				__( 'This meta key is protected (underscore-prefixed). content/edit and content/search reach a protected key only where the plugin that owns the key allows it: WordPress\'s edit_post_meta check, the same for every role, Administrators included. For Elementor layout data on Elementor older than 3.27, use elementor/save-page. Otherwise read and write it through the plugin that owns the key (an ability via discover_abilities, or its REST namespace).', 'vibe-ai' ) . ' ' . $fallback . ' ' . __( 'Do not fall back to raw SQL.', 'vibe-ai' ),
 				WPVibe_Error_Contract::data( 'meta_protected', false, array( 'status' => 403, 'protected' => true ) )
+			);
+		}
+		if ( self::acf_guards_meta_key( $post_id, $key ) && current_user_can( 'edit_post', (int) $post_id ) ) {
+			return new WP_Error(
+				'meta_forbidden',
+				self::acf_refusal_note(),
+				WPVibe_Error_Contract::data( 'capability_cpt_mapping', false, array( 'status' => 403, 'protected' => false ) )
 			);
 		}
 		return new WP_Error(
@@ -1163,7 +1240,7 @@ class WPVibe_Content_Ops {
 					return $code_post;
 				}
 				// Same meta-level auth boundary as load(); edit_post alone is not it.
-				if ( ! current_user_can( 'edit_post_meta', $post_id, $key ) ) {
+				if ( ! self::can_post_meta( 'edit_post_meta', $post_id, $key ) ) {
 					return $this->meta_forbidden_error( $post_id, $key );
 				}
 				// update_metadata unslashes the key and the value; slash both so the write lands on the key checked above.

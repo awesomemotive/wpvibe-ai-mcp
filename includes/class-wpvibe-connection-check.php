@@ -328,13 +328,36 @@ class WPVibe_Connection_Check {
 		}
 		// Core's authorize page wp_die()s with a bare 501 under HTTP Basic Auth, before our beacon can load; this admin request sees the same credentials it would.
 		if ( function_exists( 'wp_is_site_protected_by_basic_auth' ) && wp_is_site_protected_by_basic_auth( 'front' ) ) {
-			$checks[] = array( 'stage' => 'Second login (HTTP Basic Authentication)', 'status' => 'failed', 'summary' => __( 'This site asks for a second username and password before WordPress loads. While that login is on, WordPress refuses to approve Application Passwords, so Step 3 would stop at "Cannot Authorize Application".', 'vibe-ai' ), 'next' => __( 'Turn off the password protection on this site or its wp-admin folder (your host may call it directory privacy or password-protected directories), then run the check again and connect in Step 3. If the protection covers only wp-admin, you can turn it back on after connecting.', 'vibe-ai' ) );
+			$checks[] = self::second_login_row();
 		}
 		$checks = array_merge( $checks, array(
 			array( 'stage' => 'Authenticated site access', 'status' => 'not_checked', 'summary' => __( 'This connectivity check does not use saved credentials. If already connected, use Check authorized access to test them. For a new connection, connect the site in Step 3.', 'vibe-ai' ) ),
 			array( 'stage' => 'AI connection', 'status' => 'not_checked', 'summary' => __( 'Confirmed once your AI reads the site through WPVibe in Step 4.', 'vibe-ai' ) ),
 		) );
 		return array( 'site' => $site, 'checkedAt' => gmdate( 'c' ), 'checks' => $checks, 'evidence' => array(), 'edge' => self::edge_owner() );
+	}
+
+	/**
+	 * The Second login row, naming where core's answer came from (#1295). Core reads PHP_AUTH_*, which it fills from an
+	 * arriving Basic Authorization header before plugins load, then lets the wp_is_site_protected_by_basic_auth filter
+	 * change the answer. AUTH_TYPE is set only when the web server itself checked the login (Apache, LiteSpeed).
+	 */
+	private static function second_login_row() {
+		$refuses = __( 'While WordPress reports a second login, it refuses to approve Application Passwords, so Step 3 would stop at "Cannot Authorize Application".', 'vibe-ai' );
+		$host    = __( 'Turn off the password protection on this site or its wp-admin folder (your host may call it directory privacy or password-protected directories), then run the check again and connect in Step 3. If the protection covers only wp-admin, you can turn it back on after connecting.', 'vibe-ai' );
+		$sent    = ! empty( $_SERVER['PHP_AUTH_USER'] ) || ! empty( $_SERVER['PHP_AUTH_PW'] );
+		$checked = isset( $_SERVER['AUTH_TYPE'] ) && 'basic' === strtolower( sanitize_text_field( wp_unslash( $_SERVER['AUTH_TYPE'] ) ) );
+		if ( ! $sent ) {
+			$summary = __( 'This page carried no second login, but a plugin or custom code on this site tells WordPress the site is behind one (the wp_is_site_protected_by_basic_auth filter).', 'vibe-ai' );
+			$next    = __( 'Find the plugin or custom code that uses the wp_is_site_protected_by_basic_auth filter (often a staging, maintenance or security plugin, or an mu-plugin) and turn it off while you connect in Step 3, then run the check again.', 'vibe-ai' );
+		} elseif ( $checked ) {
+			$summary = __( 'The web server checked a second username and password (HTTP Basic Authentication) before WordPress loaded.', 'vibe-ai' );
+			$next    = $host;
+		} else {
+			$summary = __( 'This page arrived with a second username and password (HTTP Basic Authentication). Usually that is password protection at your host, but it can also be a login your browser saved for this site earlier.', 'vibe-ai' );
+			$next    = $host . ' ' . __( 'If you know of no such protection, run the check in a private window: if it passes there, your browser had a saved login, so quit the browser completely (not just its windows) and connect again.', 'vibe-ai' );
+		}
+		return array( 'stage' => 'Second login (HTTP Basic Authentication)', 'status' => 'failed', 'summary' => $summary . ' ' . $refuses, 'next' => $next );
 	}
 
 	public static function remote( $nonce, $challenge ) {
